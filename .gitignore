@@ -1,0 +1,11 @@
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
+node_modules/
+.marketing-build/
+marketing-sdk/reference/dist/
+artifacts/
+*.log

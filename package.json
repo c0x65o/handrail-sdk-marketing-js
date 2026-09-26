@@ -1,0 +1,82 @@
+{
+  "name": "@handrail/marketing",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.1 <23"
+  },
+  "description": "Headless marketing workflows with durable server authority and optional React UI",
+  "exports": {
+    ".": {
+      "types": "./.marketing-build/core/index.d.ts",
+      "import": "./.marketing-build/core/index.js"
+    },
+    "./server": {
+      "types": "./.marketing-build/server/index.d.ts",
+      "import": "./.marketing-build/server/index.js"
+    },
+    "./react": {
+      "types": "./.marketing-build/react/index.d.ts",
+      "import": "./.marketing-build/react/index.js"
+    },
+    "./react/style.css": "./marketing-sdk/react/style.css",
+    "./package.json": "./package.json",
+    "./core": {
+      "types": "./.marketing-build/core/index.d.ts",
+      "import": "./.marketing-build/core/index.js"
+    },
+    "./agent": {
+      "types": "./.marketing-build/agent/index.d.ts",
+      "import": "./.marketing-build/agent/index.js"
+    },
+    "./reference": {
+      "types": "./.marketing-build/reference/index.d.ts",
+      "import": "./.marketing-build/reference/index.js"
+    },
+    "./reference/host": {
+      "types": "./.marketing-build/reference/host.d.ts",
+      "import": "./.marketing-build/reference/host.js"
+    },
+    "./reference/seed": {
+      "types": "./.marketing-build/reference/seed.d.ts",
+      "import": "./.marketing-build/reference/seed.js"
+    }
+  },
+  "files": [
+    ".marketing-build",
+    "marketing-sdk",
+    "README.md",
+    "RIGHTS.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "prepare": "npm run build",
+    "typecheck": "tsc -p marketing-sdk/tsconfig.json --noEmit",
+    "build": "tsc -p marketing-sdk/tsconfig.json && vite build --config marketing-sdk/reference/vite.config.mjs && node marketing-sdk/reference/source-manifest.mjs",
+    "test": "node --test --test-concurrency=1 .marketing-build/tests/*.test.js",
+    "test:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs",
+    "test:browser:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs --browser",
+    "start": "node .marketing-build/reference/host.js"
+  },
+  "dependencies": {
+    "mysql2": "3.22.3",
+    "openai": "6.34.0",
+    "sharp": "0.34.5",
+    "react": "19.2.5",
+    "react-dom": "19.2.5"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "6.4.3",
+    "@vitejs/plugin-react": "4.7.0",
+    "@types/node": "25.9.0",
+    "@types/react": "19.2.14",
+    "playwright": "1.61.1"
+  },
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/c0x65o/handrail-sdk-marketing-js.git"
+  }
+}

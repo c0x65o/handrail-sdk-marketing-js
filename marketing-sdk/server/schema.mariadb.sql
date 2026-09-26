@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS migrations(version INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS transaction_guard(id INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT IGNORE INTO transaction_guard VALUES(1);
+CREATE TABLE IF NOT EXISTS projects(id VARCHAR(160) COLLATE utf8mb4_bin PRIMARY KEY, name TEXT NOT NULL) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS users(id VARCHAR(160) COLLATE utf8mb4_bin PRIMARY KEY, login VARCHAR(320) COLLATE utf8mb4_bin UNIQUE NOT NULL, password_hash TEXT NOT NULL, kind ENUM('human','agent') NOT NULL, disabled INT NOT NULL DEFAULT 0) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS memberships(user_id VARCHAR(160) COLLATE utf8mb4_bin, project_id VARCHAR(160) COLLATE utf8mb4_bin, role ENUM('admin','editor','approver','analyst','sales','collector') NOT NULL, PRIMARY KEY(user_id,project_id), FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(project_id) REFERENCES projects(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS sessions(token_hash VARCHAR(64) COLLATE utf8mb4_bin PRIMARY KEY, user_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, expires_at BIGINT NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS auth_attempts(ip VARCHAR(128) NOT NULL, at BIGINT NOT NULL, INDEX auth_attempts_window(ip,at)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS records(sequence BIGINT AUTO_INCREMENT UNIQUE, project_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, kind VARCHAR(80) COLLATE utf8mb4_bin NOT NULL, id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, revision INT NOT NULL, body LONGTEXT NOT NULL CHECK(JSON_VALID(body)), PRIMARY KEY(project_id,kind,id), FOREIGN KEY(project_id) REFERENCES projects(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS requests(project_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, request_key VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, digest VARCHAR(64) NOT NULL, kind VARCHAR(80) NOT NULL, record_id VARCHAR(160) NOT NULL, PRIMARY KEY(project_id,request_key), FOREIGN KEY(project_id) REFERENCES projects(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS blobs(project_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, digest VARCHAR(64) COLLATE utf8mb4_bin NOT NULL, bytes LONGBLOB NOT NULL, PRIMARY KEY(project_id,digest), FOREIGN KEY(project_id) REFERENCES projects(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS outbox(`cursor` BIGINT AUTO_INCREMENT PRIMARY KEY, project_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, aggregate_id VARCHAR(160) NOT NULL, type VARCHAR(160) NOT NULL, body LONGTEXT NOT NULL, created_at VARCHAR(32) NOT NULL, FOREIGN KEY(project_id) REFERENCES projects(id)) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS leases(project_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, account_id VARCHAR(160) COLLATE utf8mb4_bin NOT NULL, operation_id VARCHAR(160) NOT NULL, PRIMARY KEY(project_id,account_id)) ENGINE=InnoDB;
+INSERT IGNORE INTO migrations VALUES(1);
