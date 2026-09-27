@@ -24,6 +24,7 @@ import { digest } from "../server/store.js";
 import { BoundGenerationBilling } from "../server/billing.js";
 import { createCredentialCipher } from "../support/vault-crypto.js";
 import { HostAgent } from "../server/agent.js";
+import { defaultCampaignSchedule } from "../react/schedule.js";
 test("native image transport retains request and byte identities without retrying an unknown submission", async () => {
   const bytes = readFileSync(
     new URL(
@@ -212,6 +213,22 @@ function googleCampaign() {
     },
   };
 }
+test("account calendar defaults retain the same dates in Google's paused approval plan", () => {
+  for (const [timezone, now, start, end] of [
+    ["America/Chicago", "2026-09-27T03:50:00Z", "2026-09-27", "2026-10-04"],
+    ["Asia/Tokyo", "2026-09-27T03:50:00Z", "2026-09-28", "2026-10-05"],
+    ["America/Chicago", "2026-03-07T18:00:00Z", "2026-03-08", "2026-03-15"],
+    ["America/Chicago", "2026-10-31T18:00:00Z", "2026-11-01", "2026-11-08"],
+  ] as const) {
+    const campaign = googleCampaign();
+    campaign.material = { ...campaign.material, timezone, ...defaultCampaignSchedule(timezone, new Date(now)) };
+    const plan: any = providerPlan(campaign, { ...g, provider: "google", accountId: "123", timezone }, []);
+    const mapped = plan.operations[1].campaignOperation.create;
+    assert.equal(mapped.startDateTime, `${start} 00:00:00`);
+    assert.equal(mapped.endDateTime, `${end} 00:00:00`);
+    assert.equal(mapped.status, "PAUSED");
+  }
+});
 test("provider-specific mappings: no silent targeting translation; hard total budgets and paused objects", () => {
   const meta: any = providerPlan(c, g, [asset]);
   assert.equal(meta.adset.lifetime_budget, "42000");

@@ -8,6 +8,8 @@ import { chromium } from "playwright";
 import { runtime, createHost } from "../../.marketing-build/reference/host.js";
 import { testStore } from "../../.marketing-build/tests/datastore.js";
 import { seedQa } from "../../.marketing-build/reference/seed.js";
+import { defaultCampaignSchedule } from "../../.marketing-build/react/schedule.js";
+import { MarketingServer } from "../../.marketing-build/server/service.js";
 
 const dir = await mkdtemp(join(tmpdir(), "marketing-browser-"));
 const evidence = resolve(
@@ -15,14 +17,24 @@ const evidence = resolve(
 );
 await mkdir(evidence, { recursive: true });
 const password = randomBytes(32).toString("base64url");
-const { store, service } = await runtime(
+const { store, service: fixtureService } = await runtime(
   {
     MARKETING_MODE: "fixture",
     MARKETING_PUBLIC_URL: "http://127.0.0.1",
   },
   await testStore(join(dir, "qa.sqlite")),
 );
+// Keep the historical rollover case valid even when this regression runs later.
+// Session expiry still uses the real host/DB clock.
+let campaignNow;
+const service = new MarketingServer(
+  store, fixtureService.providers, fixtureService.generation, fixtureService.agent,
+  "fixture", () => campaignNow ?? Date.now(), fixtureService.readDestination,
+);
 await seedQa(store, { username: "qa-browser", password });
+// Both projects belong to this disposable test principal; live seeds are untouched.
+const user = await store.db.prepare("SELECT id FROM users WHERE login=?").get("qa-browser");
+await store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(user.id, "qa-beta", "analyst");
 // A disposable loopback HTTP host, never a staging substitute.
 const host = await createHost({
   store,
@@ -65,6 +77,7 @@ try {
   for (const width of [1440, 390, 320]) {
     const context = await browser.newContext({
         viewport: { width, height: width === 1440 ? 1000 : 844 },
+        timezoneId: "Asia/Tokyo", // Browser zone must not override the account zone.
       }),
       page = await context.newPage();
     page.on("pageerror", (e) => report.errors.push(e.message));
@@ -99,9 +112,16 @@ try {
     const workspaceGate = new Promise((resolve) => {
       releaseWorkspace = resolve;
     });
+    let reads = 0;
+    const failRead = (route) => route.fulfill({
+      status: 408, contentType: "application/json", body: JSON.stringify({ error: "fixture_read_failure" }),
+    });
+    const passRead = (route) => route.continue();
+    let read = failRead;
     await page.route("**/api/projects/qa-alpha/workspace", async (route) => {
       await workspaceGate;
-      await route.continue();
+      reads++;
+      await read(route);
     });
     await page.goto(base);
     await page.getByLabel("Username", { exact: true }).fill("qa-browser");
@@ -110,10 +130,95 @@ try {
     await page.getByText("Loading your project…", { exact: true }).waitFor();
     await screenshot("loading");
     releaseWorkspace();
+    await page.getByRole("alert").filter({ hasText: "fixture read failure" }).waitFor();
+    await screenshot("initial-read-failure");
+    const firstReads = reads;
+    await page.getByRole("button", { name: "Retry read" }).click();
+    while (reads === firstReads) await page.waitForTimeout(20);
+    assert.match(await page.getByRole("alert").innerText(), /fixture read failure/);
+    // Keep the error visible while the retry is pending, then clear it on success.
+    let pending;
+    const retryPending = new Promise((resolve) => { pending = resolve; });
+    read = async (route) => { pending(); await retryGate; await route.continue(); };
+    let releaseRetry;
+    const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
+    await page.getByRole("button", { name: "Retry read" }).click();
+    await retryPending;
+    assert.match(await page.getByRole("alert").innerText(), /fixture read failure/);
+    read = passRead;
+    releaseRetry();
     await page
       .getByRole("heading", { name: "Workspace", exact: true })
       .waitFor();
+    assert.equal(await page.getByRole("alert").count(), 0);
+    await screenshot("initial-retry-recovered");
+    read = failRead;
+    await page.getByRole("alert").filter({ hasText: "fixture read failure" }).waitFor();
+    await screenshot("loaded-read-failure");
+    read = passRead;
+    await page.getByRole("alert").waitFor({ state: "detached" });
+    await screenshot("polling-recovered");
+    if (width === 1440) {
+      const stale = await api("workspace", {});
+      stale.project.name = "STALE RESPONSE MUST NOT RENDER";
+      const holdNextRead = () => new Promise((resolve) => {
+        read = (route) => { read = passRead; resolve(route); };
+      });
+      // Older failure after a newer success must not resurrect an error.
+      const oldFailure = await holdNextRead();
+      const newer = reads;
+      while (reads === newer) await page.waitForTimeout(20);
+      await page.waitForTimeout(100);
+      await failRead(oldFailure);
+      await page.waitForTimeout(100);
+      assert.equal(await page.getByRole("alert").count(), 0);
+      // Older success after a newer failure must not hide the current failure.
+      const oldSuccess = await holdNextRead();
+      read = failRead;
+      await page.getByRole("alert").waitFor();
+      await oldSuccess.fulfill({ json: stale });
+      await page.waitForTimeout(100);
+      assert.equal(await page.getByText(stale.project.name, { exact: true }).count(), 0);
+      assert.match(await page.getByRole("alert").innerText(), /fixture read failure/);
+      read = passRead;
+      await page.getByRole("button", { name: "Retry read" }).click();
+      await page.getByRole("alert").waitFor({ state: "detached" });
+      // Client changes without a caller key must clear old data and local drafts.
+      await page.getByLabel("Campaign name", { exact: true }).fill("old project draft");
+      const oldProject = await holdNextRead();
+      let captureBeta;
+      const betaPending = new Promise((resolve) => { captureBeta = resolve; });
+      await page.route("**/api/projects/qa-beta/workspace", (route) => captureBeta(route));
+      await page.locator(".session-bar select").selectOption("qa-beta");
+      const betaRead = await betaPending;
+      await page.getByText("Loading your project…", { exact: true }).waitFor();
+      assert.equal(await page.getByLabel("Campaign name", { exact: true }).count(), 0);
+      await oldProject.fulfill({ json: stale });
+      await page.waitForTimeout(100);
+      assert.equal(await page.getByText(stale.project.name, { exact: true }).count(), 0);
+      assert.equal(await page.getByRole("alert").count(), 0);
+      await page.unroute("**/api/projects/qa-beta/workspace");
+      await betaRead.continue();
+      await page.getByText("Isolation · QA Beta", { exact: true }).last().waitFor();
+      await page.locator(".session-bar select").selectOption("qa-alpha");
+      await page.getByLabel("Campaign name", { exact: true }).waitFor();
+      assert.equal(await page.getByLabel("Campaign name", { exact: true }).inputValue(), "Autumn desk kit");
+      const oldUnmount = await holdNextRead();
+      await page.getByRole("button", { name: "Sign out", exact: true }).click();
+      await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+      await failRead(oldUnmount);
+      await page.waitForTimeout(100);
+      assert.equal(await page.getByRole("alert").count(), 0);
+      await page.getByLabel("Username", { exact: true }).fill("qa-browser");
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await page.getByLabel("Campaign name", { exact: true }).waitFor();
+    }
     await screenshot("workspace");
+    const scheduleNow = new Date("2026-09-27T03:50:00Z");
+    campaignNow = scheduleNow.getTime();
+    await page.clock.setFixedTime(scheduleNow);
+    assert.match(await page.locator("form").innerText(), /tomorrow in America\/Chicago for seven calendar days/);
     await page
       .getByLabel("Campaign name", { exact: true })
       .fill(`QA desk kit ${width}`);
@@ -121,6 +226,10 @@ try {
     await page
       .getByRole("heading", { name: "Connections", exact: true })
       .waitFor();
+    const saved = (await api("workspace", {})).campaigns.find((c) => c.material.name === `QA desk kit ${width}`);
+    assert.deepEqual({ startAt: saved.material.startAt, endAt: saved.material.endAt }, defaultCampaignSchedule("America/Chicago", scheduleNow));
+    assert.equal(saved.material.startAt, "2026-09-27T05:00:00.000Z");
+    await page.clock.setFixedTime(new Date());
     const meta = page.locator("section.card").filter({
       has: page.getByRole("heading", {
         name: "meta fixture account",
@@ -200,7 +309,16 @@ try {
     await page.getByRole("button", { name: "Save audience revision" }).click();
     await page.getByRole("alert").waitFor();
     await screenshot("error");
+    // Workspace polls cannot dismiss an unrelated failed mutation.
+    const mutationError = await page.getByRole("alert").innerText();
+    await page.waitForTimeout(1700);
+    assert.equal(await page.getByRole("alert").innerText(), mutationError);
+    read = failRead;
+    await page.getByRole("alert").filter({ hasText: "fixture read failure" }).waitFor();
+    read = passRead;
     await page.getByRole("button", { name: "Retry read" }).click();
+    await page.getByRole("alert").filter({ hasText: "fixture read failure" }).waitFor({ state: "detached" });
+    assert.equal(await page.getByRole("alert").innerText(), mutationError);
     await page
       .getByLabel("Audience definition")
       .fill(JSON.stringify(definition, null, 2));
@@ -212,6 +330,22 @@ try {
     let campaign = data.campaigns.find(
       (c) => c.material.name === `QA desk kit ${width}`,
     );
+    // Inspect the unmodified default schedule in the persisted approval packet.
+    await page.getByRole("button", { name: "Launch", exact: true }).click();
+    await page.getByRole("button", { name: "Prepare paused objects" }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll("button")].some(
+      (b) => b.textContent === "Create launch review" && !b.disabled,
+    ));
+    await page.getByRole("button", { name: "Create launch review" }).click();
+    await page.getByRole("heading", { name: "Review this exact commitment" }).waitFor();
+    const approval = page.getByRole("region", { name: "Launch approval" });
+    assert.ok((await approval.innerText()).includes(`${saved.material.startAt} → ${saved.material.endAt}`));
+    const scheduledPacket = (await api("workspace", {})).packets.find((p) => p.campaignId === campaign.id);
+    assert.equal(scheduledPacket.material.startAt, saved.material.startAt);
+    assert.equal(scheduledPacket.material.endAt, saved.material.endAt);
+    await screenshot("default-schedule-approval");
+    campaignNow = undefined;
+    campaign = (await api("workspace", {})).campaigns.find((c) => c.id === campaign.id);
     const from = new Date(Date.now() - 86400000);
     from.setUTCHours(5, 0, 0, 0);
     const until = new Date(from.getTime() + 7 * 86400000);
@@ -332,6 +466,10 @@ try {
         "storyboard",
         "audience revision",
         "validation error and read retry",
+        "initial retry and continued read failure",
+        "polling recovery preserves mutation errors",
+        "account-local default schedule matches persisted approval",
+        ...(width === 1440 ? ["out-of-order read completion", "client/project replacement", "unmount with pending read"] : []),
         "empty conversations",
         "paused prepare",
         "human gate",

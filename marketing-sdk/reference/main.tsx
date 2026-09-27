@@ -139,7 +139,7 @@ function App() {
         </button>
         {error && <p role="alert">{error}</p>}
       </div>
-      <MarketingWorkspace key={project} client={client} />
+      <MarketingWorkspace client={client} />
     </>
   );
 }

@@ -62,6 +62,8 @@ test("two independent HTTP users cannot cross projects; logout, expiry, revoke-a
   try {
     for (const p of ["alpha", "beta"]) await s.db.prepare("INSERT INTO projects VALUES(?,?)").run(p, p);
     const alice = await s.createUser("alice", ""), bob = await s.createUser("bob", "b");
+    // Ambiguous identities cannot be represented by the authoritative schema.
+    await assert.rejects(s.createUser("alice", "duplicate"));
     await s.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(alice, "alpha", "admin");
     await s.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(bob, "beta", "analyst");
     const { service } = await runtime({ MARKETING_MODE: "fixture", MARKETING_PUBLIC_URL: "http://127.0.0.1" }, s);
@@ -82,6 +84,13 @@ test("two independent HTTP users cannot cross projects; logout, expiry, revoke-a
     assert.equal((await fetch(base + "/api/me", { headers: { cookie: a } })).status, 200);
     assert.equal((await call(a, "/api/projects/beta/workspace")).status, 403);
     assert.equal((await call(b, "/api/projects/alpha/workspace")).status, 403);
+    const ownWorkspace = await fetch(base + "/api/projects/beta/workspace", { method: "POST", headers: { cookie: b, origin: "https://marketing.example", "content-type": "application/json" }, body: "{}" });
+    assert.equal(ownWorkspace.status, 200);
+    assert.equal((await ownWorkspace.json() as { role: string }).role, "analyst");
+    // Role/principal fields in the request body cannot elevate this session.
+    assert.equal((await call(b, "/api/projects/beta/saveCampaign")).status, 422);
+    const deniedWrite = await fetch(base + "/api/projects/beta/saveCampaign", { method: "POST", headers: { cookie: b, origin: "https://marketing.example", "content-type": "application/json" }, body: "{}" });
+    assert.equal(deniedWrite.status, 403);
     assert.equal((await call(a, "/api/logout", "https://other.example")).status, 403);
     assert.equal((await call(a, "/api/logout")).status, 200);
     assert.equal((await fetch(base + "/api/me", { headers: { cookie: a } })).status, 401);
@@ -95,6 +104,8 @@ test("two independent HTTP users cannot cross projects; logout, expiry, revoke-a
     assert.equal((await fetch(base + "/api/me", { headers: { cookie: a2 } })).status, 200);
     await s.db.prepare("UPDATE users SET disabled=1 WHERE id=?").run(alice);
     assert.equal((await fetch(base + "/api/me", { headers: { cookie: a2 } })).status, 401);
+    const mappedDisabled = await s.db.prepare("SELECT id FROM marketing_known_users WHERE id=? AND disabled=0").all(alice);
+    assert.equal(mappedDisabled.length, 0);
     await assert.rejects(s.authenticate("missing"), /authentication_required/);
     // Foreign-key constraints reject missing-user sessions before authentication.
     await assert.rejects(s.db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)").run(byteDigest(randomBytes(32)), "missing", Date.now() + 1000));

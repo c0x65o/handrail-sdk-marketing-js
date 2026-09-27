@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { defaultCampaignSchedule } from "./schedule.js";
 import type {
   Asset,
   Conversation,
@@ -168,11 +169,20 @@ function ErrorNotice({ error, retry }: { error: string; retry: () => void }) {
 }
 const key = () => crypto.randomUUID();
 export function MarketingWorkspace({ client }: { client: MarketingClient }) {
+  // Changing transport/project also discards drafts, errors and pending views.
+  const [scope, setScope] = useState({ client, version: 0 });
+  if (scope.client !== client)
+    setScope({ client, version: scope.version + 1 });
+  return <WorkspaceContent key={scope.version} client={client} />;
+}
+function WorkspaceContent({ client }: { client: MarketingClient }) {
   const [data, setData] = useState<Workspace | null>(null),
     [tab, setTab] = useState<(typeof tabs)[number]>("Workspace"),
     [selected, setSelected] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const [readError, setReadError] = useState("");
+  const reads = useRef({ active: false, next: 0, settled: 0 });
   const [result, setResult] = useState<Results | null>(null),
     [conversations, setConversations] = useState<Conversation[] | null>(null),
     [prompt, setPrompt] = useState(
@@ -191,16 +201,30 @@ export function MarketingWorkspace({ client }: { client: MarketingClient }) {
       data.principalKind === "human" &&
       ["admin", "approver"].includes(data.role);
   async function refresh() {
+    const scope = reads.current;
+    if (!scope.active) return;
+    const request = ++scope.next;
     try {
-      setData(await client.call("workspace", {}));
+      const next = await client.call("workspace", {});
+      if (!scope.active || request < scope.settled) return;
+      scope.settled = request;
+      setData(next);
+      setReadError("");
     } catch (e) {
-      setError((e as Error).message);
+      if (!scope.active || request < scope.settled) return;
+      scope.settled = request;
+      setReadError((e as Error).message);
     }
   }
   useEffect(() => {
+    const scope = { active: true, next: 0, settled: 0 };
+    reads.current = scope;
     void refresh();
     const t = setInterval(() => void refresh(), 1500);
-    return () => clearInterval(t);
+    return () => {
+      scope.active = false;
+      clearInterval(t);
+    };
   }, [client]);
   useEffect(() => {
     setAudienceText(
@@ -210,15 +234,16 @@ export function MarketingWorkspace({ client }: { client: MarketingClient }) {
     setConversations(null);
   }, [campaign?.id, campaign?.revision]);
   async function act(action: () => Promise<unknown>) {
+    const scope = reads.current;
     setBusy(true);
     setError("");
     try {
       await action();
-      await refresh();
+      if (scope.active) await refresh();
     } catch (e) {
-      setError((e as Error).message);
+      if (scope.active) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (scope.active) setBusy(false);
     }
   }
   async function save(next: Material) {
@@ -242,7 +267,7 @@ export function MarketingWorkspace({ client }: { client: MarketingClient }) {
       <main className="loading">
         <h1>Marketing workspace</h1>
         <p role="status">Loading your project…</p>
-        <ErrorNotice error={error} retry={() => void refresh()} />
+        <ErrorNotice error={readError} retry={() => void refresh()} />
       </main>
     );
   return (
@@ -281,13 +306,8 @@ export function MarketingWorkspace({ client }: { client: MarketingClient }) {
               : "Connected provider mode"}
           </span>
         </header>
-        <ErrorNotice
-          error={error}
-          retry={() => {
-            setError("");
-            void refresh();
-          }}
-        />
+        <ErrorNotice error={readError} retry={() => void refresh()} />
+        {error && <p role="alert" className="error">{error.replaceAll("_", " ")}</p>}
         {busy && (
           <p role="status" className="busy">
             Saving and checking…
@@ -1112,15 +1132,20 @@ function CampaignForm({
     [destination, setDestination] = useState(
       "https://fieldwork.example/desk-kit",
     ),
-    [budget, setBudget] = useState("42");
+    [budget, setBudget] = useState("42"),
+    [scheduleError, setScheduleError] = useState("");
   const g = grants.find((x) => x.id === grantId);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!g) return;
-    const start = new Date();
-    start.setUTCDate(start.getUTCDate() + 1);
-    start.setUTCHours(5, 0, 0, 0);
-    const end = new Date(start.getTime() + 7 * 86400000);
+    let schedule;
+    try {
+      schedule = defaultCampaignSchedule(g.timezone);
+      setScheduleError("");
+    } catch (error) {
+      setScheduleError((error as Error).message);
+      return;
+    }
     const bytes = new TextEncoder().encode(destination);
     const hash = Array.from(
       new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
@@ -1140,8 +1165,7 @@ function CampaignForm({
           currency: g.currency,
           minor: Math.round(Number(budget) * 100),
         },
-        startAt: start.toISOString(),
-        endAt: end.toISOString(),
+        ...schedule,
         timezone: g.timezone,
         audience:
           g.provider === "meta"
@@ -1237,9 +1261,11 @@ function CampaignForm({
         />
       </label>
       <p className="muted">
-        Draft starts tomorrow for seven days. Review exact dates and all mapped
+        Draft starts at the beginning of tomorrow in {g?.timezone} for seven
+        calendar days. Review exact dates and all mapped
         copy at Launch before authorizing.
       </p>
+      {scheduleError && <p role="alert" className="error">{scheduleError}</p>}
       <button disabled={disabled || !g}>Save campaign draft</button>
     </form>
   );
