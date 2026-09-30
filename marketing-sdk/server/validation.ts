@@ -1,4 +1,4 @@
-import type { Audience, Material } from "../core/index.js";
+import type { Audience, DraftMaterial, Material } from "../core/index.js";
 import { requireThat } from "./store.js";
 
 export function text(value: unknown, max = 200): string {
@@ -31,6 +31,41 @@ export function keys(
     "unexpected_fields",
     422,
   );
+}
+/** Validate local document shape and bounds, without requiring provider readiness. */
+export function draftMaterial(value: DraftMaterial) {
+  keys(value, ["name", "headline", "body", "destination", "destinationDigest",
+    "searchHeadlines", "searchDescriptions", "assetIds", "audience", "budget",
+    "startAt", "endAt", "timezone"]);
+  text(value.name, 100);
+  const optionalText = (v: unknown, max: number) => requireThat(
+    typeof v === "string" && v.length <= max, "invalid_draft_text", 422);
+  for (const [key, max] of Object.entries({ headline: 150, body: 3000, destination: 2000,
+    destinationDigest: 64, startAt: 40, endAt: 40, timezone: 100 })) {
+    if (Object.hasOwn(value, key)) optionalText(value[key as keyof DraftMaterial], max);
+  }
+  const strings = (v: unknown, count: number, max: number) => {
+    requireThat(Array.isArray(v) && v.length <= count, "invalid_draft_list", 422);
+    v.forEach(x => optionalText(x, max));
+  };
+  for (const key of ["assetIds", "searchHeadlines", "searchDescriptions"] as const)
+    if (Object.hasOwn(value, key)) strings(value[key], key === "assetIds" ? 3 : 15, 200);
+  if (Object.hasOwn(value, "budget")) {
+    keys(value.budget, ["currency", "minor"]);
+    if (Object.hasOwn(value.budget, "currency")) optionalText(value.budget.currency, 3);
+    if (Object.hasOwn(value.budget, "minor")) requireThat(Number.isSafeInteger(value.budget.minor) &&
+      value.budget.minor! >= 0 && value.budget.minor! <= 1e9, "invalid_draft_budget", 422);
+  }
+  if (Object.hasOwn(value, "audience")) {
+    keys(value.audience, ["provider", "locations", "ageMin", "ageMax", "keywords", "jobTitles", "expansion"]);
+    const a = value.audience;
+    if (Object.hasOwn(a, "provider")) requireThat(["meta", "google", "linkedin"].includes(a.provider!), "invalid_provider", 422);
+    for (const key of ["locations", "keywords", "jobTitles"] as const)
+      if (Object.hasOwn(a, key)) strings(a[key], 30, 200);
+    for (const key of ["ageMin", "ageMax"] as const)
+      if (Object.hasOwn(a, key)) requireThat(Number.isInteger(a[key]) && a[key]! >= 18 && a[key]! <= 65, "invalid_age", 422);
+    if (Object.hasOwn(a, "expansion")) requireThat(a.expansion === false, "unsupported_targeting", 422);
+  }
 }
 export function audience(value: Audience, provider: string) {
   keys(value, [

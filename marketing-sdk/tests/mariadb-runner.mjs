@@ -83,7 +83,7 @@ try {
     : [
         "--test",
         "--test-concurrency=1",
-        ...["native-writes", "providers", "service", "store", "sessions"].map(
+        ...["drafts", "native-writes", "providers", "service", "store", "sessions"].map(
           (s) => `.marketing-build/tests/${s}.test.js`,
         ),
       ];

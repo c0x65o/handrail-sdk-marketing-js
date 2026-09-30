@@ -1,6 +1,7 @@
 import type {
   Asset,
   Campaign,
+  CampaignDraft,
   Command,
   Commands,
   Conversation,
@@ -34,7 +35,7 @@ import {
   requireThat,
   DomainError,
 } from "./store.js";
-import { instant, keys, material, text } from "./validation.js";
+import { draftMaterial, instant, keys, material, text } from "./validation.js";
 import { capturePublicDestination } from "./destination.js";
 const EDIT = ["admin", "editor"] as const;
 const HUMAN = ["admin", "approver"] as const;
@@ -50,6 +51,18 @@ const ratio = (n: number | null, d: number | null): Metric =>
     d === 0 ? "zero_denominator" : "missing_input",
   );
 export class MarketingServer {
+  /** Real local persistence with explicitly unavailable provider/generation capabilities.
+   * Hosts can later construct a server with their authorized native ports. */
+  static unconnected(store: Store) {
+    const unavailable = (): never => { throw new DomainError("provider_connection_required"); };
+    const provider: ProviderPort = {
+      evidence: "provider", verify: unavailable, plan: unavailable, prepare: unavailable,
+      activate: unavailable, pause: unavailable, reconcile: unavailable, metrics: unavailable,
+    };
+    return new MarketingServer(store, { meta: provider, google: provider, linkedin: provider },
+      { evidence: "generated", validate: unavailable, submit: unavailable, reconcile: unavailable },
+      { inspect: unavailable }, "live");
+  }
   constructor(
     readonly store: Store,
     readonly providers: Record<Grant["provider"], ProviderPort>,
@@ -177,6 +190,7 @@ export class MarketingServer {
           await this.store.list<GenerationGrant>(project, "generationGrant")
         ).map(({ billingCapabilityRef: _ref, ...g }) => g),
         campaigns: await this.store.list(project, "campaign"),
+        drafts: await this.store.list(project, "campaignDraft"),
         setups: await this.store.list(project, "setup"),
         assets: await this.store.list(project, "asset"),
         jobs: await this.store.list(project, "job"),
@@ -335,6 +349,34 @@ export class MarketingServer {
         });
       });
       return next;
+    });
+  }
+  async saveDraft(p: Principal, project: string, input: Commands["saveDraft"]["input"]): Promise<CampaignDraft> {
+    return this.store.transaction(async () => {
+      await this.auth(p, project, true);
+      keys(input, ["id", "expectedRevision", "requestKey", "material"]);
+      draftMaterial(input.material);
+      if (input.id !== undefined) text(input.id);
+      requireThat(input.id !== undefined
+        ? Number.isSafeInteger(input.expectedRevision) && input.expectedRevision! > 0
+        : input.expectedRevision === undefined, "invalid_draft_revision", 422);
+      // Immutable write receipts make retries return the original result even
+      // after later edits. Auth is always rechecked before looking up a receipt.
+      const write = await this.request<{ id: string; draft: CampaignDraft }>(
+        project, input.requestKey, { command: "saveDraft", actorId: p.userId, ...input },
+        "campaignDraftWrite", async () => {
+          const old = input.id ? await this.store.get<CampaignDraft>(project, "campaignDraft", input.id) : null;
+          if (old) requireThat(old.revision === input.expectedRevision, "revision_conflict");
+          const draft: CampaignDraft = {
+            id: old?.id || id(), projectId: project, revision: (old?.revision || 0) + 1,
+            state: "draft", connection: "unconnected", grantId: null, receipt: null,
+            material: input.material,
+          };
+          await this.store.put(project, "campaignDraft", draft.id, draft, old?.revision);
+          await this.store.append(project, draft.id, "draft.changed", { revision: draft.revision, actorId: p.userId });
+          return { id: `${draft.id}:${draft.revision}`, draft };
+        });
+      return write.draft;
     });
   }
   async saveCampaign(
@@ -1607,6 +1649,7 @@ export class MarketingServer {
         setup: ["grantId", "requestKey"],
         resumeSetup: ["setupId", "expectedRevision"],
         saveCampaign: ["id", "expectedRevision", "grantId", "material"],
+        saveDraft: ["id", "expectedRevision", "requestKey", "material"],
         prepare: ["campaignId", "requestKey"],
         packet: ["campaignId"],
         decide: ["packetId", "digest", "decision"],

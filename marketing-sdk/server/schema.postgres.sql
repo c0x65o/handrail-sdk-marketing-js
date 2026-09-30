@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS transaction_guard(id INTEGER PRIMARY KEY);
+INSERT INTO transaction_guard VALUES(1) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, login TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('human','agent')), disabled INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS memberships(user_id TEXT REFERENCES users(id), project_id TEXT REFERENCES projects(id), role TEXT NOT NULL CHECK(role IN ('admin','editor','approver','analyst','sales','collector')), PRIMARY KEY(user_id,project_id));
+CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at BIGINT NOT NULL);
+CREATE TABLE IF NOT EXISTS auth_attempts(ip TEXT NOT NULL, at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS auth_attempts_window ON auth_attempts(ip,at);
+CREATE TABLE IF NOT EXISTS records(sequence BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE, project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL CHECK(body::json IS NOT NULL), PRIMARY KEY(project_id,kind,id));
+CREATE TABLE IF NOT EXISTS requests(project_id TEXT NOT NULL REFERENCES projects(id), request_key TEXT NOT NULL, digest TEXT NOT NULL, kind TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY(project_id,request_key));
+CREATE TABLE IF NOT EXISTS blobs(project_id TEXT NOT NULL REFERENCES projects(id), digest TEXT NOT NULL, bytes BYTEA NOT NULL, PRIMARY KEY(project_id,digest));
+CREATE TABLE IF NOT EXISTS outbox(cursor BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), aggregate_id TEXT NOT NULL, type TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS leases(project_id TEXT NOT NULL, account_id TEXT NOT NULL, operation_id TEXT NOT NULL, PRIMARY KEY(project_id,account_id));
+INSERT INTO migrations VALUES(1) ON CONFLICT DO NOTHING;

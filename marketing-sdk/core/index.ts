@@ -47,6 +47,23 @@ export interface Campaign {
   state: "draft" | "paused" | "enabled" | "unknown";
   receipt: Receipt | null;
 }
+/** Local planning material. Missing/blank fields are not publication readiness. */
+export type DraftMaterial = Omit<Partial<Material>, "name" | "audience" | "budget"> & {
+  name: string;
+  audience?: Partial<Audience>;
+  budget?: Partial<Money>;
+};
+/** Project-owned local document, never a provider campaign or an account grant. */
+export interface CampaignDraft {
+  id: string;
+  projectId: string;
+  revision: number;
+  state: "draft";
+  connection: "unconnected";
+  grantId: null;
+  receipt: null;
+  material: DraftMaterial;
+}
 export interface Receipt {
   ids: Record<string, string>;
   payloadDigest: string;
@@ -251,6 +268,7 @@ export interface Workspace {
   grants: PublicGrant[];
   generationGrants: Omit<GenerationGrant, "billingCapabilityRef">[];
   campaigns: Campaign[];
+  drafts: CampaignDraft[];
   setups: Setup[];
   assets: Asset[];
   jobs: GenerationJob[];
@@ -283,6 +301,16 @@ export interface Commands {
       material: Material;
     };
     output: Campaign;
+  };
+  saveDraft: {
+    input: {
+      id?: string;
+      expectedRevision?: number;
+      requestKey: string;
+      /** Replaces the complete local document at the expected revision. */
+      material: DraftMaterial;
+    };
+    output: CampaignDraft;
   };
   prepare: {
     input: { campaignId: string; requestKey: string };

@@ -8,7 +8,7 @@ Typed headless API, durable server authority, optional React components and an e
 | --- | --- |
 | `core/index.ts` | Browser-safe types, `createMarketingClient`, canonical material serialization. No React or server imports. |
 | `server/service.ts` | `MarketingServer.call(principal, project, command, input)` and typed methods; membership, grants, exact human decisions, journal and reconciliation. |
-| `server/store.ts`, `server/schema.sql` | Durable MariaDB transactions, revisions, unique request keys, byte storage, sessions and outbox. |
+| `server/store.ts`, `server/schema*.sql` | Durable PostgreSQL, MariaDB and SQLite transactions, revisions, unique request keys, byte storage, sessions and outbox. |
 | `server/ports.ts` | Replaceable provider, generation, billing and Agent ports. Host retains execution ownership. |
 | `agent/index.ts` | Restricted tool schemas and dispatcher using the same authenticated client. No human decision tool. |
 | `react/index.tsx` | Optional `MarketingWorkspace`, `ApprovalPanel`, `MaterialReview`; import `react/style.css`. |
@@ -22,7 +22,11 @@ are emitted to `.marketing-build`; Vite emits the reference UI to
 
 Node 22.23.1 and ffmpeg/ffprobe are required. Use `npm ci --include=dev --no-audit --no-fund`, then `npm run build`.
 
-The deployed reference host requires an **isolated host-managed MariaDB**, using generated `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD`. It does not read a control-plane DATABASE_URL or a SQLite path. Build with the normal pipeline, then configure:
+The reference datastore supports PostgreSQL and isolated host-managed MariaDB.
+See [PostgreSQL and local drafts](DRAFTS.md) for embedding with real host identity
+and no provider credentials. For the MariaDB fixture example below, use generated
+`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD`.
+It does not read a control-plane DATABASE_URL or a SQLite path. Build with the normal pipeline, then configure:
 
 ```text
 PORT=8080

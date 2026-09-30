@@ -440,7 +440,7 @@ test("unknown writes retain a lease, no new-key replay, read-only reconciliation
       "succeeded",
     );
     assert.equal(
-      (await t.store.db.prepare("SELECT COUNT(*) AS n FROM leases").get())!.n,
+      Number((await t.store.db.prepare("SELECT COUNT(*) AS n FROM leases").get())!.n),
       0,
     );
   } finally {

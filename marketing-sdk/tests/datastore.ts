@@ -1,8 +1,11 @@
 import mysql from "mysql2/promise";
+import pg from "pg";
 import { resolve } from "node:path";
 import { Store, byteDigest, requireThat } from "../server/store.js";
 /** The MariaDB runner owns a fresh socket-only server. Never consume MYSQL_* or DATABASE_URL in tests. */
 export async function testStore(path: string) {
+  const postgres = await postgresOptions(path);
+  if (postgres) return Store.postgres(postgres);
   const socket = process.env.MARKETING_TEST_MARIADB_SOCKET;
   if (!socket) return new Store(path);
   const root = process.env.MARKETING_TEST_MARIADB_ROOT;
@@ -29,4 +32,20 @@ export async function testStore(path: string) {
     await connection.end();
   }
   return Store.maria({ ...options, database });
+}
+/** Verify the disposable server identity before creating a private schema. */
+export async function postgresOptions(path: string) {
+  const socket = process.env.MARKETING_TEST_POSTGRES_SOCKET;
+  if (!socket) return null;
+  const root = process.env.MARKETING_TEST_POSTGRES_ROOT;
+  requireThat(root && resolve(root) === resolve(socket), "private_test_socket_required");
+  const options = { host: socket, user: "marketing_test", database: "postgres", port: 5432, ssl: false, password: () => "",
+    schema: `marketing_test_${byteDigest(Buffer.from(path)).slice(0, 24)}` };
+  const c = new pg.Client(options);
+  await c.connect();
+  try {
+    const { rows } = await c.query("SELECT current_setting('data_directory') AS dir, current_setting('listen_addresses') AS listen");
+    requireThat(resolve(rows[0].dir) === resolve(root, "data") && rows[0].listen === "", "private_test_database_identity_mismatch");
+  } finally { await c.end(); }
+  return options;
 }

@@ -4,7 +4,7 @@ The lockfile records the exact dependency versions and integrity values. No
 third-party implementation is vendored. npm installs each dependency with its
 own license files, which must remain with redistributed dependency copies.
 
-Direct runtime dependencies: mysql2 (MIT), openai (Apache-2.0), sharp
+Direct runtime dependencies: mysql2 and pg (MIT), pg type declarations (MIT), openai (Apache-2.0), sharp
 (Apache-2.0), React and React DOM (MIT). sharp's platform libvips distributions
 include additional dependency notices and LGPL-3.0-or-later terms; retain those
 notices and applicable replacement/relinking rights when distributing binaries.

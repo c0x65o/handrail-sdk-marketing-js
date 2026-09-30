@@ -1,7 +1,10 @@
 # Session schema 2
 
 Opening a Store applies schema 1 then additive migration 2 under the existing
-MariaDB schema lock (SQLite uses a transaction). MariaDB steps are idempotent
+MariaDB schema lock (SQLite uses a transaction). PostgreSQL uses a schema-scoped
+transaction advisory lock and transactional DDL, with its own schema 1 and
+`002-sessions.postgres.sql`; both fresh initialization and upgrades roll back
+atomically on failure. MariaDB steps are idempotent
 because DDL commits implicitly; the migration marker is written last. Back up
 before host upgrades. Stop the old executor, migrate with the new package, and
 start only the new executor. Do not run old code after migration: old positional
@@ -28,7 +31,7 @@ After inspecting the actual environment schema, map Known Users to these views:
 | Session table | marketing_known_sessions |
 | Digest / transform | token_hash / sha256 |
 | User foreign key | user_id |
-| Expiration | expires_at (MariaDB UTC DATETIME(6), SQLite ISO-8601; milliseconds preserved) |
+| Expiration | expires_at (PostgreSQL timestamptz, MariaDB UTC DATETIME(6), SQLite ISO-8601; milliseconds preserved) |
 | Revocation | revoked_at; no second boolean mapping |
 
 The session view excludes expired rows using the database clock, so a reader with

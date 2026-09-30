@@ -1,6 +1,13 @@
 import { Store, requireThat } from "../server/store.js";
-/** Only Handrail-generated app MYSQL_* bindings. No DATABASE_URL/control-plane fallback. */
+/** Explicit backend selection; bind only the application's declared resource. */
 export async function openDatastore(env: NodeJS.ProcessEnv = process.env) {
+  if (env.MARKETING_DATASTORE === "postgres") {
+    requireThat(env.MARKETING_DATABASE_URL, "marketing_postgres_environment_required");
+    const url = new URL(env.MARKETING_DATABASE_URL);
+    requireThat(["postgres:", "postgresql:"].includes(url.protocol), "invalid_postgres_url");
+    return Store.postgres({ connectionString: env.MARKETING_DATABASE_URL,
+      schema: env.MARKETING_POSTGRES_SCHEMA || "marketing" });
+  }
   requireThat(
     env.MARKETING_DATASTORE === "isolated-mariadb",
     "isolated_marketing_datastore_required",

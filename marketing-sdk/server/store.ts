@@ -1,5 +1,6 @@
 import { Database } from "./database.js";
 import type { PoolOptions } from "mysql2/promise";
+import type { PoolConfig } from "pg";
 import {
   createHash,
   randomBytes,
@@ -40,6 +41,9 @@ export class Store {
   static async maria(options: PoolOptions) {
     return new Store(await Database.maria(options));
   }
+  static async postgres(options: PoolConfig & { schema?: string }) {
+    return new Store(await Database.postgres(options));
+  }
   async close() {
     await this.db.close();
   }
@@ -59,7 +63,7 @@ export class Store {
     return (
       await this.db
         .prepare(
-          `SELECT body FROM records WHERE project_id=? AND kind=? ORDER BY ${this.db.dialect === "mariadb" ? "sequence" : "rowid"}`,
+          `SELECT body FROM records WHERE project_id=? AND kind=? ORDER BY ${this.db.dialect === "sqlite" ? "rowid" : "sequence"}`,
         )
         .all(project, kind)
     ).map((row) => JSON.parse(String(row.body)) as T);
@@ -155,6 +159,31 @@ export class Store {
       );
     return userId;
   }
+  /** Trusted host authentication bridge, never accept these fields from a client.
+   * issuer/subject are stable verified identity IDs; role is the host's CURRENT
+   * membership in this project (null removes it). No SDK password is created. */
+  async bindExternalPrincipal(
+    project: string,
+    identity: { issuer: string; subject: string; kind?: "human" | "agent" },
+    role: Role | null,
+  ): Promise<Principal> {
+    requireThat(identity && [identity.issuer, identity.subject].every(v =>
+      typeof v === "string" && v.trim().length > 0 && v.length <= 500), "invalid_external_identity", 422);
+    const kind = identity.kind ?? "human";
+    requireThat(kind === "human" || kind === "agent", "invalid_identity_kind", 422);
+    requireThat(role === null || ["admin", "editor", "approver", "analyst", "sales", "collector"].includes(role), "invalid_role", 422);
+    const userId = `external:${digest([identity.issuer, identity.subject])}`;
+    return this.transaction(async () => {
+      const old = await this.db.prepare("SELECT password_hash,kind FROM users WHERE id=?").get(userId);
+      if (old) requireThat(old.password_hash === "" && old.kind === kind, "external_identity_conflict");
+      else await this.db.prepare("INSERT INTO users(id,login,password_hash,kind) VALUES(?,?,?,?)")
+        .run(userId, userId, "", kind);
+      // Delete/insert is atomic under the store guard and portable across backends.
+      await this.db.prepare("DELETE FROM memberships WHERE user_id=? AND project_id=?").run(userId, project);
+      if (role !== null) await this.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(userId, project, role);
+      return { userId };
+    });
+  }
   async login(login: string, password: string, ip: string, now = Date.now()) {
     return await this.transaction(async () => {
       await this.db
@@ -176,7 +205,7 @@ export class Store {
       const [salt, hash] = String(row?.password_hash || "absent:").split(":");
       const calculated = scryptSync(password, salt!, 64);
       const expected = hash ? Buffer.from(hash, "hex") : Buffer.alloc(64);
-      if (!row || row.disabled || !timingSafeEqual(calculated, expected))
+      if (!row || !row.password_hash || row.disabled || !timingSafeEqual(calculated, expected))
         return null;
       const token = randomBytes(32).toString("base64url");
       await this.db

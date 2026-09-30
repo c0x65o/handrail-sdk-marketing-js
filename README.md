@@ -36,12 +36,24 @@ human material approval before provider effects, with durable idempotency and
 unknown-effect reconciliation. Revocation does not undo completed effects.
 
 For local source development: `npm ci`, `npm run typecheck`, `npm test` (SQLite),
-`npm run test:mariadb`, then `npm run test:browser:mariadb`. The MariaDB runner uses
+`npm run test:postgres`, `npm run test:mariadb`, then `npm run test:browser:mariadb`. The MariaDB runner uses
 one test worker, a fresh socket-only database and a 64 MiB buffer. It requires
 `mariadbd` and `mariadb-install-db`; browser tests additionally require Chromium
 (`MARKETING_CHROMIUM_PATH` optional). Video validation uses ffmpeg/ffprobe.
 `TMPDIR` must be writable and short enough for a Unix socket. All provider tests
 use fixtures or intercepted HTTP; these checks do not establish deployed readiness.
+
+PostgreSQL is supported through `Store.postgres({ connectionString, schema })`.
+The PostgreSQL runner uses a fresh socket-only cluster, private schemas and one
+test worker; it requires `initdb`/`pg_ctl` (`pg_config --bindir`, or
+`MARKETING_TEST_POSTGRES_BIN`). Neither database runner reads ambient application
+credentials. SQLite and MariaDB remain supported.
+
+`MarketingServer.unconnected(store)` provides real local draft persistence with
+no provider/generation capabilities or credentials. Use `saveDraft` and `workspace.drafts`;
+existing `saveCampaign` retains its account/material checks. See
+[PostgreSQL and draft integration](marketing-sdk/DRAFTS.md) for host authentication,
+retry/edit semantics and consumer wiring.
 
 See [host integration](marketing-sdk/README.md) and
 [session migration and mapping](marketing-sdk/server/migrations/README.md).
