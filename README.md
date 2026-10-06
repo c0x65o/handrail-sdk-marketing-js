@@ -43,11 +43,18 @@ one test worker, a fresh socket-only database and a 64 MiB buffer. It requires
 `TMPDIR` must be writable and short enough for a Unix socket. All provider tests
 use fixtures or intercepted HTTP; these checks do not establish deployed readiness.
 
-PostgreSQL is supported through `Store.postgres({ connectionString, schema })`.
+For migration-free PostgreSQL host startup, use
+`Store.openExistingPostgres({ connectionString, schema })`. It validates schema 2
+and fails closed without DDL. `Store.migratePostgres(options)` is the separate
+trusted migration step. Legacy `Store.postgres(options)` still connects and
+migrates for compatibility; do not use it for restricted ordinary host startup.
 The PostgreSQL runner uses a fresh socket-only cluster, private schemas and one
 test worker; it requires `initdb`/`pg_ctl` (`pg_config --bindir`, or
 `MARKETING_TEST_POSTGRES_BIN`). Neither database runner reads ambient application
-credentials. SQLite and MariaDB remain supported.
+credentials. Run the same browser app fixture on PostgreSQL with
+`node marketing-sdk/tests/postgres-runner.mjs --browser` after building; it uses
+the same installed Playwright Chromium and supports `MARKETING_CHROMIUM_PATH`.
+SQLite and MariaDB remain supported; a PostgreSQL pass does not qualify MariaDB.
 
 `MarketingServer.unconnected(store)` provides real local draft persistence with
 no provider/generation capabilities or credentials. Use `saveDraft` and `workspace.drafts`;
@@ -61,3 +68,6 @@ See [readiness and consumer qualification](marketing-sdk/READINESS.md) for media
 limits, dependency verification, strict consumer checks and the release handoff.
 Existing rights are reserved; see [RIGHTS.md](RIGHTS.md) and
 [third-party notices](THIRD_PARTY_NOTICES.md).
+
+See [parity foundation and staged migration](marketing-sdk/PARITY_ROADMAP.md) for
+explicit daily/lifetime budgets, reporting semantics, host contracts and cutover gates.

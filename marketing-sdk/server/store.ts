@@ -1,6 +1,6 @@
-import { Database } from "./database.js";
+import { Database, type PostgresStoreOptions } from "./database.js";
+export { POSTGRES_SCHEMA_VERSION, type PostgresStoreOptions } from "./database.js";
 import type { PoolOptions } from "mysql2/promise";
-import type { PoolConfig } from "pg";
 import {
   createHash,
   randomBytes,
@@ -41,8 +41,16 @@ export class Store {
   static async maria(options: PoolOptions) {
     return new Store(await Database.maria(options));
   }
-  static async postgres(options: PoolConfig & { schema?: string }) {
+  static async postgres(options: PostgresStoreOptions) {
     return new Store(await Database.postgres(options));
+  }
+  /** Explicit migration-free runtime initialization; rejects missing/outdated schema. */
+  static async openExistingPostgres(options: PostgresStoreOptions): Promise<Store> {
+    return new Store(await Database.openExistingPostgres(options));
+  }
+  /** Trusted migration credentials only. Never call from ordinary host startup. */
+  static async migratePostgres(options: PostgresStoreOptions): Promise<void> {
+    await Database.migratePostgres(options);
   }
   async close() {
     await this.db.close();

@@ -227,3 +227,110 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     });
   }
 });
+
+test("LinkedIn fixture transport verifies initial daily budget, bid, objective/type, organization and account; lost acknowledgment is read-only reconciled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "linkedin-parity-")), store = await testStore(join(dir, "db"));
+  try {
+    await store.db.prepare("INSERT INTO projects VALUES(?,?)").run("p", "fixture");
+    const bytes = readFileSync(new URL("../../marketing-sdk/tests/fixtures/test-pattern.png", import.meta.url));
+    const hash = byteDigest(bytes);
+    await store.db.prepare("INSERT INTO blobs VALUES(?,?,?)").run("p", hash, bytes);
+    const asset: Asset = { id: "a", projectId: "p", campaignId: "c", version: 1, kind: "image", digest: hash, mime: "image/png", width: 320, height: 180,
+      seconds: null, source: "uploaded", jobId: null, rightsReceipt: "fixture", parentAssetIds: [] };
+    await store.put("p", "asset", asset.id, asset);
+    const grant: Grant = { id: "g", projectId: "p", provider: "linkedin", revision: 1, accountId: "123", label: "Fixture transport", currency: "USD",
+      timezone: "America/Chicago", permissions: ["setup", "prepare", "activate", "pause", "report"], expiresAt: "2099-01-01T00:00:00Z", revokedAt: null,
+      secretRef: "fixture", organizationId: "42" };
+    const c: Campaign = { id: "c", projectId: "p", revision: 1, grantId: "g", creativeSetId: "cs", state: "draft", receipt: null,
+      material: { name: "Fixture", headline: "Headline", body: "Body", destination: "https://example.com/kit", destinationDigest: "a".repeat(64), assetIds: ["a"],
+        audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false }, budget: { currency: "USD", minor: 42000 },
+        advertisingBudget: { lifetime: { currency: "USD", minor: 42000 }, daily: { currency: "USD", minor: 3000 } },
+        startAt: "2026-10-08T05:00:00Z", endAt: "2026-10-15T05:00:00Z", timezone: "America/Chicago" } };
+    let objects = new Map<string, any>(), writes = 0, loseRead = false, drift: ((o: any, collection: string) => void) | null = null;
+    const fetcher: typeof fetch = async (raw, init) => {
+      const url = new URL(String(raw)), path = decodeURIComponent(url.pathname), last = path.split("/").at(-1)!;
+      if (init?.method === "PUT") { writes++; return new Response(null, { status: 201 }); }
+      if (init?.method === "POST") {
+        writes++;
+        const body = JSON.parse(String(init.body));
+        if (last === "images") return Response.json({ value: { uploadUrl: "https://fixture.invalid/upload", image: "urn:li:image:fixture" } });
+        if (objects.has(last)) {
+          Object.assign(objects.get(last), body.patch.$set);
+          return new Response(null, { status: 204 });
+        }
+        const id = last === "adCampaignGroups" ? "101" : last === "adCampaigns" ? "102" : "urn:li:sponsoredCreative:103";
+        objects.set(id, { ...(body.creative ?? body), id });
+        drift?.(objects.get(id), last);
+        return Response.json({}, { status: 201, headers: { "x-restli-id": id } });
+      }
+      if (path.includes("/images/")) return Response.json({ status: "AVAILABLE" });
+      if (loseRead && last === "urn:li:sponsoredCreative:103") { loseRead = false; throw new Error("lost acknowledgment fixture"); }
+      assert.ok(objects.has(last), `Unexpected fixture request ${path}`);
+      return Response.json(objects.get(last));
+    };
+    const provider = new NativeProvider("linkedin", { use: async (_g, fn) => fn({ accessToken: "fixture-only", clientId: "fixture-client", clientSecret: "fixture-secret" }) }, store, fetcher);
+    await assert.rejects(provider.prepare({ ...c, material: { ...c.material, advertisingBudget: undefined } }, grant, [asset], "legacy", () => {}, () => {}), /explicit_daily_budget/);
+    assert.equal(writes, 0);
+    const mutations = [
+      (o: any) => { o.dailyBudget.amount = "420.00"; },
+      (o: any) => { o.dailyBudget.currencyCode = "EUR"; },
+      (o: any) => { o.unitCost.amount = "1.00"; },
+      (o: any) => { o.unitCost.currencyCode = "EUR"; },
+      (o: any) => { o.objectiveType = "LEAD_GENERATION"; },
+      (o: any) => { o.type = "TEXT_AD"; },
+      (o: any) => { o.format = "SPONSORED_UPDATE_NATIVE_DOCUMENT"; },
+      (o: any) => { o.costType = "CPM"; },
+      (o: any) => { o.associatedEntity = "urn:li:organization:999"; },
+      (o: any) => { o.account = "urn:li:sponsoredAccount:999"; },
+    ];
+    for (const mutation of mutations) {
+      objects = new Map(); drift = (o, collection) => { if (collection === "adCampaigns") mutation(o); };
+      await assert.rejects(provider.prepare(c, grant, [asset], "initial-drift", () => {}, () => {}), /provider_effective_material_mismatch/);
+    }
+    for (const mutation of [
+      (o: any) => { o.account = "urn:li:sponsoredAccount:999"; },
+      (o: any) => { o.totalBudget.amount = "999.00"; },
+      (o: any) => { o.totalBudget.currencyCode = "EUR"; },
+    ]) {
+      objects = new Map(); drift = (o, collection) => { if (collection === "adCampaignGroups") mutation(o); };
+      await assert.rejects(provider.prepare(c, grant, [asset], "group-drift", () => {}, () => {}), /provider_effective_material_mismatch/);
+    }
+    objects = new Map(); drift = null; loseRead = true;
+    let ids: Record<string, string> = {};
+    await assert.rejects(provider.prepare(c, grant, [asset], "lost-ack", value => { ids = { ...value }; }, () => {}));
+    assert.ok(ids.campaign && ids.creative);
+    const writeCount = writes;
+    const { digest } = await import("../server/store.js");
+    const payloadDigest = digest(provider.plan(c, grant, [asset]));
+    const operation = { kind: "prepare", payloadDigest, receipt: { ids, payloadDigest, intent: "paused" as const, delivery: "unverified" as const,
+      observedAt: new Date().toISOString(), evidence: "provider" as const, providerRequestId: null } };
+    const receipt = await provider.reconcile(c, grant, operation);
+    assert.equal(writes, writeCount);
+    assert.ok(receipt?.ids.readbackDigest);
+    assert.equal(receipt.delivery, "unverified");
+    const paused = { ...c, state: "paused" as const, receipt };
+    objects.get("102").dailyBudget.amount = "31.00";
+    await assert.rejects(provider.activate(paused, grant, () => {}), /external_material_changed/);
+    assert.equal(writes, writeCount);
+    objects.get("102").dailyBudget.amount = "30.00";
+    const enabled = await provider.activate(paused, grant, () => {});
+    assert.equal(enabled.intent, "enabled");
+    const againPaused = await provider.pause({ ...paused, state: "enabled", receipt: enabled }, grant, () => {});
+    assert.equal((await provider.activate({ ...paused, receipt: againPaused }, grant, () => {})).intent, "enabled");
+    // Old receipt digests used the v1 field set. Adding readback fields must not
+    // strand a safety pause or rewrite the original campaign material.
+    const pick = (o: any, fields: string[]) => Object.fromEntries(fields.map(f => [f, o[f]]));
+    const legacyMaterial = {
+      group: pick(objects.get("101"), ["totalBudget", "runSchedule"]),
+      campaign: pick(objects.get("102"), ["account", "campaignGroup", "associatedEntity", "targetingCriteria", "dailyBudget", "runSchedule",
+        "audienceExpansionEnabled", "offsiteDeliveryEnabled", "unitCost", "objectiveType", "type"]),
+      creative: pick(objects.get("urn:li:sponsoredCreative:103"), ["campaign", "content"]),
+      post: pick(objects.get("urn:li:sponsoredCreative:103").inlineContent.post, ["author", "commentary", "content", "contentLandingPage", "contentCallToActionLabel", "distribution"]),
+    };
+    const { readbackVersion: _version, ...legacyIds } = receipt.ids;
+    const legacy = { ...c, state: "enabled" as const, material: { ...c.material, advertisingBudget: undefined },
+      receipt: { ...receipt, ids: { ...legacyIds, readbackDigest: digest(legacyMaterial) } } };
+    assert.equal((await provider.pause(legacy, grant, () => {})).intent, "paused");
+    await assert.rejects(provider.activate(legacy, grant, () => {}), /explicit_daily_budget_required/);
+  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

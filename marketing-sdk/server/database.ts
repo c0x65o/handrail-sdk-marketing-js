@@ -10,6 +10,8 @@ import mysql, {
   type RowDataPacket,
   type ResultSetHeader,
 } from "mysql2/promise";
+export type PostgresStoreOptions = PoolConfig & { schema?: string };
+export const POSTGRES_SCHEMA_VERSION = 2;
 type Row = Record<string, unknown>;
 type Context = {
   connection?: PoolConnection;
@@ -119,7 +121,19 @@ export class Database {
     return db;
   }
   /** Each SDK installation owns one schema in the consumer's declared database. */
-  static async postgres(options: PoolConfig & { schema?: string }): Promise<Database> {
+  static async postgres(options: PostgresStoreOptions): Promise<Database> {
+    return this.connectPostgres(options, true);
+  }
+  /** Runtime startup: SELECT/SET only; never creates or repairs schema objects. */
+  static async openExistingPostgres(options: PostgresStoreOptions): Promise<Database> {
+    return this.connectPostgres(options, false);
+  }
+  /** Trusted deployment step, separate from runtime startup. Idempotent and atomic. */
+  static async migratePostgres(options: PostgresStoreOptions): Promise<void> {
+    const db = await this.connectPostgres(options, true);
+    await db.close();
+  }
+  private static async connectPostgres(options: PostgresStoreOptions, migrate: boolean): Promise<Database> {
     const { schema = "marketing", ...config } = options;
     if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema) || schema === "public" || schema.startsWith("pg_"))
       throw new Error("invalid_marketing_schema");
@@ -146,12 +160,21 @@ export class Database {
     let c: PoolClient | undefined;
     try {
       c = await db.postgres.connect();
-      await c.query("BEGIN");
-      await c.query("SELECT pg_advisory_xact_lock(1296782404, hashtext($1))", [schema]);
-      await c.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
-      await c.query(readFileSync(new URL("../../marketing-sdk/server/schema.postgres.sql", import.meta.url), "utf8"));
-      if (!(await c.query("SELECT version FROM migrations WHERE version=2")).rowCount)
-        await c.query(readFileSync(new URL("../../marketing-sdk/server/migrations/002-sessions.postgres.sql", import.meta.url), "utf8"));
+      await c.query(migrate ? "BEGIN" : "BEGIN READ ONLY");
+      if (migrate) {
+        await c.query("SELECT pg_advisory_xact_lock(1296782404, hashtext($1))", [schema]);
+        const existing = await c.query("SELECT to_regclass($1) AS table_name", [`"${schema}".migrations`]);
+        if (existing.rows[0].table_name) {
+          const versions = (await c.query("SELECT version FROM migrations ORDER BY version")).rows.map(r => r.version);
+          if (JSON.stringify(versions) !== "[1]" && JSON.stringify(versions) !== "[1,2]")
+            throw new Error("marketing_schema_version_mismatch");
+        }
+        await c.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+        await c.query(readFileSync(new URL("../../marketing-sdk/server/schema.postgres.sql", import.meta.url), "utf8"));
+        if (!(await c.query("SELECT version FROM migrations WHERE version=2")).rowCount)
+          await c.query(readFileSync(new URL("../../marketing-sdk/server/migrations/002-sessions.postgres.sql", import.meta.url), "utf8"));
+      }
+      await this.validatePostgresSchema(c, schema);
       await c.query("COMMIT");
     } catch (error) {
       await c?.query("ROLLBACK").catch(() => {});
@@ -161,6 +184,60 @@ export class Database {
       throw error;
     } finally { c?.release(); }
     return db;
+  }
+  private static async validatePostgresSchema(c: PoolClient, schema: string) {
+    const exists = await c.query("SELECT to_regclass($1) AS table_name", [`"${schema}".migrations`]);
+    if (!exists.rows[0].table_name) throw new Error("marketing_schema_missing");
+    const versions = (await c.query(`SELECT version FROM "${schema}".migrations ORDER BY version`)).rows.map(r => r.version);
+    if (JSON.stringify(versions) !== "[1,2]") throw new Error("marketing_schema_version_mismatch");
+    // Validate the actual required columns/types, not just a caller-written version marker.
+    const expected: Record<string, string> = {
+      migrations: "version:int4",
+      transaction_guard: "id:int4",
+      projects: "id:text name:text",
+      users: "id:text login:text password_hash:text kind:text disabled:int4",
+      memberships: "user_id:text project_id:text role:text",
+      sessions: "token_hash:text user_id:text expires_at:int8 revoked_at:text",
+      auth_attempts: "ip:text at:int8",
+      records: "sequence:int8 project_id:text kind:text id:text revision:int4 body:text",
+      requests: "project_id:text request_key:text digest:text kind:text record_id:text",
+      blobs: "project_id:text digest:text bytes:bytea",
+      outbox: "cursor:int8 project_id:text aggregate_id:text type:text body:text created_at:text",
+      leases: "project_id:text account_id:text operation_id:text",
+      marketing_known_users: "id:text display_name:text disabled:int4",
+      marketing_known_sessions: "token_hash:text user_id:text expires_at:timestamptz revoked_at:text",
+    };
+    const { rows } = await c.query(`SELECT c.relname, c.relkind, a.attname, t.typname
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
+      JOIN pg_catalog.pg_type t ON t.oid=a.atttypid
+      WHERE n.nspname=$1 AND a.attnum>0 AND NOT a.attisdropped`, [schema]);
+    for (const [table, columns] of Object.entries(expected)) {
+      const kind = table.startsWith("marketing_known_") ? "v" : "r";
+      for (const column of columns.split(" ")) {
+        const [name, type] = column.split(":");
+        if (!rows.some(r => r.relname === table && r.relkind === kind && r.attname === name && r.typname === type))
+          throw new Error(`marketing_schema_invalid:${table}.${name}`);
+      }
+      // Check runtime SELECT permissions too, without reading private rows.
+      await c.query(`SELECT ${columns.split(" ").map(v => `"${v.split(":")[0]}"`).join(",")} FROM "${schema}"."${table}" LIMIT 0`);
+    }
+    const requiredKeys: Record<string, string> = {
+      migrations: "version", transaction_guard: "id", projects: "id", users: "id",
+      memberships: "user_id,project_id", sessions: "token_hash", records: "project_id,kind,id",
+      requests: "project_id,request_key", blobs: "project_id,digest", outbox: "cursor", leases: "project_id,account_id",
+    };
+    const keys = (await c.query(`SELECT c.relname, string_agg(a.attname, ',' ORDER BY k.ordinality) AS columns
+      FROM pg_catalog.pg_constraint p JOIN pg_catalog.pg_class c ON c.oid=p.conrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      CROSS JOIN LATERAL unnest(p.conkey) WITH ORDINALITY k(attnum, ordinality)
+      JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
+      WHERE n.nspname=$1 AND p.contype='p' GROUP BY c.relname`, [schema])).rows;
+    for (const [table, columns] of Object.entries(requiredKeys))
+      if (!keys.some(r => r.relname === table && r.columns === columns))
+        throw new Error(`marketing_schema_invalid:${table}.primary_key`);
+    const guard = await c.query(`SELECT id FROM "${schema}".transaction_guard ORDER BY id`);
+    if (JSON.stringify(guard.rows) !== '[{"id":1}]') throw new Error("marketing_schema_guard_missing");
   }
   // SDK SQL uses positional ? binds. Preserve quoted text/identifiers/comments;
   // PostgreSQL-native $n binds are also accepted by trusted host code.

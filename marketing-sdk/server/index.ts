@@ -6,3 +6,5 @@ export * from "./agent.js";
 export * from "./generation.js";
 export * from "./billing.js";
 export * from "../support/vault-crypto.js";
+export * from "./budgets.js";
+export * from "./reporting.js";

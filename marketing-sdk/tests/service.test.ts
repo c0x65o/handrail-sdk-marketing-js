@@ -20,6 +20,9 @@ import type {
   Operation,
   Setup,
 } from "../core/index.js";
+import { defaultCampaignSchedule } from "../react/schedule.js";
+import { localDate } from "../server/reporting.js";
+import type { AdvertisingBudgetPolicy, AdvertisingBudgetReservation } from "../server/budgets.js";
 import { inspectMedia } from "../server/generation.js";
 import { createHost } from "../reference/host.js";
 import { createMarketingClient } from "../core/index.js";
@@ -712,6 +715,8 @@ test("reporting: completed form counts once without qualification, dedupe, disti
     const before = await t.service.results(t.admin, "qa-alpha", input);
     assert.equal(before.spendMinor.value, null);
     assert.equal(before.leads.value, 1);
+    assert.equal(before.completedSubmissions?.value, 2);
+    assert.equal(before.uniquePeople?.value, 1);
     assert.equal(before.qualified.value, 0);
     await t.service.syncMetrics(t.admin, "qa-alpha", input);
     const report = await t.service.results(t.analyst, "qa-alpha", input);
@@ -732,7 +737,7 @@ test("reporting: completed form counts once without qualification, dedupe, disti
           personId: "different",
           projectId: undefined,
         } as never),
-      /attribution_identity_mismatch/,
+      /source_event_payload_conflict/,
     );
     assert.ok(!("car" in report));
   } finally {
@@ -863,15 +868,19 @@ test("authentication policy: any password complexity, 10 requests/60 seconds, fa
     await t.close();
   }
 });
-test("actual process death after external effect: same operation reconciles without another write", async () => {
+for (const phase of ["prepare", "activate"] as const)
+ test(`actual process death after ${phase}: same effect reconciles without replay and budget holds survive`, async () => {
   const t = await setupTest();
   try {
-    await ready(t);
-    const c = await campaign(t);
-    const operation = await t.service.prepare(t.admin, "qa-alpha", {
-      campaignId: c.id,
-      requestKey: "process-crash",
-    });
+    let operation: Operation;
+    if (phase === "activate") {
+      const { input } = await budgeted(t);
+      operation = await t.service.execute(t.admin, "qa-alpha", input);
+    } else {
+      await ready(t);
+      const c = await campaign(t);
+      operation = await t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "process-crash" });
+    }
     await t.store.close();
     const child = spawn(
       process.execPath,
@@ -883,13 +892,14 @@ test("actual process death after external effect: same operation reconciles with
       import { MarketingServer } from './.marketing-build/server/service.js';
       import { FixtureProvider,FixtureGeneration,FixtureAgent } from './.marketing-build/server/fixtures.js';
       const store=await testStore(process.argv[1]);await store.db.acquireExecutor();const provider=new FixtureProvider(store);
-      const prepare=provider.prepare.bind(provider);
-      provider.prepare=async(...args)=>{await prepare(...args);process.stdout.write('effect-retained\\n');await new Promise(()=>{});};
+      const phase=process.argv[3], effect=provider[phase].bind(provider);
+      provider[phase]=async(...args)=>{await effect(...args);process.stdout.write('effect-retained\\n');await new Promise(()=>{});};
       const service=new MarketingServer(store,{meta:provider,google:provider,linkedin:provider},new FixtureGeneration(),new FixtureAgent(store),'fixture');
       setInterval(()=>{},1000);await service.dispatch('qa-alpha',process.argv[2]);
     `,
         t.path,
         operation.id,
+        phase,
       ],
       {
         stdio: ["ignore", "pipe", "pipe"],
@@ -918,6 +928,7 @@ test("actual process death after external effect: same operation reconciles with
         .state,
       "unknown",
     );
+    if (phase === "activate") assert.equal((await t.store.list<AdvertisingBudgetReservation>("qa-alpha", "advertisingBudgetReservation"))[0]!.state, "held");
     assert.equal(
       (
         await t.service.reconcile(t.admin, "qa-alpha", {
@@ -927,6 +938,7 @@ test("actual process death after external effect: same operation reconciles with
       "succeeded",
     );
     assert.equal((await t.store.list("qa-alpha", "fixtureEffect")).length, 1);
+    if (phase === "activate") assert.equal((await t.store.list<AdvertisingBudgetReservation>("qa-alpha", "advertisingBudgetReservation"))[0]!.state, "active");
   } finally {
     await t.close();
   }
@@ -962,6 +974,17 @@ for (const provider of ["google", "linkedin"] as const)
             }
           : {}),
       };
+      if (provider === "linkedin") {
+        m.advertisingBudget = { lifetime: m.budget, daily: { currency: "USD", minor: 600 } };
+        const year = new Date(time).getUTCFullYear();
+        const from = `${year}-01-01T06:00:00Z`, until = `${year + 1}-01-01T06:00:00Z`;
+        await t.service.advertisingBudgets.configure({ id: "project-budget", projectId: "qa-alpha", scope: "project", projectIds: ["qa-alpha"],
+          currency: "USD", timezone: m.timezone, from, until, dailyCeilingMinor: 10000, periodCeilingMinor: 100000,
+          campaignDailyCeilingMinor: 1000, campaignLifetimeCeilingMinor: 10000, maxObservationAgeMs: 60000 });
+        await t.service.advertisingBudgets.observe("qa-alpha", { policyId: "project-budget", from, until,
+          day: new Intl.DateTimeFormat("sv-SE", { timeZone: m.timezone }).format(time), currency: "USD", timezone: m.timezone,
+          observedAt: new Date(time).toISOString(), todayMinor: 0, periodMinor: 0, source: "fixture", receipt: "fixture-spend" });
+      }
       let c = await t.service.saveCampaign(t.admin, "qa-alpha", {
         grantId: `${provider}-qa`,
         material: m,
@@ -1007,10 +1030,28 @@ for (const provider of ["google", "linkedin"] as const)
         digest: packet.digest,
         requestKey: "launch",
       });
-      assert.equal(
-        (await t.service.dispatch("qa-alpha", launch.id)).receipt?.intent,
-        "enabled",
-      );
+      if (provider === "linkedin") {
+        t.provider.loseNextResponse = true;
+        assert.equal((await t.service.dispatch("qa-alpha", launch.id)).state, "unknown");
+        const rows = () => t.store.list<import("../server/budgets.js").AdvertisingBudgetReservation>("qa-alpha", "advertisingBudgetReservation");
+        assert.equal((await rows())[0]?.state, "held");
+        await assert.rejects(t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "unknown-pause" }), /requires_reconciliation/);
+        const saved = await t.store.get<Campaign>("qa-alpha", "campaign", c.id);
+        await t.store.put("qa-alpha", "campaign", c.id, { ...saved, revision: saved.revision + 1 });
+        await assert.rejects(t.service.reconcile(t.admin, "qa-alpha", { operationId: launch.id }), /reconciliation_material_changed/);
+        assert.equal((await rows())[0]?.state, "held");
+        await t.store.put("qa-alpha", "campaign", c.id, saved);
+        assert.equal((await t.service.reconcile(t.admin, "qa-alpha", { operationId: launch.id })).state, "succeeded");
+        assert.equal((await rows())[0]?.state, "active");
+        const pause = await t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "observed-pause" });
+        await t.service.dispatch("qa-alpha", pause.id);
+        assert.equal((await rows())[0]?.state, "released");
+        const nextPacket = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
+        await t.service.decide(t.admin, "qa-alpha", { packetId: nextPacket.id, digest: nextPacket.digest, decision: "approved" });
+        const next = await t.service.execute(t.admin, "qa-alpha", { packetId: nextPacket.id, digest: nextPacket.digest, requestKey: "reactivate" });
+        assert.equal((await t.service.dispatch("qa-alpha", next.id)).state, "succeeded");
+        assert.equal((await rows())[0]?.state, "active");
+      } else assert.equal((await t.service.dispatch("qa-alpha", launch.id)).receipt?.intent, "enabled");
     } finally {
       await t.close();
     }
@@ -1045,4 +1086,218 @@ test("concurrent duplicate requests and claims commit one operation and one prov
   } finally {
     await t.close();
   }
+});
+
+test("activation can repeat after an observed pause without changing material or creative identity", async () => {
+  const t = await setupTest();
+  try {
+    const c = await prepared(t);
+    let previous = "";
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
+      await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
+      const input = { packetId: packet.id, digest: packet.digest, requestKey: `activate-cycle-${cycle}` };
+      const op = await t.service.execute(t.admin, "qa-alpha", input);
+      assert.notEqual(op.id, previous); previous = op.id;
+      assert.equal((await t.service.dispatch("qa-alpha", op.id)).state, "succeeded");
+      assert.equal((await t.service.execute(t.admin, "qa-alpha", input)).id, op.id);
+      const pause = await t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: `pause-cycle-${cycle}` });
+      assert.equal((await t.service.dispatch("qa-alpha", pause.id)).state, "succeeded");
+      const current = await t.store.get<Campaign>("qa-alpha", "campaign", c.id);
+      assert.equal(current.revision, c.revision);
+      assert.equal(current.creativeSetId, c.creativeSetId);
+      assert.deepEqual(current.material, c.material);
+      await assert.rejects(t.service.execute(t.admin, "qa-alpha", { ...input, requestKey: `replay-${cycle}` }), /stale_material|requires_reconciliation/);
+    }
+  } finally { await t.close(); }
+});
+
+test("lost operation lease fences provider writes and keeps the operation unknown", async () => {
+  const t = await setupTest();
+  try {
+    const { c, input } = await budgeted(t);
+    const op = await t.service.execute(t.admin, "qa-alpha", input);
+    let writes = 0;
+    t.provider.activate = async (_c, _g, beforeWrite) => {
+      await t.store.db.prepare("DELETE FROM leases WHERE project_id=?").run("qa-alpha");
+      await beforeWrite(); writes++;
+      throw new Error("must not reach write");
+    };
+    assert.equal((await t.service.dispatch("qa-alpha", op.id)).state, "unknown");
+    assert.equal(writes, 0);
+    assert.equal((await t.store.list<AdvertisingBudgetReservation>("qa-alpha", "advertisingBudgetReservation"))[0]!.state, "held");
+    await assert.rejects(t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "escape" }), /requires_reconciliation/);
+    assert.equal((await t.service.dispatch("qa-alpha", op.id)).state, "unknown");
+  } finally { await t.close(); }
+});
+
+test("trusted source retries preserve attribution; submissions, people, QA and applicant outcomes remain separate", async () => {
+  const t = await setupTest();
+  try {
+    const c = await prepared(t);
+    const common = { personId: "person", consentReceipt: "receipt", revenue: null, occurredAt: new Date(time - 3000).toISOString(), sourceId: "trusted-website" };
+    const click = await t.service.event(t.admin, "qa-alpha", { ...common, id: "original-click", kind: "click", campaignId: c.id, clickId: null, sourceReceipt: "click" });
+    const input = { ...common, id: "submission-1", kind: "form_completed" as const, clickId: click.id, sourceReceipt: "submission-1", occurredAt: new Date(time - 1000).toISOString() };
+    const submission = await t.service.call(t.admin, "qa-alpha", "event", input);
+    await t.service.event(t.admin, "qa-alpha", { ...input, id: "submission-2", sourceReceipt: "submission-2" });
+    // A late-arriving click must not silently reattribute an already accepted submission.
+    await t.service.event(t.admin, "qa-alpha", { ...common, id: "late-click", kind: "click", campaignId: c.id, clickId: null, sourceReceipt: "late-click", occurredAt: new Date(time - 2000).toISOString() });
+    const retries = await Promise.all([t.service.event(t.admin, "qa-alpha", { ...input, id: "retry-1" }), t.service.event(t.admin, "qa-alpha", { ...input, id: "retry-2" })]);
+    assert.ok(retries.every(e => e.id === submission.id && e.campaignId === submission.campaignId));
+    await assert.rejects(t.service.event(t.admin, "qa-alpha", { ...input, id: "changed-retry", test: true }), /source_event_payload_conflict/);
+    await assert.rejects(t.service.event(t.admin, "qa-alpha", { ...input, id: "changed-kind", kind: "purchase" }), /source_event_payload_conflict/);
+    await assert.rejects(t.service.event(t.admin, "qa-alpha", { ...input, id: "changed-person", personId: "someone-else" }), /source_event_payload_conflict/);
+    await t.service.event(t.admin, "qa-alpha", { ...common, id: "qa-click", kind: "click", campaignId: c.id, clickId: null, sourceReceipt: "qa-click", synthetic: true });
+    await t.service.event(t.admin, "qa-alpha", { ...input, id: "qa-form", sourceReceipt: "qa-form", clickId: "qa-click", synthetic: true });
+    await t.service.event(t.admin, "qa-alpha", { ...common, id: "app-click", kind: "click", purpose: "recruitment", campaignId: c.id, clickId: null, sourceReceipt: "app-click" });
+    for (const kind of ["application_completed", "applicant_qualified", "hired"] as const) await t.service.event(t.admin, "qa-alpha", {
+      ...common, id: kind, kind, purpose: "recruitment", clickId: "app-click", sourceReceipt: kind, occurredAt: new Date(time - 1000).toISOString(),
+    });
+    const window = { campaignId: c.id, from: new Date(time - 86400000).toISOString(), until: new Date(time + 1000).toISOString() };
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicants?.value, null);
+    await t.store.put("qa-alpha", "firstPartyCoverage", "recruitment", { from: window.from, until: window.until, purpose: "recruitment" });
+    const results = await t.service.results(t.admin, "qa-alpha", window);
+    assert.equal(results.completedSubmissions?.value, 2);
+    assert.equal(results.uniquePeople?.value, 1);
+    assert.equal(results.leads.value, 1); // Versioned compatibility field.
+    assert.equal(results.applicants?.value, 1);
+    assert.equal(results.qualifiedApplicants?.value, 1);
+    assert.equal(results.hires?.value, 1);
+    assert.equal(results.qualified.value, 0);
+    assert.equal(results.customers.value, 0);
+    assert.equal(results.excludedTestEvents?.value, 2);
+    assert.equal(results.spendMinor.value, null);
+    await t.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind=?").run("qa-alpha", "firstPartyCoverage");
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).completedSubmissions?.value, null);
+    await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { grantId: "meta-qa", material: { ...sampleMaterial(), purpose: "recruitment" } }), /recruitment_provider_unsupported/);
+  } finally { await t.close(); }
+});
+
+test("legacy LinkedIn receipt can still be paused without fabricating daily approval", async () => {
+  const t = await setupTest();
+  try {
+    const base = await campaign(t);
+    const c: Campaign = { id: base.id, projectId: "qa-alpha", revision: 1, grantId: "linkedin-qa", creativeSetId: "original-set", state: "enabled",
+      material: { ...sampleMaterial(), assetIds: base.material.assetIds, audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false } },
+      receipt: { ids: { campaign: "legacy-id" }, payloadDigest: "legacy-plan-digest", intent: "enabled", delivery: "unverified",
+        observedAt: new Date(time).toISOString(), evidence: "fixture", providerRequestId: "original" } };
+    await t.store.put("qa-alpha", "campaign", c.id, c);
+    await t.store.put("qa-alpha", "fixtureEffect", c.id, c.receipt);
+    const operation = await t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "safe-legacy-pause" });
+    assert.equal((await t.service.dispatch("qa-alpha", operation.id)).receipt?.intent, "paused");
+    const saved = await t.store.get<Campaign>("qa-alpha", "campaign", c.id);
+    assert.deepEqual(saved.material, c.material);
+    assert.equal(saved.receipt?.ids.campaign, "legacy-id");
+    await assert.rejects(t.service.packet(t.admin, "qa-alpha", { campaignId: c.id }), /explicit_daily_budget_required/);
+  } finally { await t.close(); }
+});
+
+
+test("imported event IDs and unknown attribution are preserved; legacy source evidence remains immutable", async () => {
+  const t = await setupTest();
+  try {
+    const c = await prepared(t);
+    const input = { id: "imported", kind: "form_completed" as const, personId: "person", consentReceipt: "original-consent",
+      sourceId: "original-source", sourceReceipt: "event-1", occurredAt: new Date(time - 5000).toISOString(), clickId: null, revenue: null };
+    const imported = { ...input, projectId: "qa-alpha", campaignId: null };
+    await t.store.put("qa-alpha", "event", input.id, imported);
+    await assert.rejects(t.service.event(t.admin, "qa-alpha", { ...input, sourceReceipt: "different" }), /source_event_id_conflict/);
+    await assert.rejects(t.service.event(t.admin, "qa-alpha", { ...input, id: "kind-change", kind: "purchase" }), /source_event_payload_conflict/);
+    assert.deepEqual(await t.service.event(t.admin, "qa-alpha", input), imported);
+    assert.deepEqual(await t.store.get("qa-alpha", "event", input.id), imported);
+    // Predecessor's kind-qualified evidence keys continue to freeze original input.
+    const original = { ...input, id: "old-evidence", sourceReceipt: "event-2", campaignId: c.id };
+    const saved = { ...original, projectId: "qa-alpha", campaignId: null };
+    await t.store.put("qa-alpha", "event", original.id, saved);
+    const legacyKey = digest([original.sourceId, original.kind, original.sourceReceipt]);
+    await t.store.put("qa-alpha", "sourceEventEvidence", legacyKey, { id: legacyKey, eventId: original.id, inputDigest: digest({ ...original, id: undefined }) });
+    assert.deepEqual(await t.service.event(t.admin, "qa-alpha", { ...original, id: "retry" }), saved);
+    await assert.rejects(t.service.event(t.admin, "qa-alpha", { ...original, id: "kind-retry", kind: "purchase" }), /source_event_payload_conflict/);
+  } finally { await t.close(); }
+});
+
+
+async function budgeted(t: Awaited<ReturnType<typeof setupTest>>) {
+  await ready(t);
+  const base = await campaign(t);
+  const c = await t.service.saveCampaign(t.admin, "qa-alpha", { id: base.id, expectedRevision: base.revision, grantId: base.grantId,
+    material: { ...base.material, advertisingBudget: { lifetime: base.material.budget, daily: { currency: "USD", minor: 500 } } } });
+  const p: AdvertisingBudgetPolicy = { id: "review-policy", projectId: "qa-alpha", projectIds: ["qa-alpha"], scope: "project",
+    currency: "USD", timezone: c.material.timezone,
+    from: defaultCampaignSchedule(c.material.timezone, new Date(time - 2 * 86400000)).startAt,
+    until: defaultCampaignSchedule(c.material.timezone, new Date(time + 8 * 86400000)).endAt,
+    dailyCeilingMinor: 1000, periodCeilingMinor: 10000, campaignDailyCeilingMinor: 1000,
+    campaignLifetimeCeilingMinor: 5000, maxObservationAgeMs: 60000 };
+  await t.service.advertisingBudgets.configure(p);
+  const observation = { policyId: p.id, from: p.from, until: p.until, day: localDate(time, p.timezone), currency: p.currency,
+    timezone: p.timezone, observedAt: new Date(time).toISOString(), todayMinor: 0, periodMinor: 0, source: "fixture" as const, receipt: "current-complete-aggregate" };
+  await t.service.advertisingBudgets.observe("qa-alpha", observation);
+  const prepare = await t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "prepare" });
+  assert.equal((await t.service.dispatch("qa-alpha", prepare.id)).state, "succeeded");
+  const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
+  await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
+  return { c, p, observation, input: { packetId: packet.id, digest: packet.digest, requestKey: "budget-launch" } };
+}
+
+test("budget authority changes after approval and spend changes immediately before a write fail closed; public commands cannot attest spend", async () => {
+  const t = await setupTest();
+  try {
+    const { c, p, observation, input } = await budgeted(t);
+    for (const command of ["configure", "observe", "advertisingBudgets", "firstPartyCoverage"])
+      await assert.rejects(t.service.call(t.admin, "qa-alpha", command as never, {} as never), /unknown_command/);
+    await assert.rejects(t.service.call(t.admin, "qa-alpha", "execute", { ...input, observedSpend: observation } as never), /unexpected_fields/);
+    await t.service.advertisingBudgets.configure({ ...p, campaignDailyCeilingMinor: 400 });
+    await assert.rejects(t.service.execute(t.admin, "qa-alpha", input), /campaign_budget_ceiling_exceeded/);
+    assert.deepEqual(await t.store.list("qa-alpha", "advertisingBudgetReservation"), []);
+    await t.service.advertisingBudgets.configure(p);
+    const op = await t.service.execute(t.admin, "qa-alpha", input);
+    await assert.rejects(t.service.advertisingBudgets.configure({ ...p, projectIds: ["qa-beta"] }), /invalid_budget_scope/);
+    await assert.rejects(t.service.advertisingBudgets.configure({ ...p, dailyCeilingMinor: 2000 }), /unsettled_reservations/);
+    let writes = 0;
+    t.provider.activate = async (_c, _g, beforeWrite) => {
+      // Change evidence after claim, before the actual provider mutation boundary.
+      t.advance(1);
+      await t.service.advertisingBudgets.observe("qa-alpha", { ...observation, observedAt: new Date(time + 1).toISOString(),
+        todayMinor: 600, periodMinor: 600, receipt: "new-spend" });
+      await beforeWrite(); writes++;
+      throw new Error("must not reach provider write");
+    };
+    assert.equal((await t.service.dispatch("qa-alpha", op.id)).state, "unknown");
+    assert.equal(writes, 0);
+    assert.equal((await t.store.list<AdvertisingBudgetReservation>("qa-alpha", "advertisingBudgetReservation"))[0]!.state, "held");
+    await assert.rejects(t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "bypass-unknown" }), /requires_reconciliation/);
+  } finally { await t.close(); }
+});
+
+test("budget holds survive interrupted activation and restart; only verified pause releases active capacity", async () => {
+  const t = await setupTest();
+  try {
+    const { c, input } = await budgeted(t);
+    const op = await t.service.execute(t.admin, "qa-alpha", input);
+    t.provider.loseNextResponse = true;
+    assert.equal((await t.service.dispatch("qa-alpha", op.id)).state, "unknown");
+    const held = async () => (await t.store.list<AdvertisingBudgetReservation>("qa-alpha", "advertisingBudgetReservation"))[0]!.state;
+    assert.equal(await held(), "held");
+    // Simulate the durable state of a process killed before its unknown update.
+    await t.store.put("qa-alpha", "operation", op.id, { ...await t.store.get<Operation>("qa-alpha", "operation", op.id), state: "running" });
+    await t.reset();
+    assert.equal((await t.store.get<Operation>("qa-alpha", "operation", op.id)).state, "unknown");
+    assert.equal(await held(), "held");
+    assert.equal((await t.service.execute(t.admin, "qa-alpha", input)).id, op.id);
+    assert.equal((await t.service.reconcile(t.admin, "qa-alpha", { operationId: op.id })).state, "succeeded");
+    assert.equal(await held(), "active");
+    const pause = await t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "verified-pause" });
+    t.provider.loseNextResponse = true;
+    assert.equal((await t.service.dispatch("qa-alpha", pause.id)).state, "unknown");
+    assert.equal(await held(), "active");
+    assert.equal((await t.service.reconcile(t.admin, "qa-alpha", { operationId: pause.id })).state, "succeeded");
+    assert.equal(await held(), "released");
+    const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
+    await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
+    const next = await t.service.execute(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, requestKey: "next-cycle" });
+    assert.equal(await held(), "held");
+    t.advance(60001); // Proved pre-dispatch block releases this reservation atomically.
+    assert.equal((await t.service.dispatch("qa-alpha", next.id)).state, "blocked");
+    assert.equal(await held(), "released");
+  } finally { await t.close(); }
 });

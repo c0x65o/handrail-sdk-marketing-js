@@ -272,6 +272,7 @@ test("provider-specific mappings: no silent targeting translation; hard total bu
       ...c,
       material: {
         ...c.material,
+        advertisingBudget: { lifetime: c.material.budget, daily: { currency: "USD", minor: 3000 } },
         audience: {
           provider: "linkedin",
           locations: ["urn:li:geo:103644278"],
@@ -288,6 +289,7 @@ test("provider-specific mappings: no silent targeting translation; hard total bu
     [asset],
   );
   assert.equal(li.group.totalBudgetCents, 42000);
+  assert.equal(li.campaign.dailyBudgetCents, 3000);
   assert.equal(li.campaign.audienceExpansionEnabled, false);
   assert.deepEqual(
     li.campaign.targetingCriteria.include.and[0].or[
@@ -816,6 +818,12 @@ test("missing provider fields remain null and snapshot fetch rejects private or 
       providerConversions: null,
     },
   );
+  for (const missing of [null, undefined, "", "  ", false, true, [], {}, -1, "not-a-number"]) {
+    const metrics = summarizeMetrics([{ i: 10, c: 2, s: missing }], { impressions: "i", clicks: "c", spend: "s" }, 100);
+    assert.equal(metrics.spendMinor, null, `Malformed spend must remain unknown: ${JSON.stringify(missing)}`);
+    assert.equal(metrics.impressions, 10);
+  }
+  assert.equal(summarizeMetrics([{ i: "0", c: "0", s: "0.00" }], { impressions: "i", clicks: "c", spend: "s" }, 100).spendMinor, 0);
   for (const a of [
     "127.0.0.1",
     "169.254.169.254",
@@ -831,4 +839,24 @@ test("missing provider fields remain null and snapshot fetch rejects private or 
   ])
     assert.equal(publicAddress(a), false, a);
   assert.equal(publicAddress("8.8.8.8"), true);
+});
+
+test("native reporting refuses partial/future provider days before transport and never zero-fills empty data", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "report-days-")), store = await testStore(join(dir, "db"));
+  try {
+    let reads = 0;
+    const provider = new NativeProvider("meta", { use: async (_g, fn) => fn({ accessToken: "fixture" }) }, store, async () => {
+      reads++; return Response.json({ data: [] });
+    });
+    const campaign: Campaign = { ...c, receipt: { ids: { campaign: "123" }, payloadDigest: "fixture", intent: "paused", delivery: "unverified",
+      providerRequestId: null, observedAt: "2026-01-01T00:00:00Z", evidence: "fixture" } };
+    await assert.rejects(provider.metrics(campaign, g, "2026-03-08T06:00:01Z", "2026-03-09T05:00:00Z"), /local_midnights/);
+    await assert.rejects(provider.metrics(campaign, g, "2099-01-01T06:00:00Z", "2099-01-02T06:00:00Z"), /completed_days/);
+    assert.equal(reads, 0);
+    const metrics = await provider.metrics(campaign, g, "2026-03-08T06:00:00Z", "2026-03-09T05:00:00Z");
+    assert.equal(metrics.spendMinor, null); assert.equal(metrics.clicks, null); assert.equal(metrics.impressions, null);
+    assert.equal(metrics.reportingBasis?.completeThrough, "2026-03-09T05:00:00Z");
+    assert.equal(metrics.reportingBasis?.timezone, g.timezone);
+    assert.equal(reads, 1);
+  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

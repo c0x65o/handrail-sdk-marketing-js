@@ -12,6 +12,22 @@ export interface Money {
   currency: string;
   minor: number;
 }
+/** Legacy Material.budget remains the lifetime approval; daily is never inferred. */
+export interface AdvertisingBudget {
+  lifetime: Money;
+  daily?: Money;
+  campaignDailyCeiling?: Money;
+  campaignLifetimeCeiling?: Money;
+}
+export type MarketingPurpose = "acquisition" | "recruitment";
+export interface ReportingBasis {
+  window: "completed-provider-days" | "fixture-window" | "partial-or-open-window";
+  timezone: string;
+  from: string;
+  until: string;
+  /** Exclusive end; provider aggregates are observations, never delivery proof. */
+  completeThrough: string | null;
+}
 export interface Audience {
   provider: Provider;
   /** Provider identifiers, never silently translated between networks. */
@@ -33,6 +49,8 @@ export interface Material {
   assetIds: string[];
   audience: Audience;
   budget: Money;
+  advertisingBudget?: AdvertisingBudget;
+  purpose?: MarketingPurpose;
   startAt: string;
   endAt: string;
   timezone: string;
@@ -199,11 +217,23 @@ export interface Asset {
   rightsReceipt: string;
   parentAssetIds: string[];
 }
+/** Host-attested collector completeness; omitted purpose is legacy acquisition only. */
+export interface FirstPartyCoverage {
+  from: string;
+  until: string;
+  purpose?: MarketingPurpose;
+}
 export interface FirstPartyEvent {
   id: string;
   projectId: string;
   campaignId: string | null;
-  kind: "click" | "form_completed" | "qualified" | "purchase";
+  kind: "click" | "form_completed" | "qualified" | "purchase" | "application_completed" | "applicant_qualified" | "hired";
+  /** Server-selected collector namespace; omission preserves the legacy namespace. */
+  sourceId?: string;
+  purpose?: MarketingPurpose;
+  synthetic?: boolean;
+  test?: boolean;
+  productionMetricsExcluded?: boolean;
   personId: string;
   occurredAt: string;
   consentReceipt: string;
@@ -230,6 +260,7 @@ export interface Metrics {
   currency: string;
   observedAt: string;
   source: "fixture" | "provider";
+  reportingBasis?: ReportingBasis;
   spendMinor: number | null;
   impressions: number | null;
   clicks: number | null;
@@ -253,6 +284,15 @@ export interface Results {
   impressions: Metric;
   clicks: Metric;
   leads: Metric;
+  /** Additive v2 basis; leads retains the historical unique-person contract. */
+  completedSubmissions?: Metric;
+  uniquePeople?: Metric;
+  applicants?: Metric;
+  qualifiedApplicants?: Metric;
+  hires?: Metric;
+  excludedTestEvents?: Metric;
+  leadBasis?: "trusted-source-submissions-v2;legacy-leads-unique-people-v1";
+  reportingBasis?: ReportingBasis;
   qualified: Metric;
   customers: Metric;
   revenueMinor: Metric;

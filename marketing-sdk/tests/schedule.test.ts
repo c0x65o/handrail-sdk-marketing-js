@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { defaultCampaignSchedule } from "../react/schedule.js";
+import { defaultCampaignSchedule, completedCampaignWindow } from "../react/schedule.js";
 
 for (const [name, zone, now, startAt, endAt] of [
   ["staging UTC/local rollover", "America/Chicago", "2026-09-27T03:50:00Z", "2026-09-27T05:00:00.000Z", "2026-10-04T05:00:00.000Z"],
@@ -20,4 +20,17 @@ for (const [name, zone, now, startAt, endAt] of [
 test("invalid zones and entirely skipped calendar dates fail closed", () => {
   assert.throws(() => defaultCampaignSchedule("not/a-zone"), RangeError);
   assert.throws(() => defaultCampaignSchedule("Pacific/Apia", new Date("2011-12-29T12:00:00Z")), /skips this calendar date/);
+});
+
+
+test("results select only completed provider days without widening partial campaign windows", () => {
+  for (const [from, until] of [["2026-03-08T06:00:00.000Z", "2026-03-09T05:00:00.000Z"],
+    ["2026-11-01T05:00:00.000Z", "2026-11-02T06:00:00.000Z"]]) {
+    assert.deepEqual(completedCampaignWindow(from!, until!, "America/Chicago", new Date(until!)), { from, until });
+    assert.equal(completedCampaignWindow(from!, until!, "America/Chicago", new Date(Date.parse(until!) - 1)), null);
+    assert.equal(completedCampaignWindow(new Date(Date.parse(from!) + 1).toISOString(), until!, "America/Chicago", new Date(until!)), null);
+  }
+  assert.deepEqual(completedCampaignWindow("2026-11-01T06:00:00Z", "2026-11-04T20:00:00Z", "America/Chicago", new Date("2026-11-03T18:00:00Z")),
+    { from: "2026-11-02T06:00:00.000Z", until: "2026-11-03T06:00:00.000Z" });
+  assert.equal(completedCampaignWindow("2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z", "UTC"), null);
 });

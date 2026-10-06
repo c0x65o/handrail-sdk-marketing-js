@@ -1,8 +1,8 @@
-import { Store, MarketingServer, type Principal } from '@handrail/marketing/server';
+import { Store, MarketingServer, type Principal, AdvertisingBudgets, providerDayWindow, type PostgresStoreOptions, POSTGRES_SCHEMA_VERSION } from '@handrail/marketing/server';
 import { openDatastore, createHost, provision } from '@handrail/marketing/reference';
 import { runtime } from '@handrail/marketing/reference/host';
 import { seedQa } from '@handrail/marketing/reference/seed';
-import { createMarketingClient, type CampaignDraft, type DraftMaterial } from '@handrail/marketing';
+import { createMarketingClient, type CampaignDraft, type DraftMaterial, type AdvertisingBudget, type Results } from '@handrail/marketing';
 import { canonical } from '@handrail/marketing/core';
 import { MarketingWorkspace, ApprovalPanel } from '@handrail/marketing/react';
 import { agentTools } from '@handrail/marketing/agent';
@@ -16,3 +16,16 @@ export async function consumer(store: Store, principal: Principal) {
   return (await server.call(principal, 'project', 'workspace', {})).drafts;
 }
 export const exports = { openDatastore, createHost, provision, runtime, seedQa, canonical, createMarketingClient, MarketingWorkspace, ApprovalPanel, agentTools, postgres: Store.postgres };
+
+export const budget: AdvertisingBudget = { lifetime: { currency: 'USD', minor: 10000 }, daily: { currency: 'USD', minor: 500 } };
+export function parityConsumer(store: Store, result: Results) {
+  const ledger = new AdvertisingBudgets(store);
+  const reportingBasis = providerDayWindow('2026-03-08T06:00:00Z', '2026-03-09T05:00:00Z', 'America/Chicago');
+  return { ledger, reportingBasis, submissions: result.completedSubmissions, people: result.uniquePeople, legacy: result.leads };
+}
+
+export async function migrationFreeHost(options: PostgresStoreOptions): Promise<Store> {
+  return Store.openExistingPostgres(options);
+}
+export const trustedMigration: (options: PostgresStoreOptions) => Promise<void> = Store.migratePostgres;
+export const expectedSchemaVersion: number = POSTGRES_SCHEMA_VERSION;

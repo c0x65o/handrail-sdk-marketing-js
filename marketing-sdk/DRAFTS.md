@@ -1,35 +1,68 @@
 # PostgreSQL and local campaign drafts
 
 The destination is the embedding application's declared PostgreSQL database.
-Opening the SDK store creates/initializes its own schema (default `marketing`),
-without taking over application tables. No separate MariaDB resource is needed.
+Use a dedicated SDK schema (default `marketing`) in that resource. Runtime startup
+and trusted migration are separate; no extra database service is needed.
 
 ```ts
-import { Store, MarketingServer } from '@handrail/marketing/server';
+import { Store, MarketingServer, type PostgresStoreOptions,
+  POSTGRES_SCHEMA_VERSION } from '@handrail/marketing/server';
 
-const store = await Store.postgres({
+// Host configuration supplies the declared resource and a restricted runtime role.
+const options: PostgresStoreOptions = {
   connectionString: declaredApplicationPostgresBinding,
   schema: 'marketing',
-});
+};
+const store = await Store.openExistingPostgres(options); // Promise<Store>; no DDL
 const service = MarketingServer.unconnected(store);
+// POSTGRES_SCHEMA_VERSION === 2
 ```
 
-The binding comes from trusted host configuration. Standard `pg` TLS options are
-supported. The database role needs to own the SDK schema and its objects; it may
-create the schema itself or use a schema pre-created for it. The SDK forces its
-schema search path on each new connection, including when the URL specifies a
-different search path. Schema names use lowercase ASCII letters, digits and
-underscores, start with a letter/underscore and are at most 63 characters;
-`public` and `pg_*` names are rejected. Use a distinct schema per SDK installation.
-Projects within an installation share the existing project membership boundary.
+`PostgresStoreOptions = pg.PoolConfig & { schema?: string }`. Standard `pg` TLS
+options are supported. `Store.openExistingPostgres(options): Promise<Store>`
+uses a read-only validation transaction and session settings. It requires the
+exact supported migration history `[1, 2]`, tables/views with required column
+names/types, primary keys and the transaction guard row. Missing, outdated,
+future or structurally incomplete schemas fail closed; it never repairs them.
+Connection/permission failures also reject and close the pool. It does not
+provision projects, users, grants or credentials, or acquire execution ownership.
+Runtime DML and provisioning remain explicit host actions.
 
-For the reference datastore opener, explicitly select `MARKETING_DATASTORE=postgres`,
-bind `MARKETING_DATABASE_URL` to that same declared resource, and optionally set
-`MARKETING_POSTGRES_SCHEMA`. It deliberately does not fall back to an ambient
-`DATABASE_URL` or `PG*` resource. MariaDB's existing `isolated-mariadb` / `MYSQL_*`
-configuration and `new Store(sqlitePath)` remain available. Opening a PostgreSQL
-store applies schema 1 and session migration 2 transactionally under a schema
-advisory lock. Reopening preserves records. No separate migration/package step.
+Before startup, a separately authorized deployment/migration task can call
+`Store.migratePostgres(migrationOptions): Promise<void>` with the schema owner's
+credentials. It applies the existing schema 1 and session migration 2 under the
+schema advisory lock, transactionally, validates, then closes its pool. Repeated
+calls are idempotent and preserve records; unknown versions are rejected. There
+is no new schema migration in the parity review. Migration is distinct from the
+package's normal `prepare` compilation; no packaging/publishing step is added.
+
+The runtime role needs schema USAGE; SELECT/INSERT/UPDATE/DELETE on SDK base
+tables; sequence USAGE/SELECT; SELECT on the two `marketing_known_*` views.
+It need not own objects or have schema CREATE, database CREATE, ALTER or DROP
+privileges. The host provisions these permissions through its existing trusted
+migration process. Do not expose migration credentials to ordinary startup.
+The contract assumes the host controls schema DDL and does not alter objects
+under a running executor. The validator is not a general database integrity audit.
+
+For compatibility, `Store.postgres(options): Promise<Store>` retains its original
+**connect-and-migrate** behavior. Existing MariaDB/SQLite openers also retain their
+migration behavior. New restricted host integrations must choose
+`openExistingPostgres`, not the legacy convenience factory.
+
+The reference opener supports `MARKETING_DATASTORE=postgres`, explicit
+`MARKETING_DATABASE_URL`, optional `MARKETING_POSTGRES_SCHEMA`, and
+`MARKETING_POSTGRES_INITIALIZATION=open-existing` for DDL-free startup.
+The latter defaults to `migrate` for existing reference-host compatibility;
+unknown values fail closed. It never substitutes ambient `DATABASE_URL` or
+`PG*` resource bindings. MariaDB's `isolated-mariadb` / `MYSQL_*` configuration
+and `new Store(sqlitePath)` remain available.
+
+The SDK forces its schema search path on each new connection, including when
+the URL specifies another path. Schema names use lowercase ASCII letters,
+digits and underscores, start with a letter/underscore and have at most 63
+characters; `public` and `pg_*` names are rejected. Use a distinct schema per SDK
+installation. Projects within it share the project membership boundary and SQL
+transaction guard. Configure migrations and runtime with the same schema.
 
 ## Authentication and scope
 

@@ -1,0 +1,144 @@
+{
+  "handoff_id": "a095d232-2db5-4679-a78c-acc101e104ee",
+  "work_request_id": "61399bd5-8d22-403a-b5b0-2e8d3efeb755",
+  "title": "Independent qualification of Marketing SDK parity foundation",
+  "delivery": "workspace-only; candidate qualification, not live or published cutover",
+  "baseline_commit": "d271cea3e8fe216f56300f23b07df21e778f92c8",
+  "predecessor": {
+    "work_request_id": "63803c8f-f715-48a1-9368-270b808b4bed",
+    "source_sha256": "56809d8c25e376788fd9fd4ec9afd82f3c1c29d40b3f0526d908aa6ba764267a",
+    "preserved_evidence": "artifacts/parity-handoff.json and artifacts/parity-*"
+  },
+  "source_coverage": {
+    "fresh_inspection": "Only this SDK checkout: core/server/React, SQL adapters/schema/migrations, provider and service execution, budget/event/reporting code, existing runners and consumer fixture.",
+    "supplied_context": "Pinned-source comparison completed in KB marketing-sdk-migration-parity-baseline-20261006, review-state revision 1, entry f539c339-4ca9-42ac-8f40-ad6fce8b53e5. ERP and Agent conclusions are supplied source-backed context, not fresh source inspection by this reviewer.",
+    "scope_confirmed": "Handrail current-context read confirmed this SDK project/work request and authentication snapshot 08346f8bc724. No repository AGENTS.md was found."
+  },
+  "findings": [
+    {
+      "id": "PG-STARTUP",
+      "severity": "high",
+      "status": "repaired",
+      "before": "Store.postgres always executes schema DDL, preventing startup with a restricted runtime role.",
+      "after": "Added Store.openExistingPostgres and separate Store.migratePostgres. Open-existing performs read-only schema/version validation and session SET statements; rejects missing/outdated/future/incomplete schema. Legacy Store.postgres remains migrating for compatibility. Reference opener supports explicit open-existing mode.",
+      "evidence": [
+        "marketing-sdk/tests/postgres.test.ts",
+        "marketing-sdk/tests/consumer.ts.txt"
+      ]
+    },
+    {
+      "id": "EVENT-IDENTITY",
+      "severity": "high",
+      "status": "repaired",
+      "before": "Source receipt identity included outcome kind, so a different kind and new request ID could mint another event. Imported IDs without request receipts could be overwritten by another source event.",
+      "after": "New source evidence keys bind source plus receipt, independent of kind. Immutable input digest includes kind, person, purpose, QA and attribution input. Legacy evidence keys remain readable; imported IDs and unknown attribution are preserved; conflicting source receipts fail closed.",
+      "evidence": [
+        "marketing-sdk/tests/service.test.ts"
+      ]
+    },
+    {
+      "id": "RESULTS-WINDOW",
+      "severity": "medium",
+      "status": "repaired",
+      "before": "UI always requested campaign start/end for provider sync, including unsupported future or partial-day windows; results without a snapshot had no explicit window basis.",
+      "after": "UI defaults to exact completed account-local days contained within campaign boundaries, disables sync for full first-party windows, and labels partial/open result windows. DST and exact-boundary behavior is tested. Added explicit selector accessible name after browser regression.",
+      "evidence": [
+        "marketing-sdk/tests/schedule.test.ts",
+        "marketing-sdk/tests/budgets.test.ts",
+        "marketing-sdk/tests/browser.mjs"
+      ]
+    },
+    {
+      "id": "BROWSER-PG",
+      "severity": "medium",
+      "status": "repaired",
+      "before": "The disposable browser runner was reachable only through MariaDB, which is absent.",
+      "after": "Existing PostgreSQL runner now accepts --browser and uses the existing browser/app fixture. No new app, framework, resource binding or package check script.",
+      "evidence": [
+        "marketing-sdk/tests/postgres-runner.mjs",
+        "marketing-sdk/tests/browser.mjs"
+      ]
+    },
+    {
+      "id": "METRIC-UNKNOWN",
+      "severity": "medium",
+      "status": "repaired",
+      "before": "Blank/whitespace provider metric strings and booleans could coerce to zero through Number(), silently converting malformed evidence into known spend.",
+      "after": "Metric aggregation accepts numbers or nonblank numeric strings only; malformed fields remain null while genuine numeric zero remains zero.",
+      "evidence": [
+        "marketing-sdk/tests/providers.test.ts"
+      ]
+    }
+  ],
+  "adversarial_review": [
+    {
+      "area": "Budget authorization",
+      "assessment": "Daily and lifetime remain separate; explicit budgets require host policy and exact current aggregate evidence. No public configure/observe/coverage command exists. PostgreSQL cross-connection portfolio contention, same-name project scope isolation, unknown/missing/stale and currency/timezone/interval mismatch, outer rollback, policy changes after approval and spend changes before provider writes are exercised. Existing budgets.ts implementation retained.",
+      "tests": [
+        "marketing-sdk/tests/budgets.test.ts",
+        "marketing-sdk/tests/service.test.ts"
+      ]
+    },
+    {
+      "area": "Reservations and execution",
+      "assessment": "Lease loss retains unknown holds; actual killed-process activation retains a held reservation across recovery; reconciliation promotes it to active; lost pause acknowledgment retains active capacity until observed pause. Pre-dispatch blocked operations release only their own hold. New activation after pause uses new authority; consumed packets/new request keys cannot replay.",
+      "tests": [
+        "marketing-sdk/tests/service.test.ts",
+        "marketing-sdk/tests/postgres.test.ts"
+      ]
+    },
+    {
+      "area": "LinkedIn readback and legacy safety",
+      "assessment": "Initial HTTP-fixture readback compares campaign and group account, organization, objective, type/format, bid/cost type, daily and lifetime money/currency, schedule, targeting and creative. Added group account/lifetime drift cases. Lost acknowledgment reconciliation performs reads; versioned v1 snapshot digests continue to support legacy pause without daily fabrication or provider-ID/material rewrites. Missing legacy IDs/digests remain fenced rather than guessed.",
+      "tests": [
+        "marketing-sdk/tests/native-writes.test.ts",
+        "marketing-sdk/tests/providers.test.ts",
+        "marketing-sdk/tests/service.test.ts"
+      ]
+    },
+    {
+      "area": "Event/reporting isolation",
+      "assessment": "Submissions count stable source/event receipts separately from people; acquisition and recruitment coverage/outcomes stay separate; explicit QA flags exclude production metrics; legacy leads retains people semantics. Unknown attribution is retained and absent coverage/empty provider response stays unknown. Current/future provider days reject before native network reads.",
+      "tests": [
+        "marketing-sdk/tests/service.test.ts",
+        "marketing-sdk/tests/budgets.test.ts",
+        "marketing-sdk/tests/providers.test.ts"
+      ]
+    },
+    {
+      "area": "Public compatibility and UI",
+      "assessment": "Core/headless remains browser-safe; server APIs are additive; normal build emits declarations. Clean consumer projection checks strict types, runtime imports and browser graph isolation. Existing browser fixture exercises widths 1440/390/320, budget review, Create/Launch/Results, outcomes, read recovery and no overflow.",
+      "tests": [
+        "marketing-sdk/tests/consumer.mjs",
+        "marketing-sdk/tests/consumer.ts.txt",
+        "marketing-sdk/tests/browser.mjs"
+      ]
+    }
+  ],
+  "integration": {
+    "export": "@handrail/marketing/server",
+    "options": "export type PostgresStoreOptions = pg.PoolConfig & { schema?: string }",
+    "runtime": "Store.openExistingPostgres(options: PostgresStoreOptions): Promise<Store>",
+    "migration": "Store.migratePostgres(options: PostgresStoreOptions): Promise<void>",
+    "version": "POSTGRES_SCHEMA_VERSION = 2",
+    "reference_mode": "MARKETING_DATASTORE=postgres; MARKETING_DATABASE_URL=<declared resource>; MARKETING_POSTGRES_SCHEMA=<same schema>; MARKETING_POSTGRES_INITIALIZATION=open-existing",
+    "legacy": "Store.postgres and reference opener default migrate deliberately retain automatic migration behavior; new ordinary host integrations must choose the explicit open-existing path.",
+    "consumer_revision": "Uncommitted candidate only. No publishable revision exists from this delivery. Eventual consumer must install public HTTPS Git at the full released commit SHA with matching lockfile and normal prepare build."
+  },
+  "migration_and_rollback": [
+    "No SQL schema files or migration version changed. Trusted migration applies existing schema 1/session migration 2 atomically under the advisory lock; ordinary open-existing performs no DDL. Only disposable test databases were migrated.",
+    "Host must provision the same SDK schema using trusted migration credentials, then run with schema USAGE, base-table DML, sequence USAGE/SELECT and view SELECT. Schema owner privileges are not required at runtime. Schema DDL must not change under the running executor.",
+    "Use one executor and one transaction-guard domain for portfolio members. Cross-database portfolios, active-commitment import, policy rollover and less conservative spend netting are not implemented. Policies with held/active reservations cannot change. Provider daily pacing is not an exact intraday hard spending guarantee.",
+    "Retain original material revisions, provider IDs, imported attribution and exclusion evidence, source event identities, requests, leases, reservations, outbox and session revocations. Do not re-ingest legacy data through fresh attribution or clear unknown effects to unblock execution.",
+    "Quiesce dispatch and reconcile unknown effects before rollback/cutover, then prove single-writer routing. v0.1.4 cannot safely dispatch typed-budget campaigns. Read-only rollback is possible only while preserving all records and acknowledging older reporting semantics. Do not drop revocation state or perform destructive down-migrations."
+  ],
+  "remaining_gates": [
+    "MariaDB and MariaDB browser verification unavailable while mariadbd is absent; PostgreSQL does not substitute for that dialect.",
+    "Public HTTPS full-SHA consumer install qualification after separately authorized release; no commit/push/PR/deploy in this delivery.",
+    "Host-specific migration/data mapping, active commitments, historical attribution/exclusion shadow comparisons and rollback before live cutover.",
+    "Provider feature expansion including Meta interests/Instagram/objectives and LinkedIn facets/documents/conversions remains deferred.",
+    "Recruitment provider publication, full UI/drafts overhaul, lifecycle rollover/external drift recovery, generation controls, Website/A-B and optional qualified Agent/Vault onboarding remain deferred.",
+    "No live provider/API actions, datastore access, advertising/budget changes or credential/access expansion performed."
+  ],
+  "verification_policy": "Focused regression and sequential full checks, each below the saved five-minute limit. No configured check or package-script changes. Exact final outcomes, intermediate failures, manifest and changed-file hashes are recorded in artifacts/parity-review-handoff.json to avoid a self-referential source hash."
+}

@@ -5,8 +5,10 @@ export async function openDatastore(env: NodeJS.ProcessEnv = process.env) {
     requireThat(env.MARKETING_DATABASE_URL, "marketing_postgres_environment_required");
     const url = new URL(env.MARKETING_DATABASE_URL);
     requireThat(["postgres:", "postgresql:"].includes(url.protocol), "invalid_postgres_url");
-    return Store.postgres({ connectionString: env.MARKETING_DATABASE_URL,
-      schema: env.MARKETING_POSTGRES_SCHEMA || "marketing" });
+    const mode = env.MARKETING_POSTGRES_INITIALIZATION ?? "migrate";
+    requireThat(mode === "migrate" || mode === "open-existing", "invalid_postgres_initialization");
+    const options = { connectionString: env.MARKETING_DATABASE_URL, schema: env.MARKETING_POSTGRES_SCHEMA || "marketing" };
+    return mode === "open-existing" ? Store.openExistingPostgres(options) : Store.postgres(options);
   }
   requireThat(
     env.MARKETING_DATASTORE === "isolated-mariadb",

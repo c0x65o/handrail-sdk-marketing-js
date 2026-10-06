@@ -37,6 +37,8 @@ import {
 } from "./store.js";
 import { draftMaterial, instant, keys, material, text } from "./validation.js";
 import { capturePublicDestination } from "./destination.js";
+import { AdvertisingBudgets } from "./budgets.js";
+import { providerDayWindow } from "./reporting.js";
 import { inspectMedia } from "./generation.js";
 const EDIT = ["admin", "editor"] as const;
 const HUMAN = ["admin", "approver"] as const;
@@ -73,6 +75,7 @@ export class MarketingServer {
     readonly now = () => Date.now(),
     readonly readDestination = capturePublicDestination,
   ) {}
+  get advertisingBudgets() { return new AdvertisingBudgets(this.store, this.now, this.mode === "fixture" ? "fixture" : "provider"); }
   private async auth(p: Principal, project: string, write = false) {
     return await this.store.authorize(
       p,
@@ -465,7 +468,9 @@ export class MarketingServer {
     if (kind === "pause") requireThat(c.receipt, "provider_objects_required");
     const g = await this.grant(project, c.grantId, kind);
     const a = await this.assets(c);
-    const plan = this.providers[g.provider].plan(c, g, a);
+    // A safety pause binds the observed receipt, including legacy provider plans.
+    // It must not require inventing a daily approval or rebuilding provider objects.
+    const plan = kind === "pause" ? { pauseReceipt: c.receipt } : this.providers[g.provider].plan(c, g, a);
     const payload = {
       kind,
       campaignId,
@@ -484,12 +489,13 @@ export class MarketingServer {
           !(await this.store.list<Operation>(project, "operation")).some(
             (o) =>
               o.campaignId === c.id &&
-              o.kind === kind &&
-              o.campaignRevision === c.revision &&
-              ["queued", "running", "unknown", "succeeded"].includes(o.state),
+              (["queued", "running", "unknown"].includes(o.state) ||
+                (kind === "prepare" && o.kind === kind && o.campaignRevision === c.revision && o.state === "succeeded") ||
+                (kind === "activate" && o.kind === kind && o.packetId === packetId && o.state === "succeeded")),
           ),
           "existing_operation_requires_reconciliation",
         );
+        if (kind === "activate") requireThat(c.state === "paused", "paused_preparation_required");
         const operation: Operation = {
           id: id(),
           projectId: project,
@@ -499,12 +505,13 @@ export class MarketingServer {
           accountId: g.accountId,
           kind,
           packetId,
-          payloadDigest: digest(plan),
+          payloadDigest: kind === "pause" ? c.receipt!.payloadDigest : digest(plan),
           state: "queued",
           reason: null,
           receipt: null,
           createdAt: new Date(this.now()).toISOString(),
         };
+        if (kind === "activate") await this.advertisingBudgets.reserve(c, operation);
         await this.store.put(project, "executionActor", operation.id, p);
         return operation;
       },
@@ -809,7 +816,7 @@ export class MarketingServer {
       requireThat(c.revision === o.campaignRevision, "stale_material");
       if (o.packetId) await this.approved(project, o.packetId);
       requireThat(
-        digest(this.providers[g.provider].plan(c, g, await this.assets(c))) ===
+        (o.kind === "pause" ? c.receipt?.payloadDigest : digest(this.providers[g.provider].plan(c, g, await this.assets(c)))) ===
           o.payloadDigest,
         "payload_changed",
       );
@@ -875,6 +882,7 @@ export class MarketingServer {
             .state === "queued",
           "operation_already_claimed",
         );
+        if (o.kind === "activate") await this.advertisingBudgets.assert(c, o);
         const lease = await this.store.db
           .prepare(
             "SELECT operation_id FROM leases WHERE project_id=? AND account_id=?",
@@ -910,6 +918,7 @@ export class MarketingServer {
               ? error.code
               : "provider_preflight_unavailable",
         };
+        if (o.kind === "activate") await this.advertisingBudgets.settle(c, o, "not_dispatched");
         await this.store.put(project, "operation", o.id, blocked);
         return blocked;
       });
@@ -943,6 +952,9 @@ export class MarketingServer {
           "stale_material",
         );
         if (o.packetId) await this.approved(project, o.packetId);
+        const lease = await this.store.db.prepare("SELECT operation_id FROM leases WHERE project_id=? AND account_id=?").get(project, g.accountId);
+        requireThat(lease?.operation_id === o.id, "operation_lease_lost");
+        if (o.kind === "activate") await this.advertisingBudgets.assert(c, o);
       });
     };
     try {
@@ -988,6 +1000,12 @@ export class MarketingServer {
       "provider_receipt_mismatch",
     );
     return await this.store.transaction(async () => {
+      await this.store.db.assertExecutionOwner();
+      const lease = await this.store.db.prepare("SELECT operation_id FROM leases WHERE project_id=? AND account_id=?").get(c.projectId, g.accountId);
+      requireThat(lease?.operation_id === o.id, "operation_lease_lost");
+      const current = await this.store.get<Campaign>(c.projectId, "campaign", c.id);
+      requireThat(current.revision === o.campaignRevision, "stale_material");
+      await this.advertisingBudgets.settle(c, o, receipt.intent);
       const next = {
         ...o,
         state: "succeeded" as const,
@@ -1052,6 +1070,8 @@ export class MarketingServer {
         o.campaignId,
       );
       const g = await this.grant(project, c.grantId, "report");
+      requireThat(c.revision === o.campaignRevision && g.revision === o.grantRevision && g.accountId === o.accountId &&
+        (o.kind === "pause" ? c.receipt?.payloadDigest : digest(this.providers[g.provider].plan(c, g, await this.assets(c)))) === o.payloadDigest, "reconciliation_material_changed");
       const receipt = await this.providers[g.provider].reconcile(c, g, o);
       return receipt ? await this.finish(o, c, g, receipt) : o;
     });
@@ -1358,7 +1378,7 @@ export class MarketingServer {
         422,
       );
       requireThat(
-        ["click", "form_completed", "qualified", "purchase"].includes(
+        ["click", "form_completed", "qualified", "purchase", "application_completed", "applicant_qualified", "hired"].includes(
           input.kind,
         ),
         "invalid_event",
@@ -1372,6 +1392,32 @@ export class MarketingServer {
           "invalid_revenue",
           422,
         );
+      if (input.sourceId !== undefined) text(input.sourceId);
+      requireThat(input.purpose === undefined || ["acquisition", "recruitment"].includes(input.purpose), "invalid_purpose", 422);
+      for (const flag of [input.synthetic, input.test, input.productionMetricsExcluded]) requireThat(flag === undefined || typeof flag === "boolean", "invalid_test_flag", 422);
+      const recruitment = ["application_completed", "applicant_qualified", "hired"].includes(input.kind);
+      requireThat(!recruitment || input.purpose === "recruitment", "recruitment_purpose_required", 422);
+      requireThat(input.purpose !== "recruitment" || !["form_completed", "qualified", "purchase"].includes(input.kind), "purpose_outcome_mismatch", 422);
+      // A source event cannot become a different outcome by changing kind on retry.
+      const identity = digest([input.sourceId ?? null, input.sourceReceipt]);
+      const legacyIdentity = digest([input.sourceId ?? null, input.kind, input.sourceReceipt]);
+      const inputDigest = digest({ ...input, id: undefined });
+      const evidence = (await this.store.list<{ id: string; eventId: string; inputDigest: string }>(project, "sourceEventEvidence")).find(e => e.id === identity || e.id === legacyIdentity);
+      if (evidence) {
+        requireThat(evidence.inputDigest === inputDigest, "source_event_payload_conflict");
+        return this.request<FirstPartyEvent>(project, `event:${input.id}`, input, "event",
+          () => this.store.get<FirstPartyEvent>(project, "event", evidence.eventId));
+      }
+      const retry = await this.store.db.prepare("SELECT * FROM requests WHERE project_id=? AND request_key=?").get(project, `event:${input.id}`);
+      if (retry) {
+        requireThat(retry.kind === "event" && retry.digest === digest(input), "request_key_payload_conflict");
+        return this.store.get<FirstPartyEvent>(project, "event", String(retry.record_id));
+      }
+      const existingEvents = await this.store.list<FirstPartyEvent>(project, "event");
+      const sourceEvents = existingEvents.filter(e => e.sourceReceipt === input.sourceReceipt &&
+        (e.sourceId ?? null) === (input.sourceId ?? null));
+      requireThat(sourceEvents.every(e => e.kind === input.kind), "source_event_payload_conflict");
+      requireThat(!existingEvents.some(e => e.id === input.id && !sourceEvents.includes(e)), "source_event_id_conflict");
       let campaignId: string | null = null;
       if (input.kind === "click" && input.campaignId) {
         await this.store.get<Campaign>(project, "campaign", input.campaignId);
@@ -1385,6 +1431,8 @@ export class MarketingServer {
         requireThat(
           click.kind === "click" &&
             click.personId === input.personId &&
+            (click.purpose ?? "acquisition") === (input.purpose ?? "acquisition") &&
+            (!(click.synthetic || click.test || click.productionMetricsExcluded) || (input.synthetic || input.test || input.productionMetricsExcluded)) &&
             click.consentReceipt,
           "attribution_identity_mismatch",
         );
@@ -1398,6 +1446,8 @@ export class MarketingServer {
               (e) =>
                 e.kind === "click" &&
                 e.personId === input.personId &&
+                (e.purpose ?? "acquisition") === (input.purpose ?? "acquisition") &&
+                Boolean(e.synthetic || e.test || e.productionMetricsExcluded) === Boolean(input.synthetic || input.test || input.productionMetricsExcluded) &&
                 Date.parse(e.occurredAt) <= Date.parse(input.occurredAt),
             )
             .sort(
@@ -1414,7 +1464,7 @@ export class MarketingServer {
           campaignId = click.campaignId;
         }
       }
-      return await this.request<FirstPartyEvent>(
+      const saved = await this.request<FirstPartyEvent>(
         project,
         `event:${input.id}`,
         input,
@@ -1424,7 +1474,7 @@ export class MarketingServer {
             await this.store.list<FirstPartyEvent>(project, "event")
           ).find(
             (e) =>
-              e.sourceReceipt === input.sourceReceipt && e.kind === input.kind,
+              e.sourceReceipt === input.sourceReceipt && e.kind === input.kind && (e.sourceId ?? null) === (input.sourceId ?? null),
           );
           const next = {
             ...input,
@@ -1448,6 +1498,8 @@ export class MarketingServer {
           return next;
         },
       );
+      await this.store.put(project, "sourceEventEvidence", identity, { id: identity, eventId: saved.id, inputDigest });
+      return saved;
     });
   }
   async conversation(
@@ -1535,6 +1587,9 @@ export class MarketingServer {
         input.campaignId,
       );
       const g = await this.grant(project, c.grantId, "report");
+      const reportingBasis = this.providers[g.provider].evidence === "provider"
+        ? providerDayWindow(input.from, input.until, g.timezone, this.now())
+        : { window: "fixture-window" as const, timezone: g.timezone, from: input.from, until: input.until, completeThrough: null };
       const values = await this.providers[g.provider].metrics(
         c,
         g,
@@ -1550,6 +1605,7 @@ export class MarketingServer {
       );
       const snap: Metrics = {
         ...values,
+        reportingBasis,
         id: id(),
         projectId: project,
         campaignId: c.id,
@@ -1578,10 +1634,10 @@ export class MarketingServer {
             m.campaignId === c.id &&
             m.from === input.from &&
             m.until === input.until &&
-            m.currency === currency,
+            m.currency === currency && m.timezone === c.material.timezone,
         )
         .at(-1);
-      const events = (
+      const windowEvents = (
         await this.store.list<FirstPartyEvent>(project, "event")
       ).filter(
         (e) =>
@@ -1589,22 +1645,23 @@ export class MarketingServer {
           Date.parse(e.occurredAt) >= Date.parse(input.from) &&
           Date.parse(e.occurredAt) < Date.parse(input.until),
       );
+      const excluded = (e: FirstPartyEvent) => e.synthetic || e.test || e.productionMetricsExcluded;
+      const events = windowEvents.filter(e => !excluded(e));
+      const acquisition = events.filter(e => (e.purpose ?? "acquisition") === "acquisition");
+      const submissions = (kind: FirstPartyEvent["kind"], purpose: "acquisition" | "recruitment") =>
+        new Set(events.filter(e => e.kind === kind && (e.purpose ?? "acquisition") === purpose)
+          .map(e => digest([e.sourceId ?? null, e.sourceReceipt]))).size;
       const count = (kind: FirstPartyEvent["kind"]) =>
-        new Set(events.filter((e) => e.kind === kind).map((e) => e.personId))
+        new Set(acquisition.filter((e) => e.kind === kind).map((e) => e.personId))
           .size;
-      const coverage = (
-        await this.store.list<{
-          from: string;
-          until: string;
-        }>(project, "firstPartyCoverage")
-      ).some(
-        (w) =>
-          Date.parse(w.from) <= Date.parse(input.from) &&
-          Date.parse(w.until) >= Date.parse(input.until),
-      );
+      const coverageRows = await this.store.list<import("../core/index.js").FirstPartyCoverage>(project, "firstPartyCoverage");
+      const covered = (purpose: "acquisition" | "recruitment") => coverageRows.some(w =>
+        (w.purpose ?? "acquisition") === purpose && Date.parse(w.from) <= Date.parse(input.from) &&
+        Date.parse(w.until) >= Date.parse(input.until));
+      const coverage = covered("acquisition"), recruitmentCoverage = covered("recruitment");
       const leads = coverage ? count("form_completed") : null,
         customers = coverage ? count("purchase") : null;
-      const purchases = events.filter((e) => e.kind === "purchase");
+      const purchases = acquisition.filter((e) => e.kind === "purchase");
       const revenue =
         coverage && purchases.every((e) => e.revenue?.currency === currency)
           ? purchases.reduce((n, e) => n + e.revenue!.minor, 0)
@@ -1626,6 +1683,18 @@ export class MarketingServer {
         impressions: metric(impressions),
         clicks: metric(clicks),
         leads: metric(leads, "collector_coverage_unknown"),
+        completedSubmissions: metric(coverage ? submissions("form_completed", "acquisition") : null, "collector_coverage_unknown"),
+        uniquePeople: metric(leads, "collector_coverage_unknown"),
+        applicants: metric(recruitmentCoverage ? submissions("application_completed", "recruitment") : null, "collector_coverage_unknown"),
+        qualifiedApplicants: metric(recruitmentCoverage ? submissions("applicant_qualified", "recruitment") : null, "collector_coverage_unknown"),
+        hires: metric(recruitmentCoverage ? submissions("hired", "recruitment") : null, "collector_coverage_unknown"),
+        excludedTestEvents: metric(coverage && recruitmentCoverage ? windowEvents.filter(excluded).length : null, "collector_coverage_unknown"),
+        leadBasis: "trusted-source-submissions-v2;legacy-leads-unique-people-v1",
+        reportingBasis: snap?.reportingBasis ?? (() => {
+          try { return providerDayWindow(input.from, input.until, c.material.timezone, this.now()); }
+          catch { return { window: "partial-or-open-window" as const, timezone: c.material.timezone,
+            from: input.from, until: input.until, completeThrough: null }; }
+        })(),
         qualified: metric(
           coverage ? count("qualified") : null,
           "collector_coverage_unknown",
@@ -1678,7 +1747,7 @@ export class MarketingServer {
           "personId",
           "occurredAt",
           "consentReceipt",
-          "sourceReceipt",
+          "sourceReceipt", "sourceId", "purpose", "synthetic", "test", "productionMetricsExcluded",
           "clickId",
           "revenue",
         ],

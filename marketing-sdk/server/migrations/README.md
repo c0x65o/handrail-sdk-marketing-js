@@ -1,6 +1,6 @@
 # Session schema 2
 
-Opening a Store applies schema 1 then additive migration 2 under the existing
+Legacy migrating Store factories apply schema 1 then additive migration 2 under the existing
 MariaDB schema lock (SQLite uses a transaction). PostgreSQL uses a schema-scoped
 transaction advisory lock and transactional DDL, with its own schema 1 and
 `002-sessions.postgres.sql`; both fresh initialization and upgrades roll back
@@ -11,6 +11,15 @@ start only the new executor. Do not run old code after migration: old positional
 session inserts and delete-on-logout do not support the added column. Rollback
 requires a forward-compatible code rollback or an isolated pre-upgrade restore,
 not dropping revocation state from a live database.
+
+For PostgreSQL ordinary host startup, use `Store.openExistingPostgres(options)`
+with a restricted runtime role. It runs no DDL and rejects missing/outdated/future
+schema versions or missing required structures. Apply migrations separately with
+`Store.migratePostgres(options)` under trusted schema-owner credentials. The
+existing `Store.postgres(options)` remains a migrating convenience factory for
+compatibility. The reference host opts in with
+`MARKETING_POSTGRES_INITIALIZATION=open-existing`. See [exact integration
+contract](../../DRAFTS.md). This API change adds no migration or rollback DDL.
 
 Existing `users.id` UUIDs, session hashes and numeric `expires_at` milliseconds
 remain unchanged. `sessions.revoked_at` stores UTC ISO-8601 text, initially NULL.

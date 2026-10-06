@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { defaultCampaignSchedule } from "./schedule.js";
+import { defaultCampaignSchedule, completedCampaignWindow } from "./schedule.js";
 import type {
   Asset,
   Conversation,
@@ -50,6 +50,10 @@ export function MaterialReview({
           {material.budget.currency} {(material.budget.minor / 100).toFixed(2)}{" "}
           · excludes fees/taxes
         </dd>
+        {material.advertisingBudget?.daily && <>
+          <dt>Daily media budget</dt>
+          <dd>{material.advertisingBudget.daily.currency} {(material.advertisingBudget.daily.minor / 100).toFixed(2)}</dd>
+        </>}
         <dt>Delivery window</dt>
         <dd>
           {material.startAt} → {material.endAt} (exclusive)
@@ -183,6 +187,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     [busy, setBusy] = useState(false);
   const [readError, setReadError] = useState("");
   const reads = useRef({ active: false, next: 0, settled: 0 });
+  const [reportWindow, setReportWindow] = useState("completed");
   const [result, setResult] = useState<Results | null>(null),
     [conversations, setConversations] = useState<Conversation[] | null>(null),
     [prompt, setPrompt] = useState(
@@ -255,11 +260,13 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
         material: next,
       });
   }
-  const window = campaign
+  const completedWindow = campaign ? completedCampaignWindow(campaign.material.startAt,
+    campaign.material.endAt, campaign.material.timezone) : null;
+  const window = campaign && (reportWindow === "campaign" || completedWindow)
     ? {
         campaignId: campaign.id,
-        from: campaign.material.startAt,
-        until: campaign.material.endAt,
+        from: reportWindow === "completed" ? completedWindow!.from : campaign.material.startAt,
+        until: reportWindow === "completed" ? completedWindow!.until : campaign.material.endAt,
       }
     : null;
   if (!data)
@@ -968,13 +975,25 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 <h2>Measured outcomes</h2>
                 <p>
                   {campaign.material.timezone} ·{" "}
-                  {campaign.material.budget.currency} · campaign delivery
-                  window. First-party leads, qualifications and paid customers
-                  remain distinct.
+                  {campaign.material.budget.currency}. Submissions, people and paid customers remain distinct.
+                </p>
+                <label>Reporting window
+                  <select aria-label="Reporting window" value={reportWindow} onChange={e => { setReportWindow(e.target.value); setResult(null); }}>
+                    <option value="completed">Completed provider days within campaign</option>
+                    <option value="campaign">Full campaign · first-party results only</option>
+                  </select>
+                </label>
+                <p>
+                  {window ? `${window.from} → ${window.until} (exclusive)` : "No completed provider days in this campaign yet."}
+                </p>
+                <p className="muted">
+                  {reportWindow === "campaign"
+                    ? "Full campaign results may include partial and future days. Provider sync requires completed provider days."
+                    : "Only whole, completed days in the account timezone. Partial and current days are excluded."}
                 </p>
                 <div className="actions">
                   <button
-                    disabled={busy}
+                    disabled={busy || !window}
                     onClick={() =>
                       void act(async () =>
                         setResult(await client.call("results", window!)),
@@ -985,7 +1004,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   </button>
                   <button
                     className="secondary"
-                    disabled={busy || !canEdit}
+                    disabled={busy || !canEdit || !window || reportWindow !== "completed"}
                     onClick={() =>
                       void act(async () => {
                         await client.call("syncMetrics", window!);
@@ -1003,6 +1022,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                     {result.source} ·{" "}
                     {result.stale ? "stale / not observed" : "fresh"} ·{" "}
                     {result.observedAt || "no snapshot"} · {result.attribution}
+                    {result.reportingBasis && ` · ${result.reportingBasis.window.replaceAll("-", " ")}`}
                   </p>
                   <div className="metrics">
                     {(
@@ -1011,6 +1031,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                         "impressions",
                         "clicks",
                         "leads",
+                        "completedSubmissions",
+                        "applicants",
+                        "qualifiedApplicants",
+                        "hires",
+                        "excludedTestEvents",
                         "qualified",
                         "customers",
                         "revenueMinor",
@@ -1023,6 +1048,12 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                       <article className="card" key={k}>
                         <h3>
                           {{
+                            leads: "Unique people (completed forms)",
+                            completedSubmissions: "Completed submissions",
+                            applicants: "Completed applications",
+                            qualifiedApplicants: "Qualified applicants",
+                            hires: "Hires",
+                            excludedTestEvents: "Excluded test events",
                             spendMinor: "Media spend (minor)",
                             mediaCacMinor: "Media CAC (minor)",
                             ctr: "CTR",
@@ -1032,18 +1063,18 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                           }[k as string] || k}
                         </h3>
                         <strong>
-                          {result[k].value === null
+                          {result[k]?.value == null
                             ? "—"
                             : k === "ctr"
                               ? `${(result[k].value! * 100).toFixed(2)}%`
-                              : Number(result[k].value).toLocaleString(
+                              : Number(result[k]?.value).toLocaleString(
                                   undefined,
                                   { maximumFractionDigits: 2 },
                                 )}
                         </strong>
                         <p>
-                          {result[k].reason?.replaceAll("_", " ") ||
-                            "Observed within this window"}
+                          {result[k]?.reason?.replaceAll("_", " ") ||
+                            (result[k] ? "Observed within this window" : "Not available from this server")}
                         </p>
                       </article>
                     ))}
@@ -1133,6 +1164,7 @@ function CampaignForm({
       "https://fieldwork.example/desk-kit",
     ),
     [budget, setBudget] = useState("42"),
+    [dailyBudget, setDailyBudget] = useState(""),
     [scheduleError, setScheduleError] = useState("");
   const g = grants.find((x) => x.id === grantId);
   async function submit(e: React.FormEvent) {
@@ -1165,6 +1197,12 @@ function CampaignForm({
           currency: g.currency,
           minor: Math.round(Number(budget) * 100),
         },
+        ...(g.provider === "linkedin" || (g.provider === "meta" && dailyBudget) ? {
+          advertisingBudget: {
+            lifetime: { currency: g.currency, minor: Math.round(Number(budget) * 100) },
+            daily: { currency: g.currency, minor: Math.round(Number(dailyBudget) * 100) },
+          },
+        } : {}),
         ...schedule,
         timezone: g.timezone,
         audience:
@@ -1260,6 +1298,11 @@ function CampaignForm({
           onChange={(e) => setBudget(e.target.value)}
         />
       </label>
+      {g && g.provider !== "google" && <label>
+        Daily media budget ({g.currency}){g.provider === "linkedin" ? " — required" : " — optional"}
+        <input type="number" min="0.01" step="0.01" required={g.provider === "linkedin"}
+          value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} />
+      </label>}
       <p className="muted">
         Draft starts at the beginning of tomorrow in {g?.timezone} for seven
         calendar days. Review exact dates and all mapped

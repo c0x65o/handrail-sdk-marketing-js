@@ -8,6 +8,7 @@ import type {
 } from "../core/index.js";
 import type { ProviderPort } from "./ports.js";
 import { digest, requireThat, Store, DomainError } from "./store.js";
+import { providerDayWindow } from "./reporting.js";
 import { material } from "./validation.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
@@ -49,6 +50,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     "account_context_mismatch",
   );
   if (g.provider === "google") {
+    requireThat(!m.advertisingBudget?.daily, "google_daily_budget_unsupported");
     requireThat(assets.length === 0, "google_search_text_only");
     const prefix = `customers/${g.accountId}`;
     const campaign = `${prefix}/campaigns/-2`,
@@ -170,6 +172,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         name: m.name,
         objective: "OUTCOME_TRAFFIC",
         special_ad_categories: [],
+        ...(m.advertisingBudget?.daily ? { spend_cap: String(m.budget.minor) } : {}),
         status: "PAUSED",
       },
       adset: {
@@ -177,7 +180,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         billing_event: "IMPRESSIONS",
         optimization_goal: "LINK_CLICKS",
         bid_strategy: "LOWEST_COST_WITHOUT_CAP",
-        lifetime_budget: String(m.budget.minor),
+        ...(m.advertisingBudget?.daily ? { daily_budget: String(m.advertisingBudget.daily.minor) } : { lifetime_budget: String(m.budget.minor) }),
         start_time: m.startAt,
         end_time: m.endAt,
         status: "PAUSED",
@@ -206,9 +209,11 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     g.organizationId && /^\d+$/.test(g.organizationId),
     "linkedin_organization_required",
   );
+  requireThat(m.advertisingBudget?.daily, "linkedin_explicit_daily_budget_required");
   return {
     provider: g.provider,
     imageDigest: image.digest,
+    accountId: g.accountId,
     group: {
       name: m.name,
       totalBudgetCents: m.budget.minor,
@@ -220,11 +225,13 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
       name: m.name,
       organizationId: g.organizationId,
       currencyCode: m.budget.currency,
-      dailyBudgetCents: m.budget.minor,
+      dailyBudgetCents: m.advertisingBudget.daily.minor,
       startAt: Date.parse(m.startAt),
       endAt: Date.parse(m.endAt),
-      objectiveType: "WEBSITE_VISITS",
-      format: "SINGLE_IMAGE",
+      objectiveType: "WEBSITE_VISIT",
+      format: "STANDARD_UPDATE",
+      type: "SPONSORED_UPDATES",
+      costType: "CPC",
       unitCostAmount: "0.10",
       audienceExpansionEnabled: false,
       offsiteDeliveryEnabled: false,
@@ -380,7 +387,7 @@ export class NativeProvider implements ProviderPort {
     beforeWrite: () => void | Promise<void>,
   ) {
     const plan: any = this.plan(c, g, assets);
-    const ids: Record<string, string> = {};
+    const ids: Record<string, string> = { readbackVersion: "2" };
     const create = async (
       key: string,
       action: () => Promise<{
@@ -568,11 +575,11 @@ export class NativeProvider implements ProviderPort {
       );
       const campaign = await client.getObject(
         ids.campaign,
-        "id,objective,special_ad_categories,status",
+        ids.readbackVersion === "2" ? "id,objective,special_ad_categories,spend_cap,status" : "id,objective,special_ad_categories,status",
       );
       const adset = await client.getObject(
         ids.adset,
-        "id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,start_time,end_time,targeting,status",
+        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${ids.readbackVersion === "2" ? "daily_budget," : ""}start_time,end_time,targeting,status`,
       );
       const creative = await client.getObject(
         ids.creative,
@@ -616,7 +623,7 @@ export class NativeProvider implements ProviderPort {
         Object.fromEntries(fields.map((f) => [f, obj[f]]));
       return {
         material: {
-          group: pick(group, ["totalBudget", "runSchedule"]),
+          group: pick(group, [...(ids.readbackVersion === "2" ? ["account"] : []), "totalBudget", "runSchedule"]),
           campaign: pick(campaign, [
             "account",
             "campaignGroup",
@@ -627,6 +634,7 @@ export class NativeProvider implements ProviderPort {
             "audienceExpansionEnabled",
             "offsiteDeliveryEnabled",
             "unitCost",
+            ...(ids.readbackVersion === "2" ? ["costType", "format"] : []),
             "objectiveType",
             "type",
           ]),
@@ -704,6 +712,7 @@ export class NativeProvider implements ProviderPort {
           subset(s.campaign, {
             objective: plan.campaign.objective,
             special_ad_categories: plan.campaign.special_ad_categories,
+            ...(plan.campaign.spend_cap ? { spend_cap: plan.campaign.spend_cap } : {}),
           }) &&
           s.adset.campaign_id === ids.campaign &&
           s.ad.adset_id === ids.adset &&
@@ -780,6 +789,14 @@ export class NativeProvider implements ProviderPort {
       );
     } else {
       requireThat(
+        s.group.account === s.campaign.account &&
+        s.campaign.account === `urn:li:sponsoredAccount:${plan.accountId}` &&
+        s.campaign.associatedEntity === `urn:li:organization:${plan.campaign.organizationId}` &&
+        subset(s.campaign.dailyBudget, { amount: (plan.campaign.dailyBudgetCents / 100).toFixed(2), currencyCode: plan.campaign.currencyCode }) &&
+        subset(s.campaign.unitCost, { amount: plan.campaign.unitCostAmount, currencyCode: plan.campaign.currencyCode }) &&
+        s.campaign.objectiveType === plan.campaign.objectiveType &&
+        s.campaign.type === plan.campaign.type && s.campaign.costType === plan.campaign.costType &&
+        s.campaign.format === plan.campaign.format &&
         subset(s.group.totalBudget, {
           amount: (plan.group.totalBudgetCents / 100).toFixed(2),
           currencyCode: plan.group.currencyCode,
@@ -912,6 +929,7 @@ export class NativeProvider implements ProviderPort {
     g: Grant,
     beforeWrite: () => void | Promise<void>,
   ) {
+    requireThat(this.name !== "linkedin" || c.material.advertisingBudget?.daily, "linkedin_explicit_daily_budget_required");
     return await this.status(c, g, true, beforeWrite);
   }
   async pause(c: Campaign, g: Grant, beforeWrite: () => void | Promise<void>) {
@@ -975,13 +993,7 @@ export class NativeProvider implements ProviderPort {
     until: string,
   ): Promise<Omit<Metrics, "id" | "projectId" | "campaignId">> {
     requireThat(c.receipt?.ids.campaign, "provider_campaign_not_prepared");
-    // Provider reporting is date-based. Reject partial local days rather than
-    // silently widening requested windows or mixing account timezones.
-    requireThat(
-      dateInZone(from, g.timezone).endsWith("00:00:00") &&
-        dateInZone(until, g.timezone).endsWith("00:00:00"),
-      "provider_report_requires_local_midnights",
-    );
+    const reportingBasis = providerDayWindow(from, until, g.timezone);
     const since = dateInZone(from, g.timezone).slice(0, 10),
       through = dateInZone(
         new Date(Date.parse(until) - 1).toISOString(),
@@ -1043,6 +1055,7 @@ export class NativeProvider implements ProviderPort {
     });
     return {
       ...values,
+      reportingBasis,
       from,
       until,
       timezone: g.timezone,
@@ -1067,8 +1080,8 @@ export function summarizeMetrics(
     !rows.length ||
     rows.some(
       (r) =>
-        r[key] === null ||
-        r[key] === undefined ||
+        (typeof r[key] !== "number" && typeof r[key] !== "string") ||
+        (typeof r[key] === "string" && r[key].trim() === "") ||
         !Number.isFinite(Number(r[key])) ||
         Number(r[key]) < 0,
     )

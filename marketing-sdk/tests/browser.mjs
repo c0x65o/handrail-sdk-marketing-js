@@ -9,6 +9,7 @@ import { runtime, createHost } from "../../.marketing-build/reference/host.js";
 import { testStore } from "../../.marketing-build/tests/datastore.js";
 import { seedQa } from "../../.marketing-build/reference/seed.js";
 import { defaultCampaignSchedule } from "../../.marketing-build/react/schedule.js";
+import { localDate } from "../../.marketing-build/server/reporting.js";
 import { MarketingServer } from "../../.marketing-build/server/service.js";
 
 const dir = await mkdtemp(join(tmpdir(), "marketing-browser-"));
@@ -32,6 +33,13 @@ const service = new MarketingServer(
   "fixture", () => campaignNow ?? Date.now(), fixtureService.readDestination,
 );
 await seedQa(store, { username: "qa-browser", password });
+const budgetPolicy = { id: "browser-policy", projectId: "qa-alpha", scope: "project", projectIds: ["qa-alpha"], currency: "USD", timezone: "America/Chicago",
+  from: "2020-01-01T06:00:00Z", until: "2100-01-01T06:00:00Z", dailyCeilingMinor: 100000, periodCeilingMinor: 100000,
+  campaignDailyCeilingMinor: 10000, campaignLifetimeCeilingMinor: 10000, maxObservationAgeMs: 600000 };
+await service.advertisingBudgets.configure(budgetPolicy);
+await service.advertisingBudgets.observe("qa-alpha", { policyId: budgetPolicy.id, from: budgetPolicy.from, until: budgetPolicy.until,
+  day: localDate(Date.now(), budgetPolicy.timezone), currency: budgetPolicy.currency, timezone: budgetPolicy.timezone,
+  observedAt: new Date().toISOString(), todayMinor: 0, periodMinor: 0, source: "fixture", receipt: "disposable-complete-fixture" });
 // Both projects belong to this disposable test principal; live seeds are untouched.
 const user = await store.db.prepare("SELECT id FROM users WHERE login=?").get("qa-browser");
 await store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(user.id, "qa-beta", "analyst");
@@ -222,6 +230,7 @@ try {
     await page
       .getByLabel("Campaign name", { exact: true })
       .fill(`QA desk kit ${width}`);
+    await page.getByLabel("Daily media budget (USD)", { exact: false }).fill("5");
     await page.getByRole("button", { name: "Save campaign draft" }).click();
     await page
       .getByRole("heading", { name: "Connections", exact: true })
@@ -229,6 +238,7 @@ try {
     const saved = (await api("workspace", {})).campaigns.find((c) => c.material.name === `QA desk kit ${width}`);
     assert.deepEqual({ startAt: saved.material.startAt, endAt: saved.material.endAt }, defaultCampaignSchedule("America/Chicago", scheduleNow));
     assert.equal(saved.material.startAt, "2026-09-27T05:00:00.000Z");
+    assert.deepEqual(saved.material.advertisingBudget, { lifetime: { currency: "USD", minor: 4200 }, daily: { currency: "USD", minor: 500 } });
     await page.clock.setFixedTime(new Date());
     const meta = page.locator("section.card").filter({
       has: page.getByRole("heading", {
@@ -340,6 +350,7 @@ try {
     await page.getByRole("heading", { name: "Review this exact commitment" }).waitFor();
     const approval = page.getByRole("region", { name: "Launch approval" });
     assert.ok((await approval.innerText()).includes(`${saved.material.startAt} → ${saved.material.endAt}`));
+    assert.match(await approval.innerText(), /Daily media budget[\s\S]*USD 5.00/);
     const scheduledPacket = (await api("workspace", {})).packets.find((p) => p.campaignId === campaign.id);
     assert.equal(scheduledPacket.material.startAt, saved.material.startAt);
     assert.equal(scheduledPacket.material.endAt, saved.material.endAt);
@@ -381,7 +392,7 @@ try {
         exact: true,
       })
       .waitFor();
-    const at = new Date(Date.now() - 1000).toISOString();
+    const at = new Date(Date.parse(campaign.material.startAt) + 3600000).toISOString();
     await page
       .getByRole("button", { name: "Conversations", exact: true })
       .click();
@@ -416,6 +427,9 @@ try {
     };
     await api("event", form);
     await api("event", form);
+    await api("event", { ...form, id: `second-form-${width}`, sourceReceipt: `second-source-${width}` });
+    await api("event", { ...eventBase, id: `qa-click-${width}`, kind: "click", sourceReceipt: `qa-click-source-${width}`, clickId: null, test: true });
+    await api("event", { ...form, id: `qa-form-${width}`, sourceReceipt: `qa-source-${width}`, clickId: `qa-click-${width}`, test: true });
     await api("conversation", {
       id: `thread-${width}`,
       campaignId: campaign.id,
@@ -438,8 +452,14 @@ try {
       .waitFor();
     await screenshot("conversations");
     await page.getByRole("button", { name: "Results", exact: true }).click();
+    await page.getByLabel("Reporting window", { exact: true }).selectOption("campaign");
+    assert.equal(await page.getByRole("button", { name: "Sync provider metrics" }).isDisabled(), true);
     await page.getByRole("button", { name: "Read results" }).click();
-    await page.getByText("collector coverage unknown", { exact: true }).count();
+    const submissionCard = page.locator("article.card").filter({ has: page.getByRole("heading", { name: "Completed submissions", exact: true }) });
+    await submissionCard.getByText("2", { exact: true }).waitFor();
+    await screenshot("full-window-results");
+    await page.getByLabel("Reporting window", { exact: true }).selectOption("completed");
+    await page.getByRole("button", { name: "Read results" }).click();
     await page.getByRole("button", { name: "Sync provider metrics" }).click();
     await page.getByText("4.00%", { exact: true }).waitFor();
     await screenshot("results");
@@ -449,6 +469,8 @@ try {
       until: campaign.material.endAt,
     });
     assert.equal(reportData.leads.value, 1);
+    assert.equal(reportData.completedSubmissions.value, 2);
+    assert.equal(reportData.reportingBasis.window, "partial-or-open-window");
     assert.equal(reportData.qualified.value, 0);
     assert.equal(await page.getByRole("alert").count(), 0);
     report.viewports.push({
@@ -476,6 +498,9 @@ try {
         "fixture launch",
         "first-party event dedupe",
         "conversations",
+        "typed daily and lifetime budgets in draft and approval",
+        "completed-day selection and full-window sync disabled",
+        "separate submissions, people and excluded QA",
         "results",
       ],
       overflow: false,
