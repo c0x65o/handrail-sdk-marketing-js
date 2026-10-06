@@ -174,7 +174,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
             checks++;
           },
         ),
-      /fixture_lost_ad_read_response|Meta is unavailable/,
+      /provider_request_failed/,
     );
     assert.equal(writes, 5);
     assert.equal(checks, 5);

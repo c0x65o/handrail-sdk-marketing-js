@@ -1,7 +1,7 @@
 /* global process, console, Buffer */
 // Fresh socket-only PostgreSQL, never ambient DATABASE_URL/PG* credentials.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -17,7 +17,7 @@ try {
     `-k ${root} -h '' -c unix_socket_permissions=0700 -c shared_buffers=32MB -c max_connections=30`, "-w", "start"], { stdio: "ignore" });
   started = true;
   const child = spawn(process.execPath, ["--test", "--test-concurrency=1",
-    ...["drafts", "postgres", "native-writes", "providers", "service", "store", "sessions", "schedule"].map(s => `.marketing-build/tests/${s}.test.js`)], {
+    ...(await readdir(".marketing-build/tests")).filter(s => s.endsWith(".test.js")).sort().map(s => `.marketing-build/tests/${s}`)], {
     stdio: "inherit", env: { ...testEnv, MARKETING_TEST_MARIADB_SOCKET: "",
       MARKETING_TEST_POSTGRES_ROOT: root, MARKETING_TEST_POSTGRES_SOCKET: root },
   });

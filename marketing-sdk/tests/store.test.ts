@@ -169,3 +169,20 @@ test(
     }
   },
 );
+
+test("mysql2 compressed protocol retains large binary and Unicode data through prepared transactions", { skip: !process.env.MARKETING_TEST_MARIADB_SOCKET }, async () => {
+  const f = await fixture();
+  try {
+    const compression = await f.store.db.prepare("SHOW SESSION STATUS LIKE 'Compression'").get();
+    assert.equal(compression!.Value, "ON");
+    await f.store.db.prepare("INSERT INTO projects VALUES(?,?)").run("p", "圧縮 🛤️");
+    const bytes = Buffer.alloc(1024 * 1024, 0xab);
+    bytes.set(Buffer.from([0, 255, 1, 0, 128]), 100_000);
+    await f.store.transaction(async () => {
+      await f.store.db.prepare("INSERT INTO blobs VALUES(?,?,?)").run("p", "compressed", bytes);
+      await f.store.put("p", "test", "unicode", { text: "圧縮 🛤️", revision: 1 });
+    });
+    assert.deepEqual(Buffer.from((await f.store.db.prepare("SELECT bytes FROM blobs WHERE project_id=? AND digest=?").get("p", "compressed"))!.bytes as Uint8Array), bytes);
+    assert.deepEqual(await f.store.get("p", "test", "unicode"), { text: "圧縮 🛤️", revision: 1 });
+  } finally { await f.close(); }
+});

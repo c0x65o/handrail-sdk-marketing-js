@@ -20,7 +20,7 @@ import {
 import { publicAddress } from "../server/destination.js";
 import { GoogleAdsClient } from "../server/google.js";
 import { NativeGeneration } from "../server/generation.js";
-import { digest } from "../server/store.js";
+import { digest, DomainError } from "../server/store.js";
 import { BoundGenerationBilling } from "../server/billing.js";
 import { createCredentialCipher } from "../support/vault-crypto.js";
 import { HostAgent } from "../server/agent.js";
@@ -110,10 +110,15 @@ test("native image transport retains request and byte identities without retryin
     },
     async () => {
       calls++;
-      throw new Error("lost response after provider may have accepted");
+      throw new Error("private-provider-response-with-credential");
     },
   );
-  await assert.rejects(async () => await failing.submit(job, grant, () => {}));
+  await assert.rejects(async () => await failing.submit(job, grant, () => {}), error => {
+    assert.ok(error instanceof DomainError);
+    assert.equal(error.code, "generation_submission_uncertain");
+    assert.ok(!String(error).includes("private-provider-response"));
+    return true;
+  });
   assert.equal(calls, 2);
   assert.equal(
     (
@@ -455,6 +460,19 @@ test("native Meta and LinkedIn verification reuse existing clients and filter ef
     const verified = await meta.verify(g);
     assert.ok(verified.permissions.includes("activate"));
     assert.ok(!JSON.stringify(verified).includes("never-export"));
+    for (const fetcher of [
+      async () => Response.json({ error: { message: "private-consumer-data never-export-token", code: 190 } }, { status: 403 }),
+      async () => { throw new Error("private-consumer-data never-export-token"); },
+    ]) {
+      const denied = new NativeProvider("meta", vault, store, fetcher);
+      await assert.rejects(denied.verify(g), error => {
+        assert.ok(error instanceof DomainError);
+        assert.equal(error.code, "provider_request_failed");
+        assert.equal(error.status, 502);
+        assert.ok(!String(error).includes("private-consumer-data"));
+        return true;
+      });
+    }
     const li = new NativeProvider("linkedin", vault, store, async (url) => {
       if (String(url).includes("introspectToken"))
         return Response.json({

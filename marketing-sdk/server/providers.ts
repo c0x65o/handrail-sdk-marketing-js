@@ -7,7 +7,7 @@ import type {
   Receipt,
 } from "../core/index.js";
 import type { ProviderPort } from "./ports.js";
-import { digest, requireThat, Store } from "./store.js";
+import { digest, requireThat, Store, DomainError } from "./store.js";
 import { material } from "./validation.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
@@ -284,26 +284,33 @@ export class NativeProvider implements ProviderPort {
   ) {}
   private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
-    return await this.vault.use(g, (credentials) =>
-      fn(
-        this.name === "meta"
-          ? new MetaMarketingClient({
-              ...credentials,
-              fetchImpl: this.fetcher,
-            })
-          : this.name === "linkedin"
-            ? new LinkedInMarketingClient({
+    try {
+      return await this.vault.use(g, (credentials) =>
+        fn(
+          this.name === "meta"
+            ? new MetaMarketingClient({
                 ...credentials,
-                apiVersion: "202609",
                 fetchImpl: this.fetcher,
               })
-            : new GoogleAdsClient(
-                async () => credentials.accessToken,
-                credentials.loginCustomerId,
-                this.fetcher,
-              ),
-      ),
-    );
+            : this.name === "linkedin"
+              ? new LinkedInMarketingClient({
+                  ...credentials,
+                  apiVersion: "202609",
+                  fetchImpl: this.fetcher,
+                })
+              : new GoogleAdsClient(
+                  async () => credentials.accessToken,
+                  credentials.loginCustomerId,
+                  this.fetcher,
+                ),
+        ),
+      );
+    } catch (error) {
+      // Never expose provider bodies, request configuration or credential resolver errors.
+      // Partial object IDs have already been retained inside prepare's write boundary.
+      if (error instanceof DomainError) throw error;
+      throw new DomainError("provider_request_failed", 502);
+    }
   }
   async verify(
     g: Grant,

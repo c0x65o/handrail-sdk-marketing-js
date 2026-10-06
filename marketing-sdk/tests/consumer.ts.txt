@@ -1,0 +1,18 @@
+import { Store, MarketingServer, type Principal } from '@handrail/marketing/server';
+import { openDatastore, createHost, provision } from '@handrail/marketing/reference';
+import { runtime } from '@handrail/marketing/reference/host';
+import { seedQa } from '@handrail/marketing/reference/seed';
+import { createMarketingClient, type CampaignDraft, type DraftMaterial } from '@handrail/marketing';
+import { canonical } from '@handrail/marketing/core';
+import { MarketingWorkspace, ApprovalPanel } from '@handrail/marketing/react';
+import { agentTools } from '@handrail/marketing/agent';
+export async function consumer(store: Store, principal: Principal) {
+  const server = MarketingServer.unconnected(store);
+  const material: DraftMaterial = { name: 'Consumer draft', budget: { currency: 'USD' } };
+  const draft: CampaignDraft = await server.call(principal, 'project', 'saveDraft', { requestKey: 'key', material });
+  await server.call(principal, 'project', 'saveDraft', { id: draft.id, expectedRevision: draft.revision, requestKey: 'next', material });
+  // @ts-expect-error Revision must be numeric.
+  await server.call(principal, 'project', 'saveDraft', { id: draft.id, expectedRevision: '1', requestKey: 'bad', material });
+  return (await server.call(principal, 'project', 'workspace', {})).drafts;
+}
+export const exports = { openDatastore, createHost, provision, runtime, seedQa, canonical, createMarketingClient, MarketingWorkspace, ApprovalPanel, agentTools, postgres: Store.postgres };

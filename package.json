@@ -1,6 +1,6 @@
 {
   "name": "@handrail/marketing",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "engines": {
@@ -57,17 +57,18 @@
     "test": "node --test --test-concurrency=1 .marketing-build/tests/*.test.js",
     "test:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs",
     "test:postgres": "node marketing-sdk/tests/postgres-runner.mjs",
+    "test:consumer": "node marketing-sdk/tests/consumer.mjs",
     "test:browser:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs --browser",
     "start": "node .marketing-build/reference/host.js"
   },
   "dependencies": {
     "@types/pg": "8.23.1",
-    "mysql2": "3.22.3",
+    "mysql2": "3.24.5",
     "openai": "6.34.0",
     "pg": "8.23.1",
     "react": "19.2.5",
     "react-dom": "19.2.5",
-    "sharp": "0.34.5"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@types/node": "25.9.0",

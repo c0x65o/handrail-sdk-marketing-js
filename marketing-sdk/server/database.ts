@@ -76,6 +76,9 @@ export class Database {
       connectionLimit: 6,
       multipleStatements: false,
       supportBigNumbers: true,
+      // Store JSON is serialized exactly once on every dialect. mysql2 also
+      // decodes MariaDB JSON metadata; retain the established string contract.
+      jsonStrings: true,
     });
     const connection = await db.pool.getConnection();
     try {

@@ -37,6 +37,7 @@ import {
 } from "./store.js";
 import { draftMaterial, instant, keys, material, text } from "./validation.js";
 import { capturePublicDestination } from "./destination.js";
+import { inspectMedia } from "./generation.js";
 const EDIT = ["admin", "editor"] as const;
 const HUMAN = ["admin", "approver"] as const;
 const valid = (expiry: string, revoked: string | null, now: number) =>
@@ -126,6 +127,7 @@ export class MarketingServer {
           this.mode === "fixture" || a.source !== "fixture",
           "fixture_not_live_material",
         );
+        await inspectMedia(b.bytes as Uint8Array, a.kind, a.mime);
         return a;
       }),
     );
@@ -1235,6 +1237,7 @@ export class MarketingServer {
             : ["image/png", "image/jpeg", "image/webp"].includes(output.mime!),
           "rendered_media_required",
         );
+        const media = await inspectMedia(output.bytes, job.kind, output.mime);
         const asset: Asset = {
           id: id(),
           projectId: job.projectId,
@@ -1242,10 +1245,10 @@ export class MarketingServer {
           version: 1,
           kind: job.kind,
           digest: byteDigest(output.bytes),
-          mime: output.mime!,
-          width: output.width || null,
-          height: output.height || null,
-          seconds: output.seconds || null,
+          mime: media.mime,
+          width: media.width,
+          height: media.height,
+          seconds: media.seconds || null,
           jobId: job.id,
           source: this.generation.evidence,
           rightsReceipt: job.rightsReceipt,
@@ -1297,6 +1300,7 @@ export class MarketingServer {
         "generationGrant",
         job.grantId,
       );
+      requireThat(valid(grant.expiresAt, grant.revokedAt, this.now()), "generation_grant_unavailable");
       const output = await this.generation.reconcile(job, grant);
       return await this.retainOutput(job, output);
     });

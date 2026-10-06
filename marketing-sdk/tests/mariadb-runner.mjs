@@ -1,7 +1,7 @@
 /* global process, console, Buffer, setTimeout */
 // Disposable local MariaDB only. No Docker, managed resource mutation, or ambient DB credentials.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -83,8 +83,8 @@ try {
     : [
         "--test",
         "--test-concurrency=1",
-        ...["drafts", "native-writes", "providers", "service", "store", "sessions"].map(
-          (s) => `.marketing-build/tests/${s}.test.js`,
+        ...(await readdir(".marketing-build/tests")).filter(s => s.endsWith(".test.js")).sort().map(
+          (s) => `.marketing-build/tests/${s}`,
         ),
       ];
   child = spawn(process.execPath, args, {
@@ -92,6 +92,8 @@ try {
     stdio: "inherit",
     env: {
       ...process.env,
+      MARKETING_TEST_POSTGRES_SOCKET: "",
+      MARKETING_TEST_POSTGRES_ROOT: "",
       MARKETING_TEST_MARIADB_ROOT: root,
       MARKETING_TEST_MARIADB_SOCKET: socket,
     },

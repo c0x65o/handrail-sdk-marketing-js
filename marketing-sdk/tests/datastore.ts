@@ -13,7 +13,8 @@ export async function testStore(path: string) {
     root && resolve(socket) === resolve(root, "mysql.sock"),
     "private_test_socket_required",
   );
-  const options = { socketPath: socket, user: "root", charset: "utf8mb4_bin" };
+  // Exercise the mysql2 compressed protocol affected by GHSA-rgwj-5xj2-c3m3.
+  const options = { socketPath: socket, user: "root", charset: "utf8mb4_bin", compress: true };
   const connection = await mysql.createConnection(options);
   const database = `marketing_test_${byteDigest(Buffer.from(path)).slice(0, 24)}`;
   try {

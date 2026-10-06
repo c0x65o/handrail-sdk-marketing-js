@@ -57,5 +57,7 @@ retry/edit semantics and consumer wiring.
 
 See [host integration](marketing-sdk/README.md) and
 [session migration and mapping](marketing-sdk/server/migrations/README.md).
+See [readiness and consumer qualification](marketing-sdk/READINESS.md) for media
+limits, dependency verification, strict consumer checks and the release handoff.
 Existing rights are reserved; see [RIGHTS.md](RIGHTS.md) and
 [third-party notices](THIRD_PARTY_NOTICES.md).

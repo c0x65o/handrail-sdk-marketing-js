@@ -9,6 +9,26 @@ import { byteDigest } from "../server/store.js";
 import { runtime, createHost } from "../reference/host.js";
 import { createCredentialCipher } from "../support/vault-crypto.js";
 
+test("concurrent authentication attempts share the atomic 10-per-minute limit across connections", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "marketing-rate-"));
+  const path = join(dir, "db"), a = await testStore(path);
+  const b = a.db.dialect === "sqlite" ? a : await testStore(path);
+  const now = Date.now();
+  try {
+    await a.createUser("known", "");
+    // One success counts too; successful authentication never resets the window.
+    assert.ok(await a.login("known", "", "same-ip", now));
+    const results = await Promise.allSettled(Array.from({ length: 12 }, (_, n) =>
+      (n % 2 ? a : b).login(`missing-${n}`, "bad", "same-ip", now)));
+    assert.equal(results.filter(r => r.status === "fulfilled" && r.value === null).length, 9);
+    const denied = results.filter(r => r.status === "rejected") as PromiseRejectedResult[];
+    assert.equal(denied.length, 3);
+    assert.ok(denied.every(r => String(r.reason).includes("authentication_rate_limited")));
+    assert.equal(Number((await a.db.prepare("SELECT COUNT(*) AS n FROM auth_attempts WHERE ip=?").get("same-ip"))!.n), 10);
+    assert.ok(await b.login("known", "", "same-ip", now + 60_000));
+  } finally { if (a !== b) await b.close(); await a.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("v1 migration preserves sessions; mapping expiry, revocation and immutable identity agree after restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "marketing-migration-"));
   const path = join(dir, "db");

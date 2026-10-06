@@ -1,7 +1,7 @@
 import { testStore } from "./datastore.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { digest } from "../server/store.js";
@@ -14,6 +14,7 @@ import {
 import { seedQa } from "../reference/seed.js";
 import type {
   Campaign,
+  GenerationGrant,
   Grant,
   Material,
   Operation,
@@ -26,6 +27,59 @@ import { agentTools } from "../agent/index.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 const time = Date.now();
+test("generation byte validation fences MIME mismatch and malformed output without resubmission", async () => {
+  for (const malformed of [false, true]) {
+    const t = await setupTest();
+    try {
+      const c = await t.service.saveCampaign(t.admin, "qa-alpha", { grantId: "meta-qa", material: sampleMaterial() });
+      const input = { campaignId: c.id, grantId: "fixture-image", prompt: "Fixture", rightsReceipt: "test", parentAssetIds: [], requestKey: "media" };
+      let calls = 0;
+      // A narrow generation boundary fake, with the real Store and service below it.
+      t.generation.submit = async (_job, _grant, retain) => {
+        calls++;
+        await retain("retained-test-request");
+        return { state: "retained", requestId: "retained-test-request",
+          bytes: malformed ? Buffer.from("private provider diagnostic") : readFileSync(new URL("../../marketing-sdk/tests/fixtures/test-pattern.png", import.meta.url)),
+          mime: malformed ? "image/png" : "image/jpeg", width: 1, height: 1 };
+      };
+      const job = await t.service.generate(t.admin, "qa-alpha", input);
+      const result = await t.service.dispatchGeneration("qa-alpha", job.id);
+      assert.equal(result.state, "unknown");
+      assert.equal(result.providerRequestId, "retained-test-request");
+      assert.equal(result.assetId, null);
+      assert.equal((await t.store.list("qa-alpha", "asset")).length, 0);
+      assert.ok(!JSON.stringify(result).includes("private provider"));
+      assert.equal((await t.service.generate(t.admin, "qa-alpha", input)).id, job.id);
+      await assert.rejects(t.service.generate(t.admin, "qa-alpha", { ...input, requestKey: "new" }), /generation_pending/);
+      await t.service.dispatchGeneration("qa-alpha", job.id);
+      assert.equal(calls, 1);
+    } finally { await t.close(); }
+  }
+});
+
+test("generation reconciliation rechecks current grant and project authority before contacting the provider", async () => {
+  const t = await setupTest();
+  try {
+    const c = await t.service.saveCampaign(t.admin, "qa-alpha", { grantId: "meta-qa", material: sampleMaterial() });
+    t.generation.fault = "processing";
+    const job = await t.service.generate(t.admin, "qa-alpha", { campaignId: c.id, grantId: "fixture-image", prompt: "Fixture", rightsReceipt: "test", parentAssetIds: [], requestKey: "reconcile" });
+    await t.service.dispatchGeneration("qa-alpha", job.id);
+    const grant = await t.store.get<GenerationGrant>("qa-alpha", "generationGrant", job.grantId);
+    let calls = 0;
+    const reconcile = t.generation.reconcile.bind(t.generation);
+    t.generation.reconcile = async (...args) => { calls++; return reconcile(...args); };
+    await assert.rejects(t.service.reconcileGeneration(t.analyst, "qa-alpha", { jobId: job.id }), /forbidden/);
+    await assert.rejects(t.service.reconcileGeneration(t.admin, "qa-beta", { jobId: job.id }), /forbidden/);
+    for (const unavailable of [{ ...grant, revokedAt: new Date().toISOString() }, { ...grant, expiresAt: "2000-01-01T00:00:00Z" }]) {
+      await t.store.put("qa-alpha", "generationGrant", grant.id, unavailable);
+      await assert.rejects(t.service.reconcileGeneration(t.admin, "qa-alpha", { jobId: job.id }), /generation_grant_unavailable/);
+    }
+    assert.equal(calls, 0);
+    await t.store.put("qa-alpha", "generationGrant", grant.id, grant);
+    assert.equal((await t.service.reconcileGeneration(t.admin, "qa-alpha", { jobId: job.id })).state, "retained");
+    assert.equal(calls, 1);
+  } finally { await t.close(); }
+});
 export async function setupTest() {
   const dir = mkdtempSync(join(tmpdir(), "marketing-sdk-test-")),
     path = join(dir, "test.sqlite");
