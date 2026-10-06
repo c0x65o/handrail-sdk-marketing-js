@@ -335,6 +335,10 @@ export class MetaMarketingClient {
     const endpoints = { campaign: "campaigns", adset: "adsets", creative: "adcreatives", ad: "ads" };
     const endpoint = endpoints[type];
     if (!endpoint) throw new MetaMarketingError("Unsupported Meta object type", { code: "invalid_object_type", status: 400 });
+    // New ad-set-budget campaigns must explicitly disable sharing (API v24+).
+    // Do not default omitted/unknown input or offer an enabling option.
+    if (type === "campaign" && input?.is_adset_budget_sharing_enabled !== false)
+      throw new MetaMarketingError("Meta campaign budget sharing must be explicitly false", { code: "invalid_configuration", status: 400 });
     const safe = type === "creative" ? { ...input } : requirePaused(input);
     const created = await this.request(`${accountPath(adAccountId)}/${endpoint}`, { method: "POST", params: safe });
     if (!created?.id) throw new MetaMarketingError("Meta did not return an object ID", { code: "verification_failed", status: 502 });

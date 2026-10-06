@@ -4,7 +4,7 @@ import { runtime } from '@handrail/marketing/reference/host';
 import { seedQa } from '@handrail/marketing/reference/seed';
 import { createMarketingClient, type CampaignDraft, type DraftMaterial, type AdvertisingBudget, type Results } from '@handrail/marketing';
 import { canonical } from '@handrail/marketing/core';
-import { MarketingWorkspace, ApprovalPanel } from '@handrail/marketing/react';
+import { MarketingRoot, MarketingWorkspace, ApprovalPanel } from '@handrail/marketing/react';
 import { agentTools } from '@handrail/marketing/agent';
 export async function consumer(store: Store, principal: Principal) {
   const server = MarketingServer.unconnected(store);
@@ -15,7 +15,7 @@ export async function consumer(store: Store, principal: Principal) {
   await server.call(principal, 'project', 'saveDraft', { id: draft.id, expectedRevision: '1', requestKey: 'bad', material });
   return (await server.call(principal, 'project', 'workspace', {})).drafts;
 }
-export const exports = { openDatastore, createHost, provision, runtime, seedQa, canonical, createMarketingClient, MarketingWorkspace, ApprovalPanel, agentTools, postgres: Store.postgres };
+export const exports = { openDatastore, createHost, provision, runtime, seedQa, canonical, createMarketingClient, MarketingRoot, MarketingWorkspace, ApprovalPanel, agentTools, postgres: Store.postgres };
 
 export const budget: AdvertisingBudget = { lifetime: { currency: 'USD', minor: 10000 }, daily: { currency: 'USD', minor: 500 } };
 export function parityConsumer(store: Store, result: Results) {
@@ -48,3 +48,13 @@ const badObjective: LinkedInSettings['objective'] = 'WEBSITE_VISITS';
 // @ts-expect-error Document ad publishing is not offered.
 const badFormat: LinkedInSettings['format'] = 'SPONSORED_UPDATE_NATIVE_DOCUMENT';
 export const capabilityHelpers = { capabilityBlockers, capabilityKey, badObjective, badFormat };
+
+import type { Commands, PublicGrant, Campaign } from '@handrail/marketing';
+export async function promoteConsumer(client: ReturnType<typeof createMarketingClient>, input: Commands['promoteDraft']['input']): Promise<Campaign> {
+  return client.call('promoteDraft', input);
+}
+export const displayCatalog: PublicGrant['selectionOptions'] = [{ kind: 'pixel', id: '123', label: 'Existing account pixel' }];
+export async function guardedPlanningConsumer(client: ReturnType<typeof createMarketingClient>, input: Commands['planningWrite']['input']) {
+  const saved = await client.call('planningWrite', input);
+  return client.call('acknowledgePlanningWrite', { id: saved.id });
+}

@@ -26,8 +26,15 @@ try {
       { cwd: process.cwd(), encoding: "utf8" }));
     assert.equal(packed.length, 1);
     assert.ok(packed[0].files.some(f => f.path === ".marketing-build/core/index.d.ts"));
+    for (const path of ["marketing-sdk/react/style.css", ".marketing-build/react/style.css", "marketing-sdk/reference/dist/index.html", "marketing-sdk/reference/dist/THIRD_PARTY_NOTICES.txt"])
+      assert.ok(packed[0].files.some(f => f.path === path), `Missing packaged asset ${path}`);
     await mkdir(installed, { recursive: true });
     execFileSync("tar", ["-xzf", join(root, packed[0].filename), "--strip-components=1", "-C", installed]);
+    assert.equal(await readFile(join(installed, "marketing-sdk/react/style.css"), "utf8"), await readFile("marketing-sdk/react/style.css", "utf8"));
+    assert.equal(await readFile(join(installed, ".marketing-build/react/style.css"), "utf8"), await readFile("marketing-sdk/react/style.css", "utf8"));
+    const reference = await readFile(join(installed, "marketing-sdk/reference/dist/index.html"), "utf8");
+    for (const [, asset] of reference.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g))
+      assert.ok((await readFile(join(installed, "marketing-sdk/reference/dist", asset))).length, `Missing reference asset ${asset}`);
     console.log("Clean packed candidate projection:", packed[0].filename, packed[0].integrity);
   } else {
     const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
@@ -75,14 +82,20 @@ try {
 `);
   run(process.execPath, ["imports.mjs"]);
   await writeFile(join(root, "browser.js"), `export * from '@handrail/marketing/core'; export * from '@handrail/marketing/react'; import '@handrail/marketing/react/style.css';`);
+  await writeFile(join(root, "unstyled.js"), `export * from '@handrail/marketing'; export * from '@handrail/marketing/core'; export * from '@handrail/marketing/react';`);
   await writeFile(join(root, "bundle.mjs"), `
 import { build } from 'vite';
 import assert from 'node:assert/strict';
-const result = await build({ logLevel: 'error', build: { write: false, lib: { entry: './browser.js', formats: ['es'] } } });
+for (const entry of ['./browser.js', './unstyled.js']) {
+const result = await build({ logLevel: 'error', build: { write: false, lib: { entry, formats: ['es'] } } });
 const outputs = (Array.isArray(result) ? result : [result]).flatMap(r => r.output);
+const styles = outputs.filter(o => o.type === 'asset' && o.fileName.endsWith('.css'));
+assert.equal(styles.length, entry === './browser.js' ? 1 : 0, 'CSS must be explicitly imported');
+for (const style of styles) assert.ok(!/body\\s*\\{|:root\\s*\\{|#root/.test(String(style.source)), 'Reference resets leaked into optional CSS');
 for (const output of outputs) if (output.type === 'chunk') {
   assert.ok(!Object.keys(output.modules).some(p => /marketing-build\\/(server|support|reference)|node_modules\\/(sharp|mysql2|pg|openai)\\//.test(p)), 'Server modules leaked into browser bundle');
   assert.ok(!output.code.includes('__vite-browser-external'), 'Node builtins leaked into browser bundle');
+}
 }
 console.log('Core/React browser bundle excludes server modules');
 `);

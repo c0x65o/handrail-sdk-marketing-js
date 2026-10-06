@@ -67,6 +67,8 @@ export interface Campaign {
   revision: number;
   grantId: string;
   creativeSetId: string;
+  /** Immutable local source attribution; never client-authored. */
+  draftOrigin?: { draftId: string; revision: number; actorId: string; materialDigest: string; accountId: string };
   material: Material;
   state: "draft" | "paused" | "enabled" | "unknown";
   receipt: Receipt | null;
@@ -118,6 +120,10 @@ export interface Grant {
   /** Trusted account-scoped resolver/eligibility evidence, never browser authority. */
   targetingOptions?: TargetingOption[];
   capabilityEvidence?: AccountCapabilityEvidence[];
+  /** Host-resolved display catalog for this account; labels confer no eligibility. */
+  selectionOptions?: (import("./capabilities.js").ResolvedOption & {
+    kind: "page" | "instagram" | "organization" | "pixel" | "conversion";
+  })[];
   organizationId?: string;
 }
 export type PublicGrant = Omit<Grant, "secretRef">;
@@ -325,6 +331,10 @@ export interface Workspace {
   generationGrants: Omit<GenerationGrant, "billingCapabilityRef">[];
   campaigns: Campaign[];
   drafts: CampaignDraft[];
+  /** This actor's saved planning results awaiting acknowledgment. */
+  planningWrites?: PlanningWrite[];
+  /** Opaque stale-scope check; conveys no authorization or session credential. */
+  planningScope?: string;
   setups: Setup[];
   assets: Asset[];
   jobs: GenerationJob[];
@@ -333,7 +343,18 @@ export interface Workspace {
   operations: Operation[];
   mode: "fixture" | "live";
 }
+export type PlanningInput = { [K in "saveDraft" | "saveCampaign" | "promoteDraft"]:
+  { command: K; input: Commands[K]["input"] } }["saveDraft" | "saveCampaign" | "promoteDraft"];
+export interface PlanningWrite {
+  id: string;
+  actorId: string;
+  command: PlanningInput["command"];
+  result: Campaign | CampaignDraft;
+  acknowledged: boolean;
+}
 export interface Commands {
+  planningWrite: { input: PlanningInput & { requestKey: string; scope: string }; output: PlanningWrite };
+  acknowledgePlanningWrite: { input: { id: string }; output: PlanningWrite };
   captureDestination: {
     input: { url: string };
     output: {
@@ -368,6 +389,10 @@ export interface Commands {
       material: DraftMaterial;
     };
     output: CampaignDraft;
+  };
+  promoteDraft: {
+    input: { draftId: string; expectedRevision: number; grantId: string; expectedGrantRevision: number; material: Material };
+    output: Campaign;
   };
   prepare: {
     input: { campaignId: string; requestKey: string };

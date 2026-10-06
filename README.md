@@ -18,7 +18,7 @@ publishing job or registry package is required. Keep the matching npm lockfile.
 | --- | --- |
 | `@handrail/marketing` or `/core` | Browser-safe types and `createMarketingClient` |
 | `@handrail/marketing/server` | MarketingServer, Store, provider/billing/generation ports, HostAgent and credential cipher |
-| `@handrail/marketing/react` | Optional MarketingWorkspace, ApprovalPanel, MaterialReview |
+| `@handrail/marketing/react` | Optional MarketingRoot, MarketingWorkspace, ApprovalPanel, MaterialReview |
 | `@handrail/marketing/react/style.css` | Optional UI styles |
 | `@handrail/marketing/agent` | Restricted tool dispatcher; no human approval tool or browser runtime |
 | `@handrail/marketing/reference` | runtime, createHost, bootstrapFixture, openDatastore, provision |
@@ -29,6 +29,44 @@ import { createMarketingClient } from '@handrail/marketing';
 const client = createMarketingClient(location.origin, selectedProjectId);
 const workspace = await client.call('workspace', {});
 ```
+
+Import `@handrail/marketing/react/style.css` once for the optional default UI.
+`MarketingWorkspace` supplies its own `.marketing-root` boundary in loading,
+error and loaded states. For standalone `ApprovalPanel` / `MaterialReview`, or
+host-owned login/session UI, wrap only the Marketing content in `MarketingRoot`:
+
+```tsx
+import { MarketingRoot, MarketingWorkspace } from '@handrail/marketing/react';
+import '@handrail/marketing/react/style.css';
+
+<MarketingRoot aria-label="Marketing area">
+  <HostMarketingSessionControls />
+  <MarketingWorkspace client={client} />
+</MarketingRoot>
+```
+
+Do not put the root class on `html`, `body`, or a container holding unrelated host
+UI. Ordinary host DOM remains outside the stylesheet's selectors; this is scoped
+CSS, not a barrier against host rules cascading into Marketing. Nested roots are
+supported. Layout follows the root's available inline width using CSS container
+queries (including 320/390px embeddings in desktop pages); give flex/grid mounting
+slots a usable width and `min-width: 0`. Modern container-query support is required
+for responsive layouts. The SDK neither resets the page nor claims viewport height.
+The reference app alone owns its page resets.
+
+Set inherited `--marketing-font-family`, `--marketing-font-size`,
+`--marketing-line-height`, `--marketing-color`, `--marketing-background`, and
+`--marketing-workspace-min-height` on a host mounting slot to configure defaults.
+Without overrides the UI retains its readable light palette and 15px system font;
+workspace minimum height defaults to zero. Each workspace owns its local form and
+focus state; instances connected to the same project still see shared saved data
+and the existing actor-scoped planning recovery contract. There are currently no
+portals. Future portaled content must mount inside its owning root (or an explicitly
+scoped Marketing container); portaling to the host body is outside this contract.
+
+After building, run `node marketing-sdk/tests/embedding-browser.mjs` for the local
+Chromium isolation harness. It exercises real React against the existing disposable
+SQLite fixture host; it does not qualify Handrail, ERP or Preview integration.
 
 The host authenticates every request and independently reloads project membership.
 Selection of a project never grants access. The server requires exact current

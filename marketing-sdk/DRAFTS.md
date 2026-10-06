@@ -131,8 +131,7 @@ Draft changes, write receipts, request keys and outbox events commit together.
 
 `createMarketingClient` exposes the same commands through the existing HTTP host.
 An embedding host must add `saveDraft` to its own route allowlist and render
-`workspace.drafts`. The optional existing React campaign UI still serves the
-account-bound campaign workflow; it does not render local drafts automatically.
+`workspace.drafts`. The React workspace renders local drafts and offers an explicit account promotion review.
 
 ## Boundary with advertising and generation
 
@@ -142,12 +141,47 @@ Draft IDs are stored in a separate record namespace and cannot be used as
 campaign IDs for preparation, approval, activation, metrics or generation.
 
 When separately authorized to connect an account, the host constructs
-`MarketingServer` with real authorized ports. Submit completed draft material
-through existing `saveCampaign` with a genuine grant to create an account-bound
-campaign; the local draft remains a separate document. Full material validation,
-destination/asset verification, grant permissions, human launch approval,
-spending limits and separate generation authority still apply. No automatic
-promotion, activation, spend or data fabrication follows from saving a draft.
+`MarketingServer` with real authorized ports. Promotion is explicit:
+
+```ts
+const campaign = await service.call(principal, projectId, 'promoteDraft', {
+  draftId: draft.id,
+  expectedRevision: draft.revision,
+  grantId: selectedGrant.id,
+  expectedGrantRevision: selectedGrant.revision,
+  material: reviewedCompleteMaterial,
+});
+```
+
+The selected grant must be current and project-owned. Promotion uses the same full
+material, destination snapshot, asset ownership and capability validation as
+`saveCampaign`; a planning campaign may have no assets. Missing fields or consents
+are not filled by the server. Readiness to publish still requires the existing
+setup, media, account evidence, budget and human authorization gates. Promotion
+itself calls no provider port and creates no operation, approval, reservation or
+access. A host with a closed route allowlist must add `promoteDraft` to expose it.
+The optional agent integration is unchanged and not required.
+
+Under the existing SQL transaction guard, the server derives one binding for
+project + draft ID + draft revision + provider + target account. The immutable
+receipt also binds actor, grant ID/revision and exact reviewed material. Identical
+requests from two clients of the same actor return the same original campaign
+receipt, including after a lost response and process reopen. Changing payload,
+actor, or using another grant to the same physical account conflicts instead of
+creating a duplicate or attributing the work to a new actor. To intentionally
+promote a changed local draft, save a new draft revision and review it explicitly.
+Current membership, grant validity/revision and draft revision are checked on every
+retry; a stale/revoked scope cannot recover a write by bypassing authorization.
+If the draft or grant has since changed, inspect the already-created campaign in
+the workspace instead of replaying the old promotion.
+
+The source document remains untouched. `Campaign.draftOrigin` retains source ID,
+revision, original material digest, actor and account; later campaign edits retain
+it. Original material is also retained by existing immutable draft-write receipts.
+Binding, campaign/version/audience and outbox writes commit or roll back together.
+No new table, persistence framework, backfill or shared-data migration is needed.
+The UI shows already-promoted revisions after reload, so a lost acknowledgment
+can be recovered by inspecting the existing planning campaign.
 
 ## Transactions and execution ownership
 
@@ -173,3 +207,48 @@ binding, rollback, concurrency and executor loss. Existing provider, generation,
 blob, session and reporting regression tests use explicitly labelled external
 test doubles; they make no real provider writes. Application adoption and
 protected browser verification in Preview are a separate integration step.
+
+
+## Optional guarded planning writes
+
+For an interactive client that must recover even after losing its request key,
+wrap one of the existing save/promotion commands:
+
+```ts
+const write = await service.call(principal, projectId, 'planningWrite', {
+  scope: (await service.workspace(principal, projectId)).planningScope!,
+  requestKey: retainedIntentKey,
+  command: 'saveCampaign',
+  input: { requestKey: retainedSaveKey, grantId, material },
+});
+// Only after receiving/inspecting the saved result:
+await service.call(principal, projectId, 'acknowledgePlanningWrite', { id: write.id });
+```
+
+The wrapper uses the existing SQL transaction guard, request digests and records;
+there is no schema change. It binds actor, project, exact command/input and current
+grant state. Promotion also checks source and grant revisions on retry. One
+unacknowledged result per actor/project prevents a changed form, account, revision
+or new key from silently creating another campaign/draft. Workspace reads expose
+only the current actor's pending results. Another actor cannot acknowledge them.
+Both commands require current write authority. If authority is removed, inspection
+remains subject to current read access and acknowledgment waits for authorized
+access; no grants are created or restored.
+
+Identical retries return the original receipt. The receipt and promotion's source
+snapshot remain immutable; acknowledgment is a separate record. The React client
+acknowledges responses it actually receives in the current form scope. Lost/late
+responses stay visible after reload for explicit review; Cancel does not undo a
+committed save. Legacy headless save commands retain their existing request-key
+contracts and do not silently opt into this additional acknowledgment workflow.
+Hosts adopting the React workflow must expose both additive commands. Public Git
+publication and actual platform route/session qualification remain separate gates.
+
+The workspace's opaque `planningScope` binds the planning envelope to the current
+project, actor and SDK session. Retain the scope from before any asynchronous
+pre-save work; a different valid login after destination capture cannot acquire
+the old form's intent. It conveys no credentials or authorization. A fresh login
+by the same actor may inspect and recover the original immutable result using
+its newly read scope; scope is validated but not included in the intent digest.
+External authenticated hosts still own external session validation. React planning
+forms reset when this scope changes, and pending results stay actor-scoped.

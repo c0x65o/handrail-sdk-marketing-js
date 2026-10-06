@@ -1,7 +1,8 @@
-import { AudienceFields, GuidedFields, GuidedMaterialEditor, DraftCard, initialMaterial } from "./guided.js";
+import { AudienceFields, GuidedFields, GuidedMaterialEditor, DraftCard, initialMaterial, DraftPromotion } from "./guided.js";
 import { capabilityBlockers, capabilityStatus, dailyExposureMinor, providerBudgetBlockers } from "../core/index.js";
 import React, { useEffect, useRef, useState } from "react";
-import { completedCampaignWindow } from "./schedule.js";
+import { planningWrite } from "./planning.js";
+import { completedCampaignWindow, dateAtInstant, selectedCompletedWindow } from "./schedule.js";
 import type {
   Asset,
   Conversation,
@@ -11,6 +12,11 @@ import type {
   Results,
   Workspace,
 } from "../core/index.js";
+
+/** Styling and container boundary for standalone panels or host-owned session UI. */
+export function MarketingRoot({ className = "", ...props }: React.ComponentPropsWithoutRef<"div">) {
+  return <div {...props} className={`marketing-root ${className}`.trim()} />;
+}
 
 export function MaterialReview({
   material,
@@ -60,7 +66,7 @@ export function MaterialReview({
             Languages: {material.settings.targeting.languages.map(x => `${x.label} (${x.id})`).join(", ") || "all"}. Interests: {material.settings.targeting.interestGroups.map(group => `(${group.map(x => `${x.label} (${x.id})`).join(" OR ")})`).join(" AND ") || "none"}. Excluded: {material.settings.targeting.excludedCustomAudiences.map(x => `${x.label} (${x.id})`).join(", ") || "none"}.
           </> : (["include", "exclude"] as const).map(side => <p key={side}>{side}: {Object.entries(material.settings!.provider === "linkedin" ? material.settings!.targeting[side] : {}).map(([facet, options]) => `${facet}: (${(options as { id: string; label: string }[]).map(x => `${x.label} (${x.id})`).join(" OR ")})`).join(side === "include" ? " AND " : " OR ") || "none"}</p>)}</dd>
         </>}
-        <dt>Approved lifetime media budget</dt>
+        <dt>Lifetime media budget</dt>
         <dd>
           {material.budget.currency} {(material.budget.minor / 100).toFixed(2)}{" "}
           · excludes fees/taxes
@@ -195,9 +201,10 @@ export function MarketingWorkspace({ client }: { client: MarketingClient }) {
   const [scope, setScope] = useState({ client, version: 0 });
   if (scope.client !== client)
     setScope({ client, version: scope.version + 1 });
-  return <WorkspaceContent key={scope.version} client={client} />;
+  return <MarketingRoot><WorkspaceContent key={scope.version} client={client} /></MarketingRoot>;
 }
 function WorkspaceContent({ client }: { client: MarketingClient }) {
+  const workspaceElement = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<Workspace | null>(null),
     [tab, setTab] = useState<(typeof tabs)[number]>("Workspace"),
     [selected, setSelected] = useState(""),
@@ -205,19 +212,33 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     [busy, setBusy] = useState(false);
   const [readError, setReadError] = useState("");
   const reads = useRef({ active: false, next: 0, settled: 0 });
+  const editable = useRef(false);
   const [reportWindow, setReportWindow] = useState("completed");
+  const [reportDates, setReportDates] = useState({ from: "", until: "" });
+  const promotionReturn = useRef<HTMLElement | null>(null);
+  const [promotion, setPromotion] = useState<Workspace["drafts"][number] | null>(null);
   const [result, setResult] = useState<Results | null>(null),
     [conversations, setConversations] = useState<Conversation[] | null>(null),
-    [prompt, setPrompt] = useState(
-      "A calm desktop with a small plant and morning light.",
-    ),
+    [prompt, setPrompt] = useState(""),
     [rights, setRights] = useState(""),
     [storyboard, setStoryboard] = useState(""),
     [audienceDraft, setAudienceDraft] = useState<Material["audience"] | null>(null);
   const campaign =
     data?.campaigns.find((c) => c.id === selected) || data?.campaigns[0];
+  const [creativeScope, setCreativeScope] = useState<string | undefined>(undefined);
+  if (creativeScope !== campaign?.id) {
+    setCreativeScope(campaign?.id); setPrompt(""); setRights(""); setStoryboard("");
+  }
+  const [campaignScope, setCampaignScope] = useState("");
+  const campaignKey = `${data?.planningScope}:${campaign?.id}:${campaign?.revision}`;
+  // Reset during render so React cannot commit one frame of another campaign's edits/results.
+  if (campaignScope !== campaignKey) {
+    setCampaignScope(campaignKey);
+    setAudienceDraft(campaign?.material.audience || null);
+    setResult(null); setConversations(null); setReportDates({ from: "", until: "" });
+  }
   const currentView = useRef("");
-  currentView.current = `${campaign?.id}:${campaign?.revision}:${reportWindow}`;
+  currentView.current = `${data?.planningScope}:${campaign?.id}:${campaign?.revision}:${reportWindow}:${reportDates.from}:${reportDates.until}`;
   const assets =
     data?.assets.filter((a) => a.campaignId === campaign?.id) || [];
   const canEdit = data && ["admin", "editor"].includes(data.role),
@@ -225,6 +246,14 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
       !!data &&
       data.principalKind === "human" &&
       ["admin", "approver"].includes(data.role);
+  editable.current = !!canEdit;
+  useEffect(() => {
+    if (!promotion && promotionReturn.current) {
+      const draftId = promotionReturn.current.dataset.draftPromote;
+      const target = [...(workspaceElement.current?.querySelectorAll<HTMLElement>("[data-draft-promote]") || [])].find(x => x.dataset.draftPromote === draftId);
+      target?.focus();
+    }
+  }, [promotion]);
   async function refresh() {
     const scope = reads.current;
     if (!scope.active) return;
@@ -251,11 +280,6 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
       clearInterval(t);
     };
   }, [client]);
-  useEffect(() => {
-    setAudienceDraft(campaign?.material.audience || null);
-    setResult(null);
-    setConversations(null);
-  }, [campaign?.id, campaign?.revision]);
   async function act(action: () => Promise<unknown>) {
     const scope = reads.current;
     setBusy(true);
@@ -269,14 +293,19 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
       if (scope.active) setBusy(false);
     }
   }
+  const materialWrite = useRef({ serialized: "", key: "" });
   async function save(next: Material) {
-    if (campaign)
-      await client.call("saveCampaign", {
+    if (campaign) {
+      const serialized = JSON.stringify([campaign.id, campaign.revision, campaign.grantId, next]);
+      if (materialWrite.current.serialized !== serialized) materialWrite.current = { serialized, key: key() };
+      await planningWrite(client, "saveCampaign", {
+        requestKey: materialWrite.current.key,
         id: campaign.id,
         expectedRevision: campaign.revision,
         grantId: campaign.grantId,
         material: next,
-      });
+      }, materialWrite.current.key, data?.planningScope, () => reads.current.active);
+    }
   }
   const selectedGrant = data?.grants.find(g => g.id === campaign?.grantId);
   const readiness = campaign && selectedGrant ? [
@@ -287,25 +316,29 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     ...(!data?.setups.some(s => s.grantId === campaign.grantId && s.state === "ready") ? ["verified_setup_required"] : []),
     ...(data?.mode === "live" && campaign.material.settings && !capabilityStatus(campaign.material, selectedGrant).accountVerified ? ["account_capability_unverified"] : []),
   ] : ["account_required"];
-  const completedWindow = campaign ? completedCampaignWindow(campaign.material.startAt,
+  const providerZoneValid = campaign?.material.audience.provider !== "linkedin" || campaign.material.timezone === "UTC";
+  const completedWindow = campaign && providerZoneValid ? completedCampaignWindow(campaign.material.startAt,
     campaign.material.endAt, campaign.material.timezone) : null;
-  const window = campaign && (reportWindow === "campaign" || completedWindow)
-    ? {
-        campaignId: campaign.id,
-        from: reportWindow === "completed" ? completedWindow!.from : campaign.material.startAt,
-        until: reportWindow === "completed" ? completedWindow!.until : campaign.material.endAt,
-      }
-    : null;
+  let windowError = "";
+  let chosenWindow = completedWindow;
+  if (campaign && reportWindow === "custom") {
+    try { chosenWindow = selectedCompletedWindow(reportDates.from, reportDates.until, campaign.material.startAt, campaign.material.endAt, campaign.material.timezone, campaign.material.audience.provider); }
+    catch (e) { chosenWindow = null; windowError = (e as Error).message; }
+  }
+  const window = campaign && (reportWindow === "campaign" || chosenWindow)
+    ? { campaignId: campaign.id, from: reportWindow === "campaign" ? campaign.material.startAt : chosenWindow!.from,
+        until: reportWindow === "campaign" ? campaign.material.endAt : chosenWindow!.until } : null;
   if (!data)
     return (
       <main className="loading">
         <h1>Marketing workspace</h1>
         <p role="status">Loading your project…</p>
         <ErrorNotice error={readError} retry={() => void refresh()} />
+
       </main>
     );
   return (
-    <div className="marketing-shell">
+    <div className="marketing-shell" ref={workspaceElement}>
       <aside>
         <div className="brand">
           <span>h.</span> Handrail <small>MARKETING</small>
@@ -337,10 +370,20 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
           <span className={`badge ${data.mode === "fixture" ? "fixture" : ""}`}>
             {data.mode === "fixture"
               ? "QA fixture · no external spend"
-              : "Connected provider mode"}
+              : "Project workspace"}
           </span>
         </header>
         <ErrorNotice error={readError} retry={() => void refresh()} />
+        {(data.planningWrites || []).map(w => <section className="card" key={w.id} aria-label="Saved planning result">
+          <h2>Review saved planning result</h2>
+          <p>A previous save completed. Review its saved result before saving another plan, even if you have edited the form or switched accounts.</p>
+          <p>{w.result.material.name} · revision {w.result.revision} · {w.result.grantId
+            ? `${data.grants.find(g => g.id === w.result.grantId)?.label || "Account"} · ${data.grants.find(g => g.id === w.result.grantId)?.accountId || w.result.grantId}`
+            : "unconnected draft"}</p>
+          {w.result.grantId && <button onClick={() => { setSelected(w.result.id); setTab("Audience"); }}>Open saved campaign</button>}
+          <details><summary>Saved material and provenance</summary><pre>{JSON.stringify(w.result, null, 2)}</pre></details>
+          <button disabled={busy || !canEdit} onClick={() => void act(() => client.call("acknowledgePlanningWrite", { id: w.id }))}>Acknowledge saved planning result</button>
+        </section>)}
         {error && <p role="alert" className="error">{error.replaceAll("_", " ")}</p>}
         {busy && (
           <p role="status" className="busy">
@@ -365,6 +408,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
         )}
         {tab === "Workspace" && (
           <>
+            {promotion ? <DraftPromotion key={`${data.planningScope}:${promotion.id}:${promotion.revision}`} draft={promotion} grants={data.grants} client={client} scope={data.planningScope} disabled={!canEdit || busy} renderReview={m => <MaterialReview material={m} assets={[]} client={client} />} onCancel={() => { setPromotion(null); }} onSaved={async c => { await refresh(); setSelected(c.id); setPromotion(null); }} /> : <>
             <section className="hero">
               <div className="eyebrow">Your next campaign</div>
               <h2>
@@ -396,28 +440,31 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
               </article>
             </div>
             <div className="grid" aria-label="Unconnected drafts">
-              <DraftCard client={client} disabled={!canEdit || busy} onSaved={refresh} />
-              {data.drafts.map(d => <DraftCard key={`${d.id}:${d.revision}`} draft={d} client={client} disabled={!canEdit || busy} onSaved={refresh} />)}
+              <DraftCard key={data.planningScope} client={client} scope={data.planningScope} disabled={!canEdit || busy} onSaved={refresh} />
+              {data.drafts.map(d => <DraftCard key={`${data.planningScope}:${d.id}:${d.revision}`} draft={d} client={client} scope={data.planningScope} disabled={!canEdit || busy} onSaved={refresh} onPromote={() => { promotionReturn.current = document.activeElement as HTMLElement; setPromotion(d); }} promoted={data.campaigns.find(c => c.draftOrigin?.draftId === d.id && c.draftOrigin.revision === d.revision)} onOpen={() => { const c = data.campaigns.find(c => c.draftOrigin?.draftId === d.id && c.draftOrigin.revision === d.revision); if (c) { setSelected(c.id); setTab("Audience"); } }} />)}
             </div>
+
             <p>Create → Launch → Results · one creative set per campaign</p>
             <div className="grid">
               <section className="card">
                 <h2>Create a campaign</h2>
-                <CampaignForm
+                <CampaignForm key={data.planningScope}
                   grants={data.grants}
                   disabled={!canEdit || busy}
-                  onCreate={(m) =>
+                  onCreate={(m, isCurrent) =>
                     act(async () => {
                       const captured = await client.call("captureDestination", {
                         url: m.material.destination,
                       });
-                      const c = await client.call("saveCampaign", {
+                      if (!reads.current.active || !editable.current || !isCurrent()) return;
+                      const c = await planningWrite(client, "saveCampaign", {
                         ...m,
                         material: {
                           ...m.material,
                           destinationDigest: captured.digest,
                         },
-                      });
+                      }, m.requestKey, data.planningScope, () => reads.current.active && editable.current && isCurrent());
+                      if (!reads.current.active || !editable.current || !isCurrent()) return;
                       setSelected(c.id);
                       setTab("Connections");
                     })
@@ -460,6 +507,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 )}
               </section>
             </div>
+            </>}
           </>
         )}
         {tab === "Connections" && (
@@ -590,6 +638,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                     Creative brief
                     <textarea
                       value={prompt}
+                      placeholder="Describe the image or video you want to create"
                       onChange={(e) => setPrompt(e.target.value)}
                     />
                   </label>
@@ -606,7 +655,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                       <button
                         key={g.id}
                         disabled={
-                          busy || !canEdit || !rights || g.usedJobs >= g.maxJobs
+                          busy || !canEdit || !rights || !prompt.trim() || g.usedJobs >= g.maxJobs
                         }
                         onClick={() =>
                           void act(() =>
@@ -756,7 +805,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   Provider-native location identifiers and explicit supported
                   rules. No automatic expansion.
                 </p>
-                {audienceDraft && <AudienceFields value={audienceDraft} onChange={setAudienceDraft} />}
+                {audienceDraft && <AudienceFields grant={selectedGrant} value={audienceDraft} onChange={setAudienceDraft} />}
                 <button
                   disabled={busy || !canEdit}
                   onClick={() =>
@@ -786,7 +835,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   LinkedIn: geo URNs and optional title URNs.
                 </p>
                 <GuidedMaterialEditor
-                  key={`${campaign.id}:${campaign.revision}:${selectedGrant?.revision}`}
+                  key={`${data.planningScope}:${campaign.id}:${campaign.revision}:${selectedGrant?.revision}`}
                   value={campaign.material}
                   renderReview={m => <MaterialReview material={m} assets={(assets || []).filter(a => m.assetIds.includes(a.id))} client={client} />}
                   grant={data.grants.find(g => g.id === campaign.grantId)!}
@@ -1006,10 +1055,18 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 </p>
                 <label>Reporting window
                   <select aria-label="Reporting window" value={reportWindow} onChange={e => { setReportWindow(e.target.value); setResult(null); }}>
-                    <option value="completed">Completed provider days within campaign</option>
-                    <option value="campaign">Full campaign · first-party results only</option>
+                    <option value="completed">All completed days</option>
+                    <option value="custom">Choose completed days</option>
+                    <option value="campaign">Full campaign (first-party)</option>
                   </select>
                 </label>
+                {reportWindow === "custom" && <fieldset><legend>Completed provider dates · {campaign.material.timezone}</legend>
+                  <p>Reporting only. Start is included; end is excluded.</p>
+                  {(["from", "until"] as const).map(field => <label key={field}>{field === "from" ? "Report start date" : "Report end date (exclusive)"}<input type="date" value={reportDates[field]} min={completedWindow ? dateAtInstant(completedWindow.from, campaign.material.timezone) : undefined} max={completedWindow ? dateAtInstant(completedWindow.until, campaign.material.timezone) : undefined} onChange={e => { setReportDates({ ...reportDates, [field]: e.target.value }); setResult(null); }} /></label>)}
+                  <button type="button" disabled={!completedWindow} onClick={() => { setReportDates({ from: dateAtInstant(completedWindow!.from, campaign.material.timezone), until: dateAtInstant(completedWindow!.until, campaign.material.timezone) }); setResult(null); }}>Use all completed days</button>
+                  {windowError && <p role="status">{windowError}</p>}
+                </fieldset>}
+                {!providerZoneValid && <p role="status">LinkedIn provider reports require UTC. This historical non-UTC campaign can use first-party results only; its dates are not relabeled.</p>}
                 <p>
                   {window ? `${window.from} → ${window.until} (exclusive)` : "No completed provider days in this campaign yet."}
                 </p>
@@ -1035,7 +1092,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   </button>
                   <button
                     className="secondary"
-                    disabled={busy || !canEdit || !window || reportWindow !== "completed"}
+                    disabled={busy || !canEdit || !window || reportWindow === "campaign"}
                     onClick={() =>
                       void act(async () => {
                         const scope = currentView.current;
@@ -1058,6 +1115,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                     {result.observedAt || "no snapshot"} · {result.attribution}
                     {result.reportingBasis && ` · ${result.reportingBasis.window.replaceAll("-", " ")}`}
                   </p>
+                  <p>{result.purpose === "recruitment" ? "Completed MOU requests count submitted ApplicantRequestMOU events. Completed applications, qualified applicants and hires are separate outcomes." : "Completed submissions count submitted events; unique people deduplicates completed forms by person."} QA, synthetic and production-excluded events do not count toward outcomes. Excluded test-event coverage requires both purpose collectors; missing coverage stays unknown. Provider conversions are provider aggregates, not proof of a first-party outcome.</p>
                   <div className="metrics">
                     {(
                       [
@@ -1079,7 +1137,9 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                         "mediaRoas",
                         "providerConversions",
                       ] as const
-                    ).map((k) => (
+                    ).filter(k => result.purpose === "recruitment"
+                      ? !["leads", "completedSubmissions", "qualified", "customers", "revenueMinor", "mediaCacMinor", "mediaRoas"].includes(k)
+                      : !["applicantRequests", "applicants", "qualifiedApplicants", "hires"].includes(k)).map((k) => (
                       <article className="card" key={k}>
                         <h3>
                           {{
@@ -1134,22 +1194,24 @@ function Empty() {
     </section>
   );
 }
-function CampaignForm({ grants, disabled, onCreate }: { grants: Workspace["grants"]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }) => Promise<void> }) {
+function CampaignForm({ grants, disabled, onCreate }: { grants: Workspace["grants"]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }, isCurrent: () => boolean) => Promise<void> }) {
   const [grantId, setGrantId] = useState(grants[0]?.id || "");
   const g = grants.find(x => x.id === grantId);
   return <><label>Account<select aria-label="Account" value={grantId} disabled={disabled} onChange={e => setGrantId(e.target.value)}>
     {grants.map(x => <option key={x.id} value={x.id}>{x.provider} · {x.label} · {x.accountId}</option>)}</select></label>
+    {g && <p className="selected-account">Selected account: {g.label} · {g.accountId}</p>}
     {g ? <ConnectedForm key={`${g.id}:${g.revision}`} grant={g} disabled={disabled} onCreate={onCreate} /> : <p>Save an unconnected draft below. A verified account is required to prepare provider objects.</p>}</>;
 }
-function ConnectedForm({ grant: g, disabled, onCreate }: { grant: Workspace["grants"][number]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }) => Promise<void> }) {
+function ConnectedForm({ grant: g, disabled, onCreate }: { grant: Workspace["grants"][number]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }, isCurrent: () => boolean) => Promise<void> }) {
   const [m, setMaterial] = useState(() => initialMaterial(g)), [busy, setBusy] = useState(false);
-  const saving = useRef(false);
+  const saving = useRef(false), active = useRef(true);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const request = useRef({ material: "", key: crypto.randomUUID() });
   return <form onSubmit={async e => { e.preventDefault(); if (saving.current) return; saving.current = true; setBusy(true);
     try {
       const serialized = JSON.stringify(m);
       if (request.current.material !== serialized) request.current = { material: serialized, key: crypto.randomUUID() };
-      await onCreate({ grantId: g.id, material: m, requestKey: request.current.key });
+      await onCreate({ grantId: g.id, material: m, requestKey: request.current.key }, () => active.current);
     } finally { saving.current = false; setBusy(false); }
   }}><GuidedFields value={m} grant={g} onChange={setMaterial} />
     <p className="muted">Initial draft starts at the beginning of tomorrow in {g.timezone} for seven calendar days. Review or edit the exact schedule above.</p>

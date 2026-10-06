@@ -32,6 +32,8 @@ export const requireThat: (
 };
 export interface Principal {
   userId: string;
+  /** Set by authenticate, never accepted from command input. */
+  sessionTokenHash?: string;
 }
 export class Store {
   readonly db: Database;
@@ -133,6 +135,11 @@ export class Store {
     role: Role;
     kind: "human" | "agent";
   }> {
+    if (principal.sessionTokenHash) {
+      const session = await this.db.prepare("SELECT user_id FROM sessions WHERE token_hash=? AND user_id=? AND expires_at>? AND revoked_at IS NULL")
+        .get(principal.sessionTokenHash, principal.userId, Date.now());
+      requireThat(session, "authentication_required", 401);
+    }
     const row = await this.db
       .prepare(
         "SELECT m.role,u.kind FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.user_id=? AND m.project_id=? AND u.disabled=0",
@@ -241,6 +248,7 @@ export class Store {
     requireThat(row, "authentication_required", 401);
     return {
       userId: String(row.user_id),
+      sessionTokenHash: byteDigest(Buffer.from(token)),
     };
   }
 }

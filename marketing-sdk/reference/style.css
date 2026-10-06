@@ -1,1 +1,7 @@
 @import url("../react/style.css");
+
+/* Page ownership belongs to this reference app, never the optional SDK CSS. */
+:root { background: #f2f1ed; }
+body { margin: 0; }
+#root { min-height: 100vh; }
+#root > .marketing-root { --marketing-workspace-min-height: calc(100vh - 65px); }

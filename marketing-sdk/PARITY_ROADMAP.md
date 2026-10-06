@@ -277,3 +277,29 @@ until a qualified delayed-spend settlement path exists. No database migration,
 publication, consumer cutover, credentials or provider effects are part of this review.
 Search/pickers and local-draft promotion remain product gaps, not completed guided UX.
 Exact checks and final source identity live in the separate ignored review handoff.
+
+
+## Guided workflow continuation (2026-10-06)
+
+The workspace continuation in [CAPABILITIES.md](CAPABILITIES.md) adds bounded
+searchable resolved choices, matrix tuple guidance, calendar reporting/scheduling,
+explicit durable local-draft promotion and purpose-specific result presentation.
+It does not reopen or overwrite previous qualification evidence. New local source,
+check and screenshot custody is `artifacts/guided-workflows-20261006/handoff.json`.
+Independent acceptance and production host QA remain outstanding. All provider,
+Meta daily-cap, native paused-reservation settlement and deferred-format gates
+remain unchanged.
+
+### Meta sharing contract continuation (2026-10-06)
+
+The current combined candidate adds explicit disabled ad-set budget sharing to
+new Meta campaign plans and uses Meta readback v4 with all v3 checks retained.
+Historical receipts remain unchanged for inspection/safety pause; new activation
+from older Meta versions needs separate supported requalification. Unknown effects
+must not be reset or recreated. See [CAPABILITIES.md](CAPABILITIES.md#meta-budget-sharing-correction-workspace-2026-10-06)
+for the supplied current official-docs audit, remaining counter/cap and REACH
+normalization gaps, and final combined proof location. Daily preparation,
+activation and native daily-cap accounting remain denied. The earlier network
+failures do not imply missing documentation. No account, strict objective, release,
+consumer cutover or overall parity qualification is claimed. Previous immutable
+review records and the guided-UX source/proofs are preserved.

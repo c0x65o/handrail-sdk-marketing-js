@@ -44,10 +44,12 @@ changes and each native write boundary fail closed. LinkedIn initialized image
 IDs are retained before upload; unknown effects are not replayed.
 
 **Meta daily budget preparation/activation and native daily-cap accounting are
-blocked.** [Meta Help](https://www.facebook.com/business/help/190490051321426)
-returned a login/block page and [developer budgeting prose](https://developers.facebook.com/docs/marketing-api/bidding/overview/)
-returned 429. Field existence and host eligibility receipts cannot override this
-missing semantics proof. No overspend factor or additional provider cap is invented.
+blocked.** The current public-docs audit supplied on 2026-10-06 establishes the
+v24+ sharing requirement and ordinary daily flexibility; the earlier 429/login
+results were transport limitations, not evidence that documentation was missing.
+The bounded correction and remaining cap/counter qualification gaps are below.
+Field existence and host eligibility receipts cannot override the existing denial.
+No exposure factor or additional provider cap is enabled by this correction.
 The nominal input may be saved as a draft; its daily exposure is unknown. Existing
 safety pause remains usable. Lifetime-only material does not establish a daily cap;
 policies requiring a daily approval reject it.
@@ -71,10 +73,9 @@ callers must reuse a key for an identical uncertain retry. Existing callers rema
 compatible. This does not change provider-operation replay rules. The browser uses
 that key to prevent duplicate campaigns after a lost save acknowledgment.
 
-Still missing: searchable/paginated taxonomy discovery, friendly country/location
-pickers for the separate Audience tab, connected-identity discovery, pixel/conversion
-pickers (manual ID/URN entry remains), dependent objective defaults, a convenient
-completed-day picker, and a complete local-draft-to-connected-campaign flow. Document,
+The guided continuation below adds bounded host-catalog search/pickers, completed-day
+selection and planning-only draft promotion. Live taxonomy/identity discovery and
+account qualification remain host-owned; unresolved manual IDs remain explicit. Document,
 PDF, lead-gen, job-application, video and advanced options remain unavailable and
 cannot be forged into launch. Mock successes prove code behavior only.
 
@@ -107,8 +108,9 @@ by the server. Enum membership alone never authorizes an effect.
 | Google v25 | legacy acquisition | unchanged exact Search | existing manual CPC contract | existing Search text only | No Google expansion in this tranche. Existing Google validation/readback and lifetime-budget fence remain. |
 
 Meta strict and employment rows are **conditional application contracts**, not a
-new claim of Meta eligibility. Fresh Meta developer guide requests were rate
-limited/unavailable; the v26 schema verifies field spellings, not combinations.
+new claim of Meta eligibility. The earlier review's guide reads were rate limited;
+the v26 schema verifies field spellings, not combinations. The current public audit
+does not qualify strict objectives or REACH readback normalization (see below).
 Non-US strict/employment targeting remains gated. Ordinary acquisition retains
 country inputs but every new live contract still needs exact account evidence.
 No new country restriction is inferred from prose or SDK enum presence.
@@ -140,8 +142,10 @@ and LinkedIn requires it. Old material can still be read and saved as planning
 material; it cannot mint new provider effects through the service or native
 adapter using the legacy hardcoded plan. `providerPlan` retains the old mapping
 only for inspection/reconciliation compatibility. Pause uses the original
-receipt, not a rebuilt plan. v1/v2 readback digests retain their original field
-sets; new explicit plans retain `readbackVersion: "3"`.
+receipt, not a rebuilt plan. Historical v1/v2/v3 readback digests retain their
+original field sets. New Meta plans/receipts use `readbackVersion: "4"`; LinkedIn
+stays on v3. Older Meta receipts cannot qualify new activation without separate
+supported requalification; this correction provides no automatic upgrade.
 
 Trusted host code supplies account-scoped `Grant.targetingOptions` from the
 existing native taxonomy clients, and `Grant.capabilityEvidence` after obtaining
@@ -249,3 +253,171 @@ After separately authorized publication, consumers still need full-SHA public
 HTTPS Git installs and matching lockfiles. Workspace consumer projection is not
 proof of a published Git installation. Rollback must quiesce dispatch and
 reconcile effects; an old SDK cannot enforce this new contract.
+
+## Guided workflow continuation (workspace, 2026-10-06)
+
+This continuation starts from released `cad968f87f4e8967961dd2e1b9f6936aed640d0f`.
+The preceding review and its artifacts remain immutable predecessor evidence.
+New evidence is in `artifacts/guided-workflows-20261006/`; this is not independent
+acceptance, publication, live qualification or a Ready-for-Clinton claim.
+
+Resolved targeting now uses searchable checkbox lists, twenty choices per page,
+readable selected labels and keyboard-removable chips. The separate Audience tab
+uses the same account country/location catalog. Catalog processing is bounded to
+5,000 supplied entries and labels/IDs to 200 characters; missing/truncated catalogs
+explain how to request a narrower or refreshed host catalog. Unknown saved values
+remain visible and removable. Manual location/identity/conversion compatibility
+is explicitly unresolved. No asynchronous discovery endpoint was added: workspace
+reads carry the host-owned catalog and existing scope fences discard late reads.
+
+Trusted hosts may add `Grant.selectionOptions` with `{ kind, id, label }`, where
+kind is `page`, `instagram`, `organization`, `pixel` or `conversion`. Identity
+choices are restricted to the already-granted identity IDs. This field provides
+names only; it is not eligibility, conversion type/event evidence, or authority.
+It is absent from command inputs. Existing native discovery and execution ownership
+checks are unchanged. Hosts still own catalog freshness and actual resolution.
+
+Objective/optimization/bidding choices come from the existing matrix, filtered by
+explicit purpose. Selecting one changes only that tuple, retaining incompatible
+fields with blockers. Manual CPC remains explicit and an unfinished amount is
+retained when switching to automatic bidding and back. No consent, purpose,
+identity, targeting or budget is changed by choosing a tuple. New campaign copy,
+destination, targeting and monetary amounts start blank, with no product fixture
+copy. Date fields use the existing account-calendar/DST helpers, expose the exact
+UTC instants and explain exclusive ends. LinkedIn midnight/UTC restrictions remain.
+Results have a separate bounded completed-day picker and purpose-specific metrics;
+first-party full windows cannot be synced as provider reports. Unsupported windows
+are rejected, never rounded or relabeled. Submitted events, unique people, QA
+exclusion coverage and ApplicantRequestMOU meanings remain unchanged.
+
+`promoteDraft` is additive planning-only API. See [DRAFTS.md](DRAFTS.md) for its
+server-derived durable identity and retry contract. It preserves the local document,
+retains provenance on subsequent campaign edits, and cannot prepare, launch,
+create access, spend or move assets between campaigns. No schema migration or
+new persistence mechanism is introduced. Existing published command clients stay
+compatible; hosts with closed route allowlists must explicitly add this command.
+
+Remaining limits: catalogs are host-supplied bounded snapshots, not live search;
+missing names/records need host discovery. Malformed partial provider settings
+have an explicit reconstruction control in promotion: it preserves the source,
+clears provider settings/outcome binding and consent, and remains unqualified. New planning campaigns
+still need campaign-owned media and all existing preparation/launch gates. No live
+provider, deferred format, Meta daily exposure, paused-hold settlement, Agent or host
+cutover capability is enabled. Production host integration needs separate target
+platform QA. Exact check outcomes, failures and local screenshot custody belong to
+the new handoff, not to the predecessor's acceptance record.
+
+## Meta budget-sharing correction (workspace, 2026-10-06)
+
+This bounded continuation preserves the reviewed and guided-UX candidate at HEAD
+`cad968f87f4e8967961dd2e1b9f6936aed640d0f`, starting source digest
+`799d6889eceda4160e8db2f2ae58de9c7d3932ae972cb90baa89346a14506276`.
+`PROVIDER_REVIEW.json` and all predecessor copied source/proofs remain historical,
+unchanged records. Current combined hashes, deltas, checks and local screenshots
+are in `artifacts/meta-budget-sharing-20261006/handoff.json` and its source manifest.
+Independent combined review and supervising visual review remain required; this
+is neither a Ready-for-Clinton claim nor overall parity or real-account acceptance.
+
+New explicit Meta plans include literal `is_adset_budget_sharing_enabled: false`
+on the PAUSED campaign and a separate plan/readback version 4. The existing client
+transmits `false` through its query serializer and rejects omitted/non-false
+campaign-create input. No sharing-enabled option is exposed. Both representable
+ad-set lifetime and daily plans carry the flag; daily preparation/activation and
+native daily-cap accounting remain denied, including with an account receipt.
+The approved amounts, targeting, identity, material and authority fences are unchanged.
+
+Version 4 requests and hashes the campaign sharing field in addition to every v3
+account, media, identity, objective, optimization, expansion, targeting, creative,
+budget and schedule field. Only JSON boolean `false` qualifies: omitted, null,
+true, numeric/string substitutes or other malformed evidence cannot establish
+initial authority, qualify new activation or settle an uncertain v4 creation.
+Changed readback still blocks activation. A failed/lost response retains known IDs
+and an unknown operation/lease; same-key retries return the same operation,
+new-key replay is blocked, and reconciliation is read-only. An unknown create
+without sufficient IDs stays unknown; no reset, recreation or material migration
+is provided. A status write acknowledgment is not observed delivery.
+
+Historical v1/v2/v3 snapshots retain their exact field sets and digest meaning;
+paused/active inspection and receipt-based safety pause remain available with the
+original IDs. New activation fails with `meta_readback_requalification_required`
+at the native adapter, and the changed plan digest also prevents an old receipt
+from minting a new service approval packet. Saved unknown operations whose old
+plan digest no longer matches require separate supported investigation/requalification;
+they are never silently upgraded or replayed. No such requalification workflow
+is implemented here. LinkedIn v3 branches stay unchanged; unknown snapshot
+versions reject instead of falling through to a weaker historical contract.
+
+Public evidence below is the **independent unauthenticated official-docs audit
+supplied with this work request on 2026-10-06**. This worker's web-tool rereads of
+all six URLs returned HTTP 429; that does not negate the successful supplied
+cloud-browser audit. No authenticated provider/account call was made. These
+contracts inform source code, not action authorization:
+
+- [Ad-set budget sharing](https://developers.facebook.com/documentation/ads-commerce/marketing-api/bidding/guides/adset-budget-sharing):
+  v24+ ad-set-budget campaign creation must explicitly supply true or false;
+  omission yields 4834011. False disables sharing. Sharing maxima are 2.1D/day
+  and 8.4D/week; one active ad set has no sharing. This task enables none of it.
+- [Campaign creation](https://developers.facebook.com/documentation/ads-commerce/marketing-api/reference/ad-account/campaigns):
+  PAUSED OUTCOME_TRAFFIC example includes sharing=0. Campaign spend cap has a
+  $100 USD minimum or approximate local equivalent and is unavailable for
+  Reach/Frequency and Premium Self Serve. Exact EUR/GBP/CAD/AUD thresholds remain
+  unqualified; no FX threshold or budget alteration is inferred.
+- [v24 changelog](https://developers.facebook.com/docs/graph-api/changelog/version24.0/):
+  ordinary daily flexibility is 75%, averaged Sunday–Saturday with weekly spend
+  at most 7D. Generic Budgets prose still saying 25% is stale and is not a basis
+  for lower exposure. This does not qualify native daily-cap accounting.
+- [Ad-set reference](https://developers.facebook.com/documentation/ads-commerce/marketing-api/reference/ad-campaign):
+  daily schedule duration must be strictly greater than 24 hours; lifetime needs
+  end_time. `daily_spend_cap` requires campaign-level daily_budget and cannot be
+  grafted onto this ad-set-budget plan. No partial-day prorating is authorized.
+- [Campaign reference](https://developers.facebook.com/documentation/ads-commerce/marketing-api/reference/ad-campaign-group):
+  exposes sharing/readback, buying type, budget/cap eligibility and scheduling.
+  Reference UI version v25 and examples using v26 are distinct from exact-account
+  acceptance; the v24+ flag requirement is explicit.
+- [High-demand periods](https://developers.facebook.com/documentation/ads-commerce/marketing-api/reference/high-demand-period):
+  scheduled increases may reach 8× base. They remain unsupported and disabled.
+
+The audit did not establish complete counter timezone/DST/reset semantics or
+all budget/cap eligibility. Native Meta daily mode remains blocked in direct
+adapter, headless live execution and live UI paths; fixture demonstrations are
+not provider qualification. Retained paused reservations are not released.
+Lifetime-only material still cannot satisfy a required daily policy approval.
+
+Official bidding prose also notes REACH may normalize to IMPRESSIONS with
+frequency controls. Exact objective/optimization readback remains required:
+that normalization is rejected until separately proved for the exact plan and
+account. No broad REACH/IMPRESSIONS equivalence is introduced. Sharing=false
+proves neither account eligibility, budget-mode support, strict objective
+acceptance nor that normalization.
+
+
+## Independent combined review corrections (2026-10-06)
+
+The optional React workspace now wraps planning writes in the existing durable
+request/record store. An actor's unacknowledged result blocks a different planning
+intent, including a changed form, target, source revision or new request key.
+Reload shows the original saved result for explicit acknowledgment. Original
+receipts remain immutable; acknowledgments are separate records. Acknowledgment
+has no advertising or grant side effect. Existing headless commands keep their
+original contracts; integrations using this UI must allow `planningWrite` and
+`acknowledgePlanningWrite` as well as the existing commands. See DRAFTS.md.
+
+Promotion preserves a snapshot of the original document even for legacy drafts
+without a prior write receipt. Identity/targeting/bid reconstruction is explicit,
+resets consent and does not alter the source. Account currency/timezone mismatch
+has explicit clear-and-reenter controls; no FX or timezone reinterpretation occurs.
+Saved choice labels and IDs remain visible, including renamed, removed or
+ambiguous catalog records. Unsupported currencies cannot use the decimal inputs.
+UTC controls reject timezone-less/invalid instants. Completed-day selection handles
+an entirely skipped local date as well as midnight DST gaps and overlaps.
+
+Planning saves recheck actor/session and grant after awaited validation. The
+planning envelope also checks an opaque workspace scope captured before pre-save
+awaits, rejecting replacement logins even when their credentials are valid. SDK
+session principals retain a hashed session binding for these checks; trusted host
+principals remain compatible, and the embedding host still owns host-session
+validity. Canceled/unmounted forms cannot acknowledge a late result or begin a
+promotion after destination capture. Server-retained unresolved results survive
+those UI lifetimes. Fresh local proof is in
+`artifacts/combined-review-20261006/handoff.json`; this does not qualify any platform
+cutover, live account, Meta daily mode or deployment.

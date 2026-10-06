@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { CAPABILITY_VERSION, LINKEDIN_COMBINATIONS, META_COMBINATIONS, capabilityBlockers, capabilityKey, capabilityStatus,
   type Asset, type Campaign, type Grant, type MetaSettings, type LinkedInSettings, type ProviderSettings } from "../core/index.js";
 import { NativeProvider, providerPlan } from "../server/providers.js";
-import { FixtureProvider } from "../server/fixtures.js";
+import { MetaMarketingClient } from "../support/owner-marketing/meta-client.js";
+import { FixtureProvider, FixtureAgent, FixtureGeneration } from "../server/fixtures.js";
+import { MarketingServer } from "../server/service.js";
 import { metaExpansionOff } from "../server/capabilities.js";
 import { testStore } from "./datastore.js";
 import { byteDigest, digest } from "../server/store.js";
@@ -136,15 +138,22 @@ async function native(provider: "meta" | "linkedin") {
   fixture.a.digest = byteDigest(bytes);
   await store.db.prepare("INSERT INTO blobs VALUES(?,?,?)").run("p", fixture.a.digest, bytes);
   await store.put("p", "asset", "a", fixture.a);
-  const state = { objects: new Map<string, any>(), writes: 0, next: 100, loseRead: false,
+  const state = { objects: new Map<string, any>(), writes: 0, next: 100, loseRead: false, loseCampaignAck: false,
+    requests: [] as { path: string; method: string; fields: string | null }[],
     drift: null as null | ((o: any, kind: string) => void) };
   const fetcher: typeof fetch = async (raw, init) => {
     const url = new URL(String(raw)), path = decodeURIComponent(url.pathname), last = path.split("/").at(-1)!;
+    state.requests.push({ path, method: init?.method ?? "GET", fields: url.searchParams.get("fields") });
     const response = (object: any, kind: string) => { const o = structuredClone(object); state.drift?.(o, kind); return Response.json(o); };
     if (provider === "meta") {
       assert.ok(path.startsWith("/v26.0/"));
       if (init?.method === "POST") {
         state.writes++;
+        if (last === "campaigns") {
+          assert.equal(url.searchParams.get("is_adset_budget_sharing_enabled"), "false");
+          assert.equal(url.searchParams.get("status"), "PAUSED");
+          assert.equal(url.searchParams.has("daily_spend_cap"), false);
+        }
         if (last === "adimages") return Response.json({ images: { file: { hash: "meta-image" } } });
         const body = typeof init.body === "string" ? JSON.parse(init.body) : Object.fromEntries([...url.searchParams].map(([key, value]) => {
           try { return [key, JSON.parse(value)]; } catch { return [key, value]; }
@@ -157,9 +166,11 @@ async function native(provider: "meta" | "linkedin") {
         if (last === "adsets" && body.promoted_object?.page_id) body.destination_type = "UNDEFINED";
         if (last === "adsets" && body.targeting.targeting_optimization === "none") body.targeting_optimization_types = { detailed_targeting: 0, lookalike: 0 };
         state.objects.set(id, { ...body, id, account_id: "123", _kind: last });
+        if (last === "campaigns" && state.loseCampaignAck) throw new Error("synthetic lost campaign create acknowledgment");
         return Response.json({ id });
       }
-      if (last === "act_123") return response({ id: "act_123", currency: "USD", timezone_name: "America/Chicago" }, "account");
+      if (last === "permissions") return Response.json({ data: [{ permission: "ads_management", status: "granted" }] });
+      if (last === "act_123") return response({ id: "act_123", currency: "USD", timezone_name: "America/Chicago", funding_source_details: { id: "fixture-only" } }, "account");
       if (last === "42") return response({ id: "42", instagram_business_account: { id: "43" } }, "page");
       if (last === "61") return response({ id: "61", account_id: "123", pixel: { id: "60" }, rule: JSON.stringify({ and: [{ event: { eq: "ApplicantRequestMOU" } }] }) }, "conversion");
       if (last === "search") return response({ data: [{ id: "10", name: "Gardens" }, { id: "11", name: "Design" }] }, "taxonomy");
@@ -167,7 +178,9 @@ async function native(provider: "meta" | "linkedin") {
       if (last === "adimages") return response({ data: [{ hash: "meta-image", status: "ACTIVE" }] }, "image");
       const o = state.objects.get(last); assert.ok(o, `Unexpected synthetic Meta request ${path}`);
       if (state.loseRead && o._kind === "ads") { state.loseRead = false; throw new Error("synthetic lost read"); }
-      const { _kind, ...fields } = o; return response(fields, _kind);
+      const { _kind, ...fields } = o;
+      const requested = url.searchParams.get("fields")?.split(",");
+      return response(requested ? Object.fromEntries(requested.filter(k => Object.hasOwn(fields, k)).map(k => [k, fields[k]])) : fields, _kind);
     }
     if (path === "/rest/adAccounts/123") return response({ id: 123, currency: "USD" }, "account");
     if (path.includes("/adTargetingEntities")) return response({ elements: fixture.g.targetingOptions!.map(o => ({ urn: o.id, name: o.label })) }, "taxonomy");
@@ -215,7 +228,7 @@ for (const provider of ["meta", "linkedin"] as const) test(`${provider} every of
       t.state.objects.clear(); t.state.next = 100; t.state.loseRead = true;
       eligible(t.c, t.g); let ids: Record<string, string> = {};
       await assert.rejects(t.port.prepare(t.c, t.g, [t.a], `case-${i}`, value => { ids = { ...value }; }, () => {}), /provider_request_failed/);
-      assert.ok(ids.creative && ids.campaign); assert.equal(ids.readbackVersion, "3"); const writes = t.state.writes;
+      assert.ok(ids.creative && ids.campaign); assert.equal(ids.readbackVersion, provider === "meta" ? "4" : "3"); const writes = t.state.writes;
       const payloadDigest = digest(t.port.plan(t.c, t.g, [t.a]));
       const receipt = await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest, receipt: { ids, payloadDigest, intent: "paused", delivery: "unverified", observedAt: new Date().toISOString(), evidence: "provider", providerRequestId: null } });
       assert.ok(receipt); assert.equal(t.state.writes, writes);
@@ -343,9 +356,9 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
         s.placements = i % 3 === 0 ? ["facebook_feed"] : i % 3 === 1 ? ["instagram_feed"] : ["facebook_feed", "instagram_feed"];
         const instagram = i % 3 !== 0, facebook = i % 3 !== 1;
         if (instagram) s.identity.instagramUserId = "43";
-        ids = { readbackVersion: "3", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
+        ids = { readbackVersion: "4", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
         const strict = row[0] === "strict", employment = row[0] === "employment", awareness = row[1] === "OUTCOME_AWARENESS";
-        t.state.objects.set("100", { _kind: "campaigns", id: "100", account_id: "123", status: "PAUSED", objective: row[1],
+        t.state.objects.set("100", { _kind: "campaigns", id: "100", account_id: "123", status: "PAUSED", is_adset_budget_sharing_enabled: false, objective: row[1],
           special_ad_categories: employment ? ["EMPLOYMENT"] : [], ...(employment ? { special_ad_category_country: ["US"] } : {}) });
         t.state.objects.set("101", { _kind: "adsets", id: "101", account_id: "123", campaign_id: "100", status: "PAUSED",
           billing_event: "IMPRESSIONS", optimization_goal: row[2], bid_strategy: "LOWEST_COST_WITHOUT_CAP", lifetime_budget: "42000",
@@ -392,5 +405,217 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
         }
       }
     }
+  } finally { await t.close(); }
+});
+
+const unknownSharing = [undefined, null, true, 0, 1, "false", "true", "0", "", [], {}, { value: false }];
+test("Meta v4 sharing is literal false on native HTTP; every unknown/drift value blocks initial readback, recovery and activation", async () => {
+  const t = await native("meta");
+  try {
+    eligible(t.c, t.g);
+    const plan: any = t.port.plan(t.c, t.g, [t.a]);
+    assert.equal(plan.readbackVersion, "4");
+    assert.equal(plan.campaign.is_adset_budget_sharing_enabled, false);
+    for (const value of unknownSharing) {
+      t.state.objects.clear(); t.state.next = 100;
+      t.state.drift = (o, k) => { if (k === "campaigns") o.is_adset_budget_sharing_enabled = value; };
+      let ids: Record<string, string> = {};
+      await assert.rejects(t.port.prepare(t.c, t.g, [t.a], "sharing", v => { ids = { ...v }; }, () => {}), /meta_budget_sharing_unverified/);
+      assert.equal(ids.readbackVersion, "4"); assert.equal(ids.readbackDigest, undefined);
+      assert.ok(ids.ad); // Complete IDs retained, no packet authority from an incomplete snapshot.
+      const partial = { ids, payloadDigest: digest(plan), intent: "paused" as const, delivery: "unverified" as const,
+        providerRequestId: null, observedAt: "2026-01-01T00:00:00Z", evidence: "provider" as const };
+      const writes = t.state.writes;
+      assert.equal(await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest: partial.payloadDigest, receipt: partial }), null);
+      assert.equal(t.state.writes, writes);
+    }
+    t.state.drift = null; t.state.objects.clear(); t.state.next = 100;
+    const receipt = await t.port.prepare(t.c, t.g, [t.a], "false", () => {}, () => {});
+    const c = { ...t.c, receipt, state: "paused" as const };
+    const savedReceipt = structuredClone(receipt), writes = t.state.writes;
+    for (const value of unknownSharing) {
+      t.state.drift = (o, k) => { if (k === "campaigns") o.is_adset_budget_sharing_enabled = value; };
+      await assert.rejects(t.port.activate(c, t.g, () => {}), /meta_budget_sharing_unverified/);
+      assert.equal(await t.port.reconcile(c, t.g, { kind: "prepare", payloadDigest: receipt.payloadDigest, receipt }), null);
+      assert.equal(t.state.writes, writes); assert.deepEqual(receipt, savedReceipt);
+    }
+    t.state.drift = null;
+    const active = await t.port.activate(c, t.g, () => {});
+    // A status acknowledgment cannot bless sharing changed during activation.
+    t.state.drift = (o, k) => { if (k === "campaigns") o.is_adset_budget_sharing_enabled = true; };
+    assert.equal(await t.port.reconcile(c, t.g, { kind: "activate", payloadDigest: active.payloadDigest, receipt: active }), null);
+    t.state.drift = null;
+    await t.port.pause({ ...c, receipt: active }, t.g, () => {});
+    await assert.rejects(t.port.activate(c, t.g, () => {
+      t.state.objects.get("100").is_adset_budget_sharing_enabled = true;
+    }), /provider_outcome_unknown/);
+    assert.ok(t.state.requests.some(r => r.path.endsWith("/100") && r.fields?.includes("is_adset_budget_sharing_enabled")));
+  } finally { await t.close(); }
+});
+
+test("Meta client refuses omitted, enabling or malformed sharing input before transport", async () => {
+  let calls = 0;
+  const client = new MetaMarketingClient({ accessToken: "fixture", fetchImpl: async () => { calls++; throw new Error("unexpected transport"); } });
+  for (const value of unknownSharing) await assert.rejects(client.createPausedObject("act_123", "campaign", {
+    objective: "OUTCOME_TRAFFIC", status: "PAUSED", is_adset_budget_sharing_enabled: value,
+  }), /explicitly false/);
+  assert.equal(calls, 0);
+});
+
+test("Meta lost campaign-create acknowledgment retains only known IDs; no automatic transport retry or invented recovery", async () => {
+  const t = await native("meta");
+  try {
+    eligible(t.c, t.g); t.state.loseCampaignAck = true;
+    let ids: Record<string, string> = {};
+    await assert.rejects(t.port.prepare(t.c, t.g, [t.a], "lost-create", v => { ids = { ...v }; }, () => {}), /provider_request_failed/);
+    assert.deepEqual(ids, { readbackVersion: "4", image: "meta-image" });
+    assert.equal(t.state.writes, 2); // Image + uncertain campaign; no automatic retry.
+    assert.equal(t.state.objects.get("100").is_adset_budget_sharing_enabled, false);
+    const payloadDigest = digest(t.port.plan(t.c, t.g, [t.a]));
+    assert.equal(await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest, receipt: {
+      ids, payloadDigest, intent: "paused", delivery: "unverified", providerRequestId: null,
+      observedAt: "2026-01-01T00:00:00Z", evidence: "provider",
+    } }), null);
+    assert.equal(t.state.writes, 2);
+  } finally { await t.close(); }
+});
+
+test("Meta v1/v2/v3 receipts retain exact inspection digests and safety pause, never upgrade or qualify new activation", async () => {
+  const t = await native("meta");
+  try {
+    eligible(t.c, t.g);
+    const current = await t.port.prepare(t.c, t.g, [t.a], "current", () => {}, () => {});
+    for (const version of [undefined, "1", "2", "3"]) {
+      const explicit = version === "3", budget = version === "2" || explicit;
+      // Historical GET field sets, independent of the implementation's version selection.
+      const pick = (id: string, keys: string[]) => Object.fromEntries(keys.filter(k => Object.hasOwn(t.state.objects.get(id), k)).map(k => [k, t.state.objects.get(id)[k]]));
+      const oldMaterial = {
+        ...(explicit ? { account: { id: "act_123", currency: "USD", timezone: "America/Chicago" }, image: { hash: "meta-image", status: "ACTIVE" } } : {}),
+        campaign: pick("100", ["id", "objective", "special_ad_categories", ...(budget ? ["spend_cap"] : []), ...(explicit ? ["account_id", "special_ad_category_country"] : [])]),
+        adset: pick("101", ["id", "campaign_id", "billing_event", "optimization_goal", "bid_strategy", "lifetime_budget", ...(budget ? ["daily_budget"] : []), "start_time", "end_time", "targeting", ...(explicit ? ["account_id", "destination_type", "promoted_object", "targeting_optimization_types"] : [])]),
+        creative: pick("102", ["id", ...(explicit ? ["account_id"] : []), "object_story_spec"]),
+        ad: pick("103", ["id", ...(explicit ? ["account_id"] : []), "adset_id", "creative"]),
+      };
+      const { readbackVersion: _version, ...ids } = current.ids;
+      const receipt = { ...current, payloadDigest: `immutable-historical-${version ?? "v1"}`, ids: {
+        ...ids, ...(version ? { readbackVersion: version } : {}), readbackDigest: digest(oldMaterial) } };
+      const c = { ...t.c, receipt, state: "paused" as const }, saved = structuredClone(receipt);
+      const operation = { kind: "prepare", payloadDigest: receipt.payloadDigest, receipt };
+      for (const value of [undefined, false, true]) {
+        t.state.objects.get("100").is_adset_budget_sharing_enabled = value;
+        assert.deepEqual((await t.port.reconcile(c, t.g, operation))?.ids, receipt.ids);
+        const writes = t.state.writes;
+        await assert.rejects(t.port.activate(c, t.g, () => {}), /meta_readback_requalification_required/);
+        assert.equal(t.state.writes, writes);
+      }
+      for (const id of ["100", "101", "103"]) t.state.objects.get(id).status = "ACTIVE";
+      assert.equal((await t.port.reconcile(c, t.g, { ...operation, kind: "activate" }))?.intent, "enabled");
+      const paused = await t.port.pause({ ...c, state: "enabled" }, { ...t.g, capabilityEvidence: [] }, () => {});
+      assert.equal(paused.intent, "paused"); assert.deepEqual(paused.ids, saved.ids); assert.equal(paused.payloadDigest, saved.payloadDigest);
+      assert.deepEqual(receipt, saved);
+      if (version === "3") {
+        // Exercise the service too: receipt-based pause must survive the new
+        // plan digest while CURRENT actor, grant and lease still fence writes.
+        await t.store.db.acquireExecutor();
+        const principal = { userId: await t.store.createUser("historical-pause-review", "") };
+        await t.store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(principal.userId, "p", "admin");
+        await t.store.put("p", "grant", t.g.id, t.g);
+        await t.store.put("p", "campaign", c.id, { ...c, state: "enabled" });
+        await t.store.put("p", "destination", c.material.destinationDigest, { url: c.material.destination, source: "public_https" });
+        const server = new MarketingServer(t.store, { meta: t.port, linkedin: t.port, google: t.port }, new FixtureGeneration(), new FixtureAgent(t.store), "live");
+        for (const guard of ["actor", "grant", "lease"] as const) {
+          const op = await server.call(principal, "p", "pause", { campaignId: c.id, requestKey: `pause-${guard}` });
+          const writes = t.state.writes;
+          if (guard === "actor") await t.store.db.prepare("UPDATE memberships SET role=? WHERE user_id=?").run("analyst", principal.userId);
+          if (guard === "grant") await t.store.put("p", "grant", t.g.id, { ...t.g, revision: t.g.revision + 1 });
+          if (guard === "lease") await t.store.db.prepare("INSERT INTO leases VALUES(?,?,?)").run("p", t.g.accountId, "retained-unknown-operation");
+          const blocked = await server.dispatch("p", op.id);
+          assert.equal(blocked.state, "blocked");
+          assert.equal(blocked.reason, guard === "actor" ? "forbidden" : guard === "grant" ? "grant_changed" : "account_execution_pending");
+          assert.equal(t.state.writes, writes);
+          await t.store.db.prepare("UPDATE memberships SET role=? WHERE user_id=?").run("admin", principal.userId);
+          await t.store.put("p", "grant", t.g.id, t.g);
+          if (guard === "lease") await t.store.db.prepare("DELETE FROM leases WHERE project_id=?").run("p");
+        }
+        for (const id of ["100", "101", "103"]) t.state.objects.get(id).status = "ACTIVE";
+        const op = await server.call(principal, "p", "pause", { campaignId: c.id, requestKey: "historical-safe-pause" });
+        assert.equal(op.payloadDigest, receipt.payloadDigest);
+        const done = await server.dispatch("p", op.id);
+        assert.equal(done.state, "succeeded", done.reason ?? "");
+        assert.deepEqual(done.receipt?.ids, receipt.ids);
+        assert.equal(done.receipt?.payloadDigest, receipt.payloadDigest);
+      }
+      const { readbackDigest: _digest, ...partialIds } = receipt.ids;
+      assert.equal(await t.port.reconcile(c, t.g, { ...operation, receipt: { ...receipt, ids: partialIds } }), null);
+    }
+    assert.equal(await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest: current.payloadDigest,
+      receipt: { ...current, ids: { ...current.ids, readbackVersion: "5" } } }), null);
+  } finally { await t.close(); }
+});
+
+test("Meta daily remains denied by native prepare/activate despite exact account evidence; v4 does not qualify REACH normalization", async () => {
+  const t = await native("meta");
+  try {
+    t.c.material.advertisingBudget = { lifetime: t.c.material.budget, daily: { currency: "USD", minor: 3000 } };
+    eligible(t.c, t.g);
+    // Planning can represent a denied daily request; no budget rewrite or new cap is inferred.
+    const plan: any = t.port.plan(t.c, t.g, [t.a]);
+    assert.equal(plan.campaign.is_adset_budget_sharing_enabled, false);
+    assert.equal(plan.adset.daily_budget, "3000"); assert.equal(plan.adset.daily_spend_cap, undefined);
+    assert.equal(capabilityStatus(t.c.material, t.g).accountVerified, false);
+    await assert.rejects(t.port.prepare(t.c, t.g, [t.a], "daily", () => {}, () => {}), /meta_daily_budget_semantics_unverified/);
+    await assert.rejects(t.port.activate({ ...t.c, receipt: { ids: { readbackVersion: "4", readbackDigest: "saved" }, payloadDigest: "saved",
+      intent: "paused", delivery: "unverified", observedAt: "2026-01-01T00:00:00Z", evidence: "provider", providerRequestId: null } }, t.g, () => {}), /meta_daily_budget_semantics_unverified/);
+    assert.equal(t.state.requests.length, 0);
+    delete t.c.material.advertisingBudget;
+    metaMode(t.c, META_COMBINATIONS.find(r => r[2] === "REACH")!); eligible(t.c, t.g);
+    t.state.drift = (o, k) => { if (k === "adsets") { o.optimization_goal = "IMPRESSIONS"; o.frequency_control_specs = [{ event: "IMPRESSIONS", interval_days: 7, max_frequency: 2 }]; } };
+    await assert.rejects(t.port.prepare(t.c, t.g, [t.a], "normalized", () => {}, () => {}), /provider_effective_material_mismatch/);
+  } finally { await t.close(); }
+});
+
+test("Meta v4 SQL operation retains unknown HTTP effects, forbids retry replay and only reconciles observed false", async () => {
+  const t = await native("meta");
+  try {
+    await t.store.db.acquireExecutor();
+    const principal = { userId: await t.store.createUser("sharing-fixture", "") };
+    await t.store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(principal.userId, "p", "admin");
+    const destination = Buffer.from("intercepted destination");
+    t.c.material.destinationDigest = byteDigest(destination); eligible(t.c, t.g);
+    await t.store.put("p", "destination", t.c.material.destinationDigest, { url: t.c.material.destination, source: "public_https" });
+    await t.store.put("p", "grant", t.g.id, t.g);
+    await t.store.put("p", "campaign", t.c.id, t.c);
+    await t.store.put("p", "setup", "s", { id: "s", grantId: t.g.id, state: "ready" });
+    const server = new MarketingServer(t.store, { meta: t.port, linkedin: t.port, google: t.port },
+      new FixtureGeneration(), new FixtureAgent(t.store), "live", () => Date.now(), async () => destination);
+    const input = { campaignId: t.c.id, requestKey: "sharing-create" };
+    const op = await server.call(principal, "p", "prepare", input);
+    t.state.loseRead = true;
+    const unknown = await server.dispatch("p", op.id);
+    assert.equal(unknown.state, "unknown"); assert.equal(unknown.receipt?.ids.readbackVersion, "4");
+    assert.ok(unknown.receipt?.ids.ad); assert.equal(unknown.receipt?.ids.readbackDigest, undefined);
+    const writes = t.state.writes;
+    assert.equal((await server.call(principal, "p", "prepare", input)).id, op.id);
+    await assert.rejects(server.call(principal, "p", "prepare", { ...input, requestKey: "different" }), /existing_operation_requires_reconciliation/);
+    assert.equal((await server.dispatch("p", op.id)).state, "unknown");
+    for (const value of unknownSharing) {
+      t.state.drift = (o, k) => { if (k === "campaigns") o.is_adset_budget_sharing_enabled = value; };
+      assert.equal((await server.call(principal, "p", "reconcile", { operationId: op.id })).state, "unknown");
+      assert.equal(Number((await t.store.db.prepare("SELECT COUNT(*) AS n FROM leases").get())!.n), 1);
+    }
+    assert.equal(t.state.writes, writes);
+    t.state.drift = null;
+    const result = await server.call(principal, "p", "reconcile", { operationId: op.id });
+    assert.equal(result.state, "succeeded"); assert.equal(result.receipt?.ids.readbackVersion, "4");
+    assert.equal(t.state.writes, writes);
+    // The same headless live service continues to deny daily preparation at dispatch.
+    const daily = { ...t.c, id: "daily", material: { ...t.c.material,
+      advertisingBudget: { lifetime: t.c.material.budget, daily: { currency: "USD", minor: 3000 } } } };
+    await t.store.put("p", "asset", t.a.id, { ...t.a, campaignId: daily.id });
+    eligible(daily, t.g); await t.store.put("p", "grant", t.g.id, t.g); await t.store.put("p", "campaign", daily.id, daily);
+    const denied = await server.call(principal, "p", "prepare", { campaignId: daily.id, requestKey: "daily" });
+    const blocked = await server.dispatch("p", denied.id);
+    assert.equal(blocked.state, "blocked"); assert.equal(blocked.reason, "meta_daily_budget_semantics_unverified");
+    assert.equal(t.state.writes, writes);
   } finally { await t.close(); }
 });

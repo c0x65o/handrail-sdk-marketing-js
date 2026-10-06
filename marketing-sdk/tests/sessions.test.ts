@@ -46,7 +46,7 @@ test("v1 migration preserves sessions; mapping expiry, revocation and immutable 
     await s.db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(digest, uid, expiry);
     await s.close();
     s = await testStore(path);
-    assert.deepEqual(await s.authenticate(token, expiry - 1), { userId: uid });
+    assert.deepEqual(await s.authenticate(token, expiry - 1), { userId: uid, sessionTokenHash: digest });
     await assert.rejects(s.authenticate(token, expiry), /authentication_required/);
     // Native Known Users binds a Date for MariaDB and ISO text for SQLite.
     const mapped = async (at: number) => s.db.prepare("SELECT u.id FROM marketing_known_sessions s JOIN marketing_known_users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND s.revoked_at IS NULL AND u.disabled=0")

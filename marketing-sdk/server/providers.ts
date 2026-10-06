@@ -173,10 +173,11 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     const ms = settings?.provider === "meta" ? settings : undefined;
     return {
       provider: g.provider,
-      ...(ms ? { capabilityVersion: ms.version, accountId: g.accountId } : {}),
+      ...(ms ? { capabilityVersion: ms.version, accountId: g.accountId, readbackVersion: "4" } : {}),
       imageDigest: image.digest,
       campaign: {
         name: m.name,
+        ...(ms ? { is_adset_budget_sharing_enabled: false } : {}),
         objective: ms?.objective ?? "OUTCOME_TRAFFIC",
         special_ad_categories: ms?.delivery === "employment" ? ["EMPLOYMENT"] : [],
         ...(ms?.delivery === "employment" ? { special_ad_category_country: ["US"] } : {}),
@@ -486,7 +487,7 @@ export class NativeProvider implements ProviderPort {
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
       validateAccountCapability(c, g, true);
     };
-    const ids: Record<string, string> = { readbackVersion: c.material.settings ? "3" : "2" };
+    const ids: Record<string, string> = { readbackVersion: plan.readbackVersion ?? (c.material.settings ? "3" : "2") };
     const create = async (
       key: string,
       action: () => Promise<{
@@ -678,31 +679,36 @@ export class NativeProvider implements ProviderPort {
     enabled: boolean;
   }> {
     requireThat(ids.campaign, "incomplete_provider_identity");
+    requireThat(ids.readbackVersion === undefined || ["1", "2", "3"].includes(ids.readbackVersion) ||
+      (this.name === "meta" && ids.readbackVersion === "4"), "unsupported_readback_version");
     if (this.name === "meta") {
+      // v4 extends every v3 identity/material check; historical field sets stay exact.
+      const explicit = ["3", "4"].includes(ids.readbackVersion!);
+      const budgets = ["2", "3", "4"].includes(ids.readbackVersion!);
       requireThat(
         ids.adset && ids.creative && ids.ad,
         "incomplete_provider_identity",
       );
       const campaign = await client.getObject(
         ids.campaign,
-        ["2", "3"].includes(ids.readbackVersion!) ? `id,objective,special_ad_categories,spend_cap,status${ids.readbackVersion === "3" ? ",account_id,special_ad_category_country" : ""}` : "id,objective,special_ad_categories,status",
+        budgets ? `id,objective,special_ad_categories,spend_cap,status${explicit ? ",account_id,special_ad_category_country" : ""}${ids.readbackVersion === "4" ? ",is_adset_budget_sharing_enabled" : ""}` : "id,objective,special_ad_categories,status",
       );
       const adset = await client.getObject(
         ids.adset,
-        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${["2", "3"].includes(ids.readbackVersion!) ? "daily_budget," : ""}start_time,end_time,targeting,status${ids.readbackVersion === "3" ? ",account_id,destination_type,promoted_object,targeting_optimization_types" : ""}`,
+        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${budgets ? "daily_budget," : ""}start_time,end_time,targeting,status${explicit ? ",account_id,destination_type,promoted_object,targeting_optimization_types" : ""}`,
       );
       const creative = await client.getObject(
         ids.creative,
-        ids.readbackVersion === "3" ? "id,account_id,object_story_spec" : "id,object_story_spec",
+        explicit ? "id,account_id,object_story_spec" : "id,object_story_spec",
       );
-      const ad = await client.getObject(ids.ad, ids.readbackVersion === "3" ? "id,account_id,adset_id,creative,status" : "id,adset_id,creative,status");
+      const ad = await client.getObject(ids.ad, explicit ? "id,account_id,adset_id,creative,status" : "id,adset_id,creative,status");
       const statuses = [campaign.status, adset.status, ad.status];
       delete campaign.status;
       delete adset.status;
       delete ad.status;
       return {
         material: {
-          ...(ids.readbackVersion === "3" ? { account: await this.accountContext(client, g), image: await this.metaImage(client, g, ids.image!) } : {}),
+          ...(explicit ? { account: await this.accountContext(client, g), image: await this.metaImage(client, g, ids.image!) } : {}),
           campaign,
           adset,
           creative,
@@ -820,6 +826,9 @@ export class NativeProvider implements ProviderPort {
   }
   private validateSnapshot(s: any, plan: any, ids: Record<string, string>) {
     if (this.name === "meta") {
+      if (plan.readbackVersion === "4") requireThat(ids.readbackVersion === "4" &&
+        plan.campaign.is_adset_budget_sharing_enabled === false && s.campaign.is_adset_budget_sharing_enabled === false,
+        "meta_budget_sharing_unverified");
       if (plan.capabilityVersion) {
         const account = plan.accountId.replace(/^act_/, "");
         requireThat(["campaign", "adset", "creative", "ad"].every(k => s[k].id === ids[k]), "provider_object_identity_mismatch");
@@ -999,6 +1008,7 @@ export class NativeProvider implements ProviderPort {
       "verified_provider_objects_required",
     );
     const ids = c.receipt.ids;
+    if (activate && this.name === "meta") requireThat(ids.readbackVersion === "4", "meta_readback_requalification_required");
     const scopeDigest = digest({ c, g });
     const hostBeforeWrite = beforeWrite;
     beforeWrite = async () => {
@@ -1011,6 +1021,8 @@ export class NativeProvider implements ProviderPort {
       if (this.name === "linkedin") client.beforeWrite = beforeWrite;
       if (activate && c.material.settings) await this.verifySettings(client, c, g);
       const before = await this.snapshot(client, g, ids);
+      if (activate && this.name === "meta") requireThat(before.material.campaign.is_adset_budget_sharing_enabled === false,
+        "meta_budget_sharing_unverified");
       requireThat(
         digest(before.material) === ids.readbackDigest &&
           (!activate || before.paused),
@@ -1120,6 +1132,8 @@ export class NativeProvider implements ProviderPort {
         return null;
       }
       if (!(o.kind === "activate" ? s.enabled : s.paused)) return null;
+      if (this.name === "meta" && receipt.ids.readbackVersion === "4" && o.kind !== "pause" &&
+        s.material.campaign.is_adset_budget_sharing_enabled !== false) return null;
       if (!receipt.ids.readbackDigest) {
         if (o.kind !== "prepare") return null;
         const assets = await Promise.all(

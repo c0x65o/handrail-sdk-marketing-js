@@ -166,6 +166,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     fetcher,
   );
   try {
+    assert.equal((provider.plan(campaign, grant, [asset]) as any).campaign.is_adset_budget_sharing_enabled, false);
     await assert.rejects(
       async () =>
         await provider.prepare(

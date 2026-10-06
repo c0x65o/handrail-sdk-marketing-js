@@ -198,6 +198,8 @@ export class MarketingServer {
         ).map(({ billingCapabilityRef: _ref, ...g }) => g),
         campaigns: await this.store.list(project, "campaign"),
         drafts: await this.store.list(project, "campaignDraft"),
+        planningWrites: await this.pendingPlanningWrites(p, project),
+        planningScope: this.planningScope(p, project),
         setups: await this.store.list(project, "setup"),
         assets: await this.store.list(project, "asset"),
         jobs: await this.store.list(project, "job"),
@@ -205,6 +207,57 @@ export class MarketingServer {
         decisions: await this.store.list(project, "decision"),
         operations: await this.store.list(project, "operation"),
       };
+    });
+  }
+  private async pendingPlanningWrites(p: Principal, project: string) {
+    const acknowledged = new Set((await this.store.list<{ id: string }>(project, "planningAcknowledgment")).map(w => w.id));
+    return (await this.store.list<import("../core/index.js").PlanningWrite>(project, "planningWrite"))
+      .filter(w => w.actorId === p.userId && !acknowledged.has(w.id));
+  }
+  private planningScope(p: Principal, project: string) {
+    return digest(["planning-scope", project, p.userId, p.sessionTokenHash ?? null]);
+  }
+  /** Opt-in UI write envelope. An unacknowledged result survives new keys,
+   * changed forms/targets/revisions and process loss. Existing callers retain
+   * their explicit request-key contract. No new table or provider operation. */
+  async planningWrite(p: Principal, project: string, input: Commands["planningWrite"]["input"]) {
+    return this.store.transaction(async () => {
+      await this.auth(p, project, true);
+      requireThat(["saveCampaign", "saveDraft", "promoteDraft"].includes(input.command), "invalid_planning_command", 422);
+      requireThat(input.scope === this.planningScope(p, project), "planning_session_changed");
+      text(input.requestKey);
+      const key = `planning:${digest([p.userId, input.requestKey])}`;
+      const pending = (await this.pendingPlanningWrites(p, project))[0];
+      requireThat(!pending || pending.id === key, "unresolved_planning_write_review_required");
+      // Recheck grant and revision even when recovering an immutable receipt.
+      let grantDigest: string | undefined;
+      if (input.command !== "saveDraft") {
+        const g = await this.grant(project, input.input.grantId);
+        grantDigest = digest(g);
+        if (input.command === "promoteDraft") requireThat(g.revision === input.input.expectedGrantRevision, "grant_changed");
+      }
+      if (input.command === "promoteDraft") {
+        const draft = await this.store.get<CampaignDraft>(project, "campaignDraft", input.input.draftId);
+        requireThat(draft.revision === input.input.expectedRevision, "revision_conflict");
+      }
+      // The scope must be fresh, but is not part of the immutable intent: after
+      // signing in again the same actor can inspect/recover its original result.
+      const { scope: _scope, ...intent } = input;
+      return this.request<import("../core/index.js").PlanningWrite>(project, key, { actorId: p.userId, grantDigest, ...intent }, "planningWrite", async () => {
+        const result = await this.call(p, project, input.command, input.input);
+        await this.auth(p, project, true);
+        return { id: key, actorId: p.userId, command: input.command, result, acknowledged: false };
+      });
+    });
+  }
+  async acknowledgePlanningWrite(p: Principal, project: string, input: Commands["acknowledgePlanningWrite"]["input"]) {
+    return this.store.transaction(async () => {
+      await this.auth(p, project, true);
+      const w = await this.store.get<import("../core/index.js").PlanningWrite>(project, "planningWrite", input.id);
+      requireThat(w.actorId === p.userId, "forbidden", 403);
+      const next = { ...w, acknowledged: true };
+      await this.store.put(project, "planningAcknowledgment", w.id, { id: w.id, actorId: p.userId });
+      return next;
     });
   }
   async captureDestination(
@@ -235,6 +288,7 @@ export class MarketingServer {
         observedAt: new Date(this.now()).toISOString(),
       };
       await this.store.transaction(async () => {
+        await this.auth(p, project, true);
         await this.store.db
           .prepare("INSERT OR IGNORE INTO blobs VALUES(?,?,?)")
           .run(project, snapshot.digest, bytes);
@@ -386,6 +440,36 @@ export class MarketingServer {
       return write.draft;
     });
   }
+  /** Planning-only promotion, serialized by the existing SQL transaction guard.
+   * A revision/account has one owner binding, independent of client retry keys.
+   * Different actors cannot claim the original actor's promotion receipt. */
+  async promoteDraft(p: Principal, project: string, input: Commands["promoteDraft"]["input"]): Promise<Campaign> {
+    return this.store.transaction(async () => {
+      await this.auth(p, project, true);
+      keys(input, ["draftId", "expectedRevision", "grantId", "expectedGrantRevision", "material"]);
+      text(input.draftId); text(input.grantId);
+      requireThat(Number.isSafeInteger(input.expectedRevision) && input.expectedRevision > 0 &&
+        Number.isSafeInteger(input.expectedGrantRevision) && input.expectedGrantRevision > 0, "invalid_draft_revision", 422);
+      const g = await this.grant(project, input.grantId);
+      requireThat(g.revision === input.expectedGrantRevision, "grant_changed");
+      const draft = await this.store.get<CampaignDraft>(project, "campaignDraft", input.draftId);
+      requireThat(draft.revision === input.expectedRevision, "revision_conflict");
+      // Same physical target account through another grant must not duplicate it.
+      const binding = `promotion:${digest([project, draft.id, draft.revision, g.provider, g.accountId])}`;
+      const write = await this.request<{ id: string; campaign: Campaign; source: CampaignDraft }>(project, binding,
+        { command: "promoteDraft", actorId: p.userId, ...input }, "draftPromotion", async () => {
+          const campaign = await this.saveCampaign(p, project, { grantId: g.id, material: input.material });
+          requireThat(digest(await this.grant(project, g.id)) === digest(g), "grant_changed");
+          requireThat((await this.store.get<CampaignDraft>(project, "campaignDraft", draft.id)).revision === draft.revision, "revision_conflict");
+          campaign.draftOrigin = { draftId: draft.id, revision: draft.revision, actorId: p.userId,
+            materialDigest: digest(draft.material), accountId: g.accountId };
+          await this.store.put(project, "campaign", campaign.id, campaign, campaign.revision);
+          await this.store.put(project, "campaignVersion", `${campaign.id}:${campaign.revision}`, campaign);
+          return { id: binding, campaign, source: draft };
+        });
+      return write.campaign;
+    });
+  }
   async saveCampaign(
     p: Principal,
     project: string,
@@ -434,11 +518,15 @@ export class MarketingServer {
           revision: (old?.revision || 0) + 1,
           grantId: g.id,
           creativeSetId: old?.creativeSetId || id(),
+          ...(old?.draftOrigin ? { draftOrigin: old.draftOrigin } : {}),
           material: input.material,
           state: "draft",
           receipt: null,
         };
         await this.assets(c);
+        await this.auth(p, project, true);
+        const currentGrant = await this.grant(project, g.id);
+        requireThat(digest(currentGrant) === digest(g), "grant_changed");
         await this.store.put(project, "campaign", c.id, c, old?.revision);
         await this.store.put(
           project,
@@ -1742,9 +1830,12 @@ export class MarketingServer {
       const fields: Record<Command, string[]> = {
         captureDestination: ["url"],
         workspace: [],
+        planningWrite: ["command", "input", "requestKey", "scope"],
+        acknowledgePlanningWrite: ["id"],
         setup: ["grantId", "requestKey"],
         resumeSetup: ["setupId", "expectedRevision"],
         saveCampaign: ["id", "expectedRevision", "grantId", "material", "requestKey"],
+        promoteDraft: ["draftId", "expectedRevision", "grantId", "expectedGrantRevision", "material"],
         saveDraft: ["id", "expectedRevision", "requestKey", "material"],
         prepare: ["campaignId", "requestKey"],
         packet: ["campaignId"],

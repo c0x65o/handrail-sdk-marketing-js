@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 // @ts-expect-error React DOM is an existing JavaScript dependency.
 import { createRoot } from "react-dom/client";
 import { createMarketingClient } from "../core/index.js";
-import { MarketingWorkspace } from "../react/index.js";
+import { MarketingRoot, MarketingWorkspace } from "../react/index.js";
 import "./style.css";
 
 function App() {
@@ -143,4 +143,4 @@ function App() {
     </>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<MarketingRoot><App /></MarketingRoot>);
