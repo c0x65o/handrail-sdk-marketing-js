@@ -1,3 +1,4 @@
+import { fixtureSettings, fixtureEligibility } from "./capability-fixtures.js";
 import { testStore } from "./datastore.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -62,6 +63,8 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     state: "draft",
     receipt: null,
     material: {
+      settings: fixtureSettings("meta", "act_123", "42"),
+      purpose: "acquisition",
       name: "Test",
       headline: "Test headline",
       body: "Test body",
@@ -84,6 +87,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
       timezone: "America/Chicago",
     },
   };
+  fixtureEligibility(campaign, grant);
   const objects = new Map<string, any>();
   let writes = 0,
     nextId = 100,
@@ -93,6 +97,9 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
   const fetcher: typeof fetch = async (raw, init) => {
     const url = new URL(String(raw)),
       last = url.pathname.split("/").at(-1)!;
+    if (init?.method !== "POST" && last === "act_123") return Response.json({ id: "act_123", currency: "USD", timezone_name: "America/Chicago" });
+    if (init?.method !== "POST" && last === "42") return Response.json({ id: "42" });
+    if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [{ hash: "provider-image-hash", status: "ACTIVE" }] });
     if (init?.method === "POST") {
       writes++;
       if (last === "adimages")
@@ -134,6 +141,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
       objects.set(key, {
         ...body,
         id: key,
+        account_id: "123",
       });
       return Response.json({
         id: key,
@@ -239,13 +247,14 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       seconds: null, source: "uploaded", jobId: null, rightsReceipt: "fixture", parentAssetIds: [] };
     await store.put("p", "asset", asset.id, asset);
     const grant: Grant = { id: "g", projectId: "p", provider: "linkedin", revision: 1, accountId: "123", label: "Fixture transport", currency: "USD",
-      timezone: "America/Chicago", permissions: ["setup", "prepare", "activate", "pause", "report"], expiresAt: "2099-01-01T00:00:00Z", revokedAt: null,
-      secretRef: "fixture", organizationId: "42" };
+      timezone: "UTC", permissions: ["setup", "prepare", "activate", "pause", "report"], expiresAt: "2099-01-01T00:00:00Z", revokedAt: null,
+      secretRef: "fixture", organizationId: "42", targetingOptions: [{ kind: "locations", id: "urn:li:geo:1", label: "United States" }] };
     const c: Campaign = { id: "c", projectId: "p", revision: 1, grantId: "g", creativeSetId: "cs", state: "draft", receipt: null,
-      material: { name: "Fixture", headline: "Headline", body: "Body", destination: "https://example.com/kit", destinationDigest: "a".repeat(64), assetIds: ["a"],
+      material: { settings: fixtureSettings("linkedin", "123", "42"), purpose: "acquisition", name: "Fixture", headline: "Headline", body: "Body", destination: "https://example.com/kit", destinationDigest: "a".repeat(64), assetIds: ["a"],
         audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false }, budget: { currency: "USD", minor: 42000 },
         advertisingBudget: { lifetime: { currency: "USD", minor: 42000 }, daily: { currency: "USD", minor: 3000 } },
-        startAt: "2026-10-08T05:00:00Z", endAt: "2026-10-15T05:00:00Z", timezone: "America/Chicago" } };
+        startAt: "2026-10-08T00:00:00Z", endAt: "2026-10-15T00:00:00Z", timezone: "UTC" } };
+    fixtureEligibility(c, grant);
     let objects = new Map<string, any>(), writes = 0, loseRead = false, drift: ((o: any, collection: string) => void) | null = null;
     const fetcher: typeof fetch = async (raw, init) => {
       const url = new URL(String(raw)), path = decodeURIComponent(url.pathname), last = path.split("/").at(-1)!;
@@ -263,7 +272,10 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         drift?.(objects.get(id), last);
         return Response.json({}, { status: 201, headers: { "x-restli-id": id } });
       }
-      if (path.includes("/images/")) return Response.json({ status: "AVAILABLE" });
+      if (path === "/rest/campaignConversions") return Response.json({ elements: [] });
+      if (path === "/rest/adAccounts/123") return Response.json({ id: 123, currency: "USD" });
+      if (path.includes("/images/")) return Response.json({ id: "urn:li:image:fixture", owner: "urn:li:organization:42", status: "AVAILABLE" });
+      if (path.includes("/adTargetingEntities")) return Response.json({ elements: [{ urn: "urn:li:geo:1", name: "United States" }] });
       if (loseRead && last === "urn:li:sponsoredCreative:103") { loseRead = false; throw new Error("lost acknowledgment fixture"); }
       assert.ok(objects.has(last), `Unexpected fixture request ${path}`);
       return Response.json(objects.get(last));
@@ -328,7 +340,7 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       post: pick(objects.get("urn:li:sponsoredCreative:103").inlineContent.post, ["author", "commentary", "content", "contentLandingPage", "contentCallToActionLabel", "distribution"]),
     };
     const { readbackVersion: _version, ...legacyIds } = receipt.ids;
-    const legacy = { ...c, state: "enabled" as const, material: { ...c.material, advertisingBudget: undefined },
+    const legacy = { ...c, state: "enabled" as const, material: { ...c.material, settings: undefined, advertisingBudget: undefined },
       receipt: { ...receipt, ids: { ...legacyIds, readbackDigest: digest(legacyMaterial) } } };
     assert.equal((await provider.pause(legacy, grant, () => {})).intent, "paused");
     await assert.rejects(provider.activate(legacy, grant, () => {}), /explicit_daily_budget_required/);

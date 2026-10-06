@@ -1,3 +1,4 @@
+import { fixtureSettings } from "./capability-fixtures.js";
 import { testStore } from "./datastore.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -180,6 +181,8 @@ export async function setupTest() {
 }
 export function sampleMaterial(): Material {
   return {
+    settings: fixtureSettings("meta", "act_123456", "987654"),
+    purpose: "acquisition",
     name: "Desk kit",
     headline: "Room to think",
     body: "Explore the desk kit.",
@@ -950,6 +953,8 @@ for (const provider of ["google", "linkedin"] as const)
       await ready(t, provider);
       const m: Material = {
         ...sampleMaterial(),
+        settings: provider === "google" ? undefined : fixtureSettings("linkedin", "123456", "987654"),
+        ...(provider === "linkedin" ? { timezone: "UTC", ...defaultCampaignSchedule("UTC", new Date(time)) } : {}),
         audience:
           provider === "google"
             ? {
@@ -977,7 +982,7 @@ for (const provider of ["google", "linkedin"] as const)
       if (provider === "linkedin") {
         m.advertisingBudget = { lifetime: m.budget, daily: { currency: "USD", minor: 600 } };
         const year = new Date(time).getUTCFullYear();
-        const from = `${year}-01-01T06:00:00Z`, until = `${year + 1}-01-01T06:00:00Z`;
+        const from = `${year}-01-01T00:00:00Z`, until = `${year + 1}-01-01T00:00:00Z`;
         await t.service.advertisingBudgets.configure({ id: "project-budget", projectId: "qa-alpha", scope: "project", projectIds: ["qa-alpha"],
           currency: "USD", timezone: m.timezone, from, until, dailyCeilingMinor: 10000, periodCeilingMinor: 100000,
           campaignDailyCeilingMinor: 1000, campaignLifetimeCeilingMinor: 10000, maxObservationAgeMs: 60000 });
@@ -1150,16 +1155,18 @@ test("trusted source retries preserve attribution; submissions, people, QA and a
     await t.service.event(t.admin, "qa-alpha", { ...common, id: "qa-click", kind: "click", campaignId: c.id, clickId: null, sourceReceipt: "qa-click", synthetic: true });
     await t.service.event(t.admin, "qa-alpha", { ...input, id: "qa-form", sourceReceipt: "qa-form", clickId: "qa-click", synthetic: true });
     await t.service.event(t.admin, "qa-alpha", { ...common, id: "app-click", kind: "click", purpose: "recruitment", campaignId: c.id, clickId: null, sourceReceipt: "app-click" });
-    for (const kind of ["application_completed", "applicant_qualified", "hired"] as const) await t.service.event(t.admin, "qa-alpha", {
+    for (const kind of ["applicant_request_mou", "application_completed", "applicant_qualified", "hired"] as const) await t.service.event(t.admin, "qa-alpha", {
       ...common, id: kind, kind, purpose: "recruitment", clickId: "app-click", sourceReceipt: kind, occurredAt: new Date(time - 1000).toISOString(),
     });
     const window = { campaignId: c.id, from: new Date(time - 86400000).toISOString(), until: new Date(time + 1000).toISOString() };
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicants?.value, null);
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, null);
     await t.store.put("qa-alpha", "firstPartyCoverage", "recruitment", { from: window.from, until: window.until, purpose: "recruitment" });
     const results = await t.service.results(t.admin, "qa-alpha", window);
     assert.equal(results.completedSubmissions?.value, 2);
     assert.equal(results.uniquePeople?.value, 1);
     assert.equal(results.leads.value, 1); // Versioned compatibility field.
+    assert.equal(results.applicantRequests?.value, 1);
     assert.equal(results.applicants?.value, 1);
     assert.equal(results.qualifiedApplicants?.value, 1);
     assert.equal(results.hires?.value, 1);
@@ -1167,9 +1174,18 @@ test("trusted source retries preserve attribution; submissions, people, QA and a
     assert.equal(results.customers.value, 0);
     assert.equal(results.excludedTestEvents?.value, 2);
     assert.equal(results.spendMinor.value, null);
+    // An aggregate LinkedIn conversion number (or jobApplications) cannot become
+    // a trusted completed MOU request, even when provider metrics are present.
+    const aggregate = (await import("../server/providers.js")).summarizeMetrics([{ externalWebsiteConversions: "99", jobApplications: "500" }],
+      { spend: "spend", impressions: "impressions", clicks: "clicks", conversions: "externalWebsiteConversions" }, 100);
+    await t.store.put("qa-alpha", "metrics", "aggregate-only", { id: "aggregate-only", projectId: "qa-alpha", campaignId: c.id,
+      from: window.from, until: window.until, timezone: c.material.timezone, currency: c.material.budget.currency, observedAt: new Date(time).toISOString(), source: "fixture", ...aggregate });
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).providerConversions.value, 99);
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, 1);
     await t.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind=?").run("qa-alpha", "firstPartyCoverage");
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, null);
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).completedSubmissions?.value, null);
-    await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { grantId: "meta-qa", material: { ...sampleMaterial(), purpose: "recruitment" } }), /recruitment_provider_unsupported/);
+    await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { grantId: "meta-qa", material: { ...sampleMaterial(), settings: undefined, purpose: "recruitment" } }), /recruitment_provider_unsupported/);
   } finally { await t.close(); }
 });
 
@@ -1178,9 +1194,10 @@ test("legacy LinkedIn receipt can still be paused without fabricating daily appr
   try {
     const base = await campaign(t);
     const c: Campaign = { id: base.id, projectId: "qa-alpha", revision: 1, grantId: "linkedin-qa", creativeSetId: "original-set", state: "enabled",
-      material: { ...sampleMaterial(), assetIds: base.material.assetIds, audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false } },
+      material: { ...sampleMaterial(), settings: undefined, timezone: "UTC", assetIds: base.material.assetIds, audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false } },
       receipt: { ids: { campaign: "legacy-id" }, payloadDigest: "legacy-plan-digest", intent: "enabled", delivery: "unverified",
         observedAt: new Date(time).toISOString(), evidence: "fixture", providerRequestId: "original" } };
+    delete c.material.settings;
     await t.store.put("qa-alpha", "campaign", c.id, c);
     await t.store.put("qa-alpha", "fixtureEffect", c.id, c.receipt);
     const operation = await t.service.pause(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "safe-legacy-pause" });
@@ -1299,5 +1316,45 @@ test("budget holds survive interrupted activation and restart; only verified pau
     t.advance(60001); // Proved pre-dispatch block releases this reservation atomically.
     assert.equal((await t.service.dispatch("qa-alpha", next.id)).state, "blocked");
     assert.equal(await held(), "released");
+  } finally { await t.close(); }
+});
+
+test("typed material edits invalidate packet authority and the agent uses the same account/settings validator", async () => {
+  const t = await setupTest();
+  try {
+    const { CAPABILITY_VERSION } = await import("../core/index.js");
+    const c = await prepared(t);
+    const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
+    await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
+    const settings: import("../core/index.js").MetaSettings = { version: CAPABILITY_VERSION, provider: "meta", accountId: "act_123456", apiVersion: "v26.0",
+      format: "single_image", objective: "OUTCOME_TRAFFIC", optimization: "LINK_CLICKS", delivery: "ordinary", placements: ["facebook_feed"],
+      identity: { pageId: "987654" }, targeting: { languages: [], interestGroups: [], excludedCustomAudiences: [] }, nondiscriminationAccepted: true };
+    const updated = await t.service.saveCampaign(t.admin, "qa-alpha", { id: c.id, expectedRevision: c.revision, grantId: c.grantId,
+      material: { ...c.material, settings, purpose: "acquisition" } });
+    assert.equal(updated.creativeSetId, c.creativeSetId); assert.equal(updated.receipt, null);
+    await assert.rejects(t.service.execute(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, requestKey: "stale-capability" }), /changed|revision|paused|stale_material/);
+    const call = agentTools({ call: (command, input) => t.service.call(t.agent, "qa-alpha", command, input), assetUrl: () => "" });
+    await assert.rejects(call("marketing_saveCampaign", { grantId: c.grantId, material: { ...updated.material, settings: { ...settings, accountId: "act_999" } } }), /account_context_mismatch/);
+    await assert.rejects(call("marketing_saveCampaign", { grantId: c.grantId, material: { ...updated.material, settings: { ...settings, objective: "OUTCOME_AWARENESS", optimization: "LINK_CLICKS" } } }), /unsupported_objective/);
+    assert.equal((await t.store.list("qa-alpha", "campaign")).length, 1);
+  } finally { await t.close(); }
+});
+
+test("review: campaign save retry returns immutable SQL receipt without duplicate drafts or revisions", async () => {
+  const t = await setupTest();
+  try {
+    const input = { grantId: "meta-qa", requestKey: "review-save-retry", material: sampleMaterial() };
+    const [a, b] = await Promise.all([t.service.saveCampaign(t.admin, "qa-alpha", input), t.service.saveCampaign(t.admin, "qa-alpha", input)]);
+    assert.deepEqual(a, b);
+    assert.equal((await t.store.list("qa-alpha", "campaign")).length, 1);
+    const edited = await t.service.saveCampaign(t.admin, "qa-alpha", { ...input, id: a.id, expectedRevision: a.revision,
+      requestKey: "review-save-edit", material: { ...a.material, name: "Edited" } });
+    assert.equal(edited.revision, 2);
+    assert.deepEqual(await t.service.saveCampaign(t.admin, "qa-alpha", input), a);
+    await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { ...input, material: { ...input.material, name: "Conflicting retry" } }), /idempotency|request/);
+    assert.equal((await t.store.get<Campaign>("qa-alpha", "campaign", a.id)).revision, 2);
+    for (const settings of [{ ...input.material.settings, accountVerified: true }, { ...input.material.settings, format: "document" }, { ...input.material.settings, leadGenForm: "123" }]) {
+      await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { ...input, requestKey: "forged-settings", material: { ...input.material, settings: settings as any } }));
+    }
   } finally { await t.close(); }
 });

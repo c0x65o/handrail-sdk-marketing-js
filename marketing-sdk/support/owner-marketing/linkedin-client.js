@@ -189,6 +189,9 @@ export class LinkedInMarketingError extends Error {
 }
 
 export class LinkedInMarketingClient {
+  // Host authority must be rechecked after token/media awaits, at each write.
+  beforeWrite = async () => {};
+  onAssetInitialized = async (_id) => {};
   /** @param {{accessToken?: string | null, refreshToken?: string | null, clientId?: string, clientSecret?: string, apiVersion?: string, fetchImpl?: typeof fetch, apiRoot?: string, oauthRoot?: string, timeoutMs?: number, now?: () => number, tokenRefreshSkewMs?: number, assetPollAttempts?: number, assetPollIntervalMs?: number}} options */
   constructor({ accessToken = null, refreshToken = null, clientId, clientSecret, apiVersion = DEFAULT_VERSION, fetchImpl = globalThis.fetch, apiRoot = API_ROOT, oauthRoot = OAUTH_ROOT, timeoutMs = 15000, now = () => Date.now(), tokenRefreshSkewMs = DEFAULT_TOKEN_REFRESH_SKEW_MS, assetPollAttempts = 20, assetPollIntervalMs = 250 } = {}) {
     if (!accessToken && !refreshToken) throw new LinkedInMarketingError("LinkedIn refresh token is not configured", { code: "disconnected", status: 409 });
@@ -305,10 +308,12 @@ export class LinkedInMarketingClient {
       body: body == null ? undefined : JSON.stringify(body),
     };
     try {
+      if (method !== "GET") await this.beforeWrite();
       return await this.fetchWithMeta(url, init, "LinkedIn Marketing API request");
     } catch (error) {
       if (error.providerStatus !== 401 || !this.refreshToken) throw error;
       const refreshedToken = await this.replaceRejectedAccessToken(accessToken);
+      if (method !== "GET") await this.beforeWrite();
       return this.fetchWithMeta(url, {
         ...init,
         headers: { ...init.headers, authorization: `Bearer ${refreshedToken}` },
@@ -405,6 +410,7 @@ export class LinkedInMarketingClient {
       locale: { country: String(input.localeCountry || "US").toUpperCase(), language: String(input.localeLanguage || "en").toLowerCase() },
       name: linkedInObjectName(input.name, "Handrail LinkedIn campaign"),
       objectiveType: PROVIDER_CAMPAIGN_OBJECTIVES[objectiveType] || objectiveType,
+      ...(input.optimizationTargetType ? { optimizationTargetType: String(input.optimizationTargetType) } : {}),
       offsiteDeliveryEnabled: input.offsiteDeliveryEnabled === true,
       politicalIntent: String(input.politicalIntent || "NOT_POLITICAL"),
       runSchedule: { start: Number(input.startAt || Date.now()), ...(input.endAt ? { end: Number(input.endAt) } : {}) },
@@ -480,6 +486,23 @@ export class LinkedInMarketingClient {
     const id = created.id || created.payload?.id;
     if (!id) throw new LinkedInMarketingError("LinkedIn did not return a conversion identifier; reconcile conversion inventory before retrying", { code: "verification_failed", status: 502 });
     return this.getConversion(id, adAccountId);
+  }
+
+  async listCampaignConversions(campaignId) {
+    const campaign = urnId(campaignId, "sponsoredCampaign"), elements = [];
+    for (let start = 0; start < 20000; start += 100) {
+      const page = await this.request("campaignConversions", { query: { q: "campaigns", campaigns: `List(${campaign.urn})`, start, count: 100 } });
+      if (!Array.isArray(page?.elements)) throw new LinkedInMarketingError("Conversion inventory is incomplete", { code: "verification_failed", status: 502 });
+      elements.push(...page.elements);
+      if (page.elements.length < 100) return elements;
+    }
+    throw new LinkedInMarketingError("Conversion inventory exceeded bounded pagination", { code: "verification_failed", status: 502 });
+  }
+
+  getCampaignConversion(campaignId, conversionId) {
+    const campaign = urnId(campaignId, "sponsoredCampaign");
+    const conversion = partnerConversionUrn(conversionId);
+    return this.request(`campaignConversions/(campaign:${encodeURIComponent(campaign.urn)},conversion:${encodeURIComponent(conversion.urn)})`);
   }
 
   async associateCampaignConversion(campaignId, conversionId) {
@@ -645,8 +668,10 @@ export class LinkedInMarketingClient {
     const uploadUrl = initialized?.value?.uploadUrl;
     const assetUrn = initialized?.value?.[kind];
     if (!uploadUrl || !assetUrn) throw new LinkedInMarketingError(`LinkedIn did not initialize the ${kind} upload`, { code: "verification_failed", status: 502 });
+    await this.onAssetInitialized(assetUrn);
     const accessToken = await this.accessTokenForRequest();
     let uploaded;
+    await this.beforeWrite();
     try {
       uploaded = await this.fetchImpl(uploadUrl, {
         method: "PUT",
@@ -685,10 +710,13 @@ export class LinkedInMarketingClient {
     return this.uploadAsset({ ...input, kind: "document" });
   }
 
+  /** @param {string} adAccountId @param {{pivot?: string, since?: string, until?: string, campaignUrns?: string[], fields?: string[]}} options */
   async getAnalytics(adAccountId, { pivot = "CAMPAIGN", since, until, campaignUrns = [], fields = ["dateRange", "impressions", "clicks", "landingPageClicks", "externalWebsiteConversions", "costInLocalCurrency", "pivotValues"] } = {}) {
     const start = new Date(since).getTime();
     const end = new Date(until).getTime();
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+    const utcDate = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}(?:T00:00:00(?:\.000)?Z)?$/.test(value) &&
+      Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value.slice(0, 10);
+    if (!utcDate(since) || !utcDate(until) || start > end || end + 86_400_000 > Date.now()) {
       throw new LinkedInMarketingError("A valid inclusive reporting date range is required", { code: "provider_reporting_range_invalid", status: 400 });
     }
     // LinkedIn adAnalytics has no pagination and caps responses at 15,000 rows.
@@ -748,6 +776,12 @@ export class LinkedInMarketingClient {
     // that same token at the Marketing API. Require a real account read before
     // deciding access works; scope grants still need OAuth evidence.
     const account = await this.getAdAccount(id);
+    // adAccounts has no account timezone. Reporting and daily budgets use UTC
+    // by provider policy; unrelated extra response fields are not provenance.
+    const observedId = typeof account.id === "string" && /^\d+$/.test(account.id) ? account.id
+      : Number.isSafeInteger(account.id) && account.id > 0 ? String(account.id) : null;
+    if (observedId !== id)
+      throw new LinkedInMarketingError("Account identity was not verified", { code: "verification_failed", status: 502 });
     const introspectionApplies = token.active === true && inspectedAccessToken === this.accessToken;
     const granted = this.accessTokenScopes ?? scopes(introspectionApplies ? token.scope || token.scopes : null);
     const adsRead = granted.includes("rw_ads");
@@ -758,12 +792,13 @@ export class LinkedInMarketingClient {
     const organizationMatches = expectedOrganization ? account.reference === expectedOrganization : null;
     return {
       account: {
-        id,
+        id: observedId,
         name: account.name || null,
         accountStatus: null,
         status: account.status || null,
         currency: account.currency || null,
-        timezoneName: account.timeZone || account.timezone || null,
+        timezoneName: "UTC",
+        timezoneSource: "provider_reporting_and_budget_policy",
         reference: account.reference || null,
         test: account.test === true,
         servingStatuses,

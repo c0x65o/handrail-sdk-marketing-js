@@ -578,3 +578,8 @@ blockquote {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* Resolved provider labels and URNs must fit narrow embedded editors. */
+fieldset { min-width: 0; margin: 12px 0; border: 1px solid #cbd0d9; border-radius: 7px; }
+legend { max-width: 100%; overflow-wrap: anywhere; }
+select[multiple] { min-height: 82px; }

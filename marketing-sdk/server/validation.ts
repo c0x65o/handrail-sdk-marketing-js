@@ -1,3 +1,4 @@
+import { capabilityBlockers, dailyExposureMinor } from "../core/index.js";
 import type { AdvertisingBudget, Audience, DraftMaterial, Material } from "../core/index.js";
 import { requireThat } from "./store.js";
 
@@ -36,9 +37,10 @@ export function keys(
 export function draftMaterial(value: DraftMaterial) {
   keys(value, ["name", "headline", "body", "destination", "destinationDigest",
     "searchHeadlines", "searchDescriptions", "assetIds", "audience", "budget",
-    "startAt", "endAt", "timezone", "advertisingBudget", "purpose"]);
+    "startAt", "endAt", "timezone", "advertisingBudget", "purpose", "settings", "applicantGoal"]);
   if (value.purpose !== undefined) requireThat(["acquisition", "recruitment"].includes(value.purpose), "invalid_purpose", 422);
   if (value.advertisingBudget) advertisingBudget(value.advertisingBudget);
+  for (const field of [value.settings, value.applicantGoal]) if (field !== undefined) requireThat(field && typeof field === "object" && !Array.isArray(field) && JSON.stringify(field).length <= 20000, "invalid_draft_settings", 422);
   text(value.name, 100);
   const optionalText = (v: unknown, max: number) => requireThat(
     typeof v === "string" && v.length <= max, "invalid_draft_text", 422);
@@ -157,6 +159,8 @@ export function material(value: Material, provider: string) {
     "budget",
     "advertisingBudget",
     "purpose",
+    "settings",
+    "applicantGoal",
     "startAt",
     "endAt",
     "timezone",
@@ -216,9 +220,13 @@ export function material(value: Material, provider: string) {
     "unsupported_money",
     422,
   );
-  requireThat(value.purpose === undefined || value.purpose === "acquisition", "recruitment_provider_unsupported", 422);
+  requireThat(value.purpose === undefined || ["acquisition", "recruitment"].includes(value.purpose), "invalid_purpose", 422);
+  const blockers = capabilityBlockers(value);
+  requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
+  requireThat(value.settings || value.applicantGoal === undefined, "applicant_goal_requires_settings", 422);
   if (value.advertisingBudget) {
     advertisingBudget(value.advertisingBudget);
+    requireThat(!value.advertisingBudget.campaignDailyCeiling || (dailyExposureMinor(value) !== null && dailyExposureMinor(value)! <= value.advertisingBudget.campaignDailyCeiling.minor), "campaign_daily_exposure_exceeded", 422);
     requireThat(value.advertisingBudget.lifetime.currency === value.budget.currency &&
       value.advertisingBudget.lifetime.minor === value.budget.minor, "legacy_lifetime_budget_mismatch", 422);
   }

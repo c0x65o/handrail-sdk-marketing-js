@@ -97,7 +97,7 @@ try {
       assert.equal(r.status(), 200, await r.text());
       return r.json();
     };
-    const screenshot = async (name) => {
+    const screenshot = async (name, fullPage = true) => {
       const overflow = await page.evaluate(() => ({
         document: document.documentElement.scrollWidth,
         viewport: innerWidth,
@@ -113,7 +113,7 @@ try {
       assert.equal(overflow.offenders.length, 0, JSON.stringify(overflow));
       await page.screenshot({
         path: join(evidence, `${width}-${name}.png`),
-        fullPage: true,
+        fullPage,
       });
     };
     let releaseWorkspace;
@@ -166,7 +166,7 @@ try {
     read = passRead;
     await page.getByRole("alert").waitFor({ state: "detached" });
     await screenshot("polling-recovered");
-    if (width === 1440) {
+    {
       const stale = await api("workspace", {});
       stale.project.name = "STALE RESPONSE MUST NOT RENDER";
       const holdNextRead = () => new Promise((resolve) => {
@@ -207,7 +207,10 @@ try {
       assert.equal(await page.getByRole("alert").count(), 0);
       await page.unroute("**/api/projects/qa-beta/workspace");
       await betaRead.continue();
-      await page.getByText("Isolation · QA Beta", { exact: true }).last().waitFor();
+      // The project caption is intentionally hidden on mobile; verify the
+      // loaded workspace identity, independently of the responsive caption.
+      await page.locator(".project-label").filter({ hasText: "Isolation · QA Beta" }).waitFor({ state: "attached" });
+      assert.equal(await page.locator(".session-bar select").inputValue(), "qa-beta");
       await page.locator(".session-bar select").selectOption("qa-alpha");
       await page.getByLabel("Campaign name", { exact: true }).waitFor();
       assert.equal(await page.getByLabel("Campaign name", { exact: true }).inputValue(), "Autumn desk kit");
@@ -222,6 +225,30 @@ try {
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
       await page.getByLabel("Campaign name", { exact: true }).waitFor();
     }
+    const localDraft = page.getByRole("region", { name: "Unconnected drafts" });
+    const draftCard = page.locator("section.card").filter({ has: page.getByRole("heading", { name: "Unconnected draft", exact: true }) });
+    await draftCard.getByLabel("Draft name", { exact: true }).fill(`Local plan ${width}`);
+    await draftCard.getByRole("button", { name: "Save local draft", exact: true }).dblclick();
+    await page.getByRole("heading", { name: `Local plan ${width}`, exact: true }).waitFor();
+    assert.equal((await api("workspace", {})).drafts.filter(d => d.material.name === `Local plan ${width}`).length, 1);
+    void localDraft;
+    await page.getByLabel("Campaign name", { exact: true }).fill("Account-specific abandoned material");
+    await page.getByLabel("Account", { exact: true }).selectOption("linkedin-qa");
+    await page.getByLabel("Objective", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("Objective", { exact: true }).inputValue(), "WEBSITE_VISIT");
+    assert.equal(await page.getByLabel("Manual bid (USD)", { exact: true }).inputValue(), "");
+    assert.equal(await page.getByRole("button", { name: "Save campaign draft" }).isDisabled(), true);
+    await page.getByLabel("Campaign name", { exact: true }).focus();
+    await page.keyboard.press("Tab");
+    assert.equal(await page.getByLabel("Purpose", { exact: true }).evaluate(e => e === document.activeElement), true);
+    await screenshot("linkedin-guided-editor");
+    await page.getByLabel("Manual bid (USD)", { exact: true }).scrollIntoViewIfNeeded();
+    await screenshot("linkedin-guided-controls", false);
+    await page.getByLabel("End (UTC, exclusive)", { exact: true }).scrollIntoViewIfNeeded();
+    await screenshot("linkedin-guided-budget", false);
+    await page.getByLabel("Account", { exact: true }).selectOption("meta-qa");
+    assert.equal(await page.getByLabel("Campaign name", { exact: true }).inputValue(), "Autumn desk kit");
+    assert.equal(await page.getByLabel("Objective", { exact: true }).inputValue(), "OUTCOME_TRAFFIC");
     await screenshot("workspace");
     const scheduleNow = new Date("2026-09-27T03:50:00Z");
     campaignNow = scheduleNow.getTime();
@@ -231,10 +258,34 @@ try {
       .getByLabel("Campaign name", { exact: true })
       .fill(`QA desk kit ${width}`);
     await page.getByLabel("Daily media budget (USD)", { exact: false }).fill("5");
+    const requestedSchedule = defaultCampaignSchedule("America/Chicago", scheduleNow);
+    await page.getByLabel("Start (UTC)", { exact: true }).fill(requestedSchedule.startAt);
+    await page.getByLabel("End (UTC, exclusive)", { exact: true }).fill(requestedSchedule.endAt);
+    await page.getByLabel("I acknowledge the nondiscrimination requirements.").check();
+    let captureRoute;
+    const capturePending = new Promise(resolve => { captureRoute = resolve; });
+    await page.route("**/captureDestination", route => captureRoute(route));
+    await page.getByRole("button", { name: "Save campaign draft" }).click();
+    const heldCapture = await capturePending;
+    assert.equal(await page.getByLabel("Account", { exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Save campaign draft" }).isDisabled(), true);
+    await page.unroute("**/captureDestination");
+    let loseSave = true;
+    await page.route("**/saveCampaign", async route => {
+      if (!loseSave) return route.continue();
+      loseSave = false;
+      const accepted = await route.fetch();
+      assert.equal(accepted.status(), 200, await accepted.text());
+      await route.fulfill({ status: 408, contentType: "application/json", body: JSON.stringify({ error: "fixture_save_response_lost" }) });
+    });
+    await heldCapture.continue();
+    await page.getByRole("alert").filter({ hasText: "fixture save response lost" }).waitFor();
     await page.getByRole("button", { name: "Save campaign draft" }).click();
     await page
       .getByRole("heading", { name: "Connections", exact: true })
       .waitFor();
+    await page.unroute("**/saveCampaign");
+    assert.equal((await api("workspace", {})).campaigns.filter(c => c.material.name === `QA desk kit ${width}`).length, 1);
     const saved = (await api("workspace", {})).campaigns.find((c) => c.material.name === `QA desk kit ${width}`);
     assert.deepEqual({ startAt: saved.material.startAt, endAt: saved.material.endAt }, defaultCampaignSchedule("America/Chicago", scheduleNow));
     assert.equal(saved.material.startAt, "2026-09-27T05:00:00.000Z");
@@ -309,17 +360,11 @@ try {
     await page.getByRole("link", { name: "Read storyboard" }).waitFor();
     await screenshot("creative");
     await page.getByRole("button", { name: "Audience", exact: true }).click();
-    const definition = JSON.parse(
-      await page.getByLabel("Audience definition").inputValue(),
-    );
-    definition.ageMin = 30;
-    await page
-      .getByLabel("Audience definition")
-      .fill(JSON.stringify({ ...definition, expansion: true }));
+    const audienceCard = page.locator("section.card").filter({ has: page.getByRole("heading", { name: "Who can see this campaign?", exact: true }) });
+    await audienceCard.getByLabel("Minimum age", { exact: true }).fill("17");
     await page.getByRole("button", { name: "Save audience revision" }).click();
     await page.getByRole("alert").waitFor();
     await screenshot("error");
-    // Workspace polls cannot dismiss an unrelated failed mutation.
     const mutationError = await page.getByRole("alert").innerText();
     await page.waitForTimeout(1700);
     assert.equal(await page.getByRole("alert").innerText(), mutationError);
@@ -329,10 +374,21 @@ try {
     await page.getByRole("button", { name: "Retry read" }).click();
     await page.getByRole("alert").filter({ hasText: "fixture read failure" }).waitFor({ state: "detached" });
     assert.equal(await page.getByRole("alert").innerText(), mutationError);
-    await page
-      .getByLabel("Audience definition")
-      .fill(JSON.stringify(definition, null, 2));
+    await audienceCard.getByLabel("Minimum age", { exact: true }).fill("30");
     await page.getByRole("button", { name: "Save audience revision" }).click();
+    await page.waitForTimeout(400);
+    const editor = page.locator("details").filter({ has: page.getByText("Edit complete campaign material", { exact: true }) });
+    await editor.locator("summary").click();
+    await editor.getByLabel("Headline", { exact: true }).fill("Cancelled headline");
+    await editor.getByRole("button", { name: "Review changes", exact: true }).click();
+    await editor.getByRole("button", { name: "Back to editing", exact: true }).click();
+    assert.equal(await editor.getByLabel("Headline", { exact: true }).inputValue(), "Cancelled headline");
+    await editor.getByRole("button", { name: "Cancel changes", exact: true }).click();
+    assert.equal(await editor.getByLabel("Headline", { exact: true }).inputValue(), "A little room to think");
+    await editor.getByLabel("Headline", { exact: true }).fill("Reviewed headline");
+    await editor.getByRole("button", { name: "Review changes", exact: true }).click();
+    await screenshot("guided-material-review");
+    await editor.getByRole("button", { name: "Save material revision", exact: true }).dblclick();
     await page.waitForTimeout(400);
     await screenshot("audience");
     // Headless writes and UI inspect the identical versioned backend.
@@ -463,6 +519,18 @@ try {
     await page.getByRole("button", { name: "Sync provider metrics" }).click();
     await page.getByText("4.00%", { exact: true }).waitFor();
     await screenshot("results");
+    let captureResults;
+    const pendingResults = new Promise(resolve => { captureResults = resolve; });
+    await page.route("**/results", route => captureResults(route));
+    await page.getByRole("button", { name: "Read results" }).click();
+    const heldResults = await pendingResults;
+    await page.getByLabel("Reporting window", { exact: true }).selectOption("campaign");
+    await page.unroute("**/results");
+    await heldResults.continue();
+    await page.getByRole("button", { name: "Read results" }).waitFor();
+    await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(b => b.textContent === "Read results")?.disabled);
+    assert.equal(await page.getByRole("heading", { name: "Completed MOU requests", exact: true }).count(), 0);
+    await screenshot("late-results-discarded");
     const reportData = await api("results", {
       campaignId: campaign.id,
       from: campaign.material.startAt,
@@ -487,11 +555,19 @@ try {
         "playable video",
         "storyboard",
         "audience revision",
+        "guided Back/Cancel and repeated material save",
+        "unconnected draft repeated save and rendering",
+        "cross-account form reset and readiness blockers",
+        "keyboard Tab from campaign name to purpose",
+        "lost campaign-save response retried with one durable campaign",
+        "complete guided material review and 320px LinkedIn controls",
+        "late results discarded after reporting-window switch",
         "validation error and read retry",
         "initial retry and continued read failure",
         "polling recovery preserves mutation errors",
         "account-local default schedule matches persisted approval",
-        ...(width === 1440 ? ["out-of-order read completion", "client/project replacement", "unmount with pending read"] : []),
+        "out-of-order read completion", "client/project replacement", "unmount with pending read",
+        "account switching fenced during a delayed destination response",
         "empty conversations",
         "paused prepare",
         "human gate",

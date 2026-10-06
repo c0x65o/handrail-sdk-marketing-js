@@ -51,13 +51,14 @@ export async function seedQa(
           accountId: provider === "meta" ? "act_123456" : "123456",
           label: `${provider} fixture account`,
           currency: "USD",
-          timezone: "America/Chicago",
+          timezone: provider === "linkedin" ? "UTC" : "America/Chicago",
           permissions: ["setup", "prepare", "activate", "pause", "report"],
           expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
           revokedAt: null,
           secretRef: `fixture:${project}:${provider}`,
           pageId: "987654",
           organizationId: "987654",
+          ...(provider === "linkedin" ? { targetingOptions: [{ kind: "locations" as const, id: "urn:li:geo:103644278", label: "United States (fixture)" }] } : {}),
         };
         await store.put(project, "grant", grant.id, grant);
       }

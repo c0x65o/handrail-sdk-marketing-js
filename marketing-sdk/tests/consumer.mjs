@@ -18,10 +18,17 @@ try {
   run("npm", ["install", "--include=dev", "--no-audit", "--no-fund"]);
   const installed = join(root, "node_modules/@handrail/marketing");
   if (!sha) {
-    // No file/workspace dependency or fake Git publication: project the candidate's package files.
+    // Inspect the actual packlist in an isolated consumer, without declaring a
+    // tarball/file/workspace SDK dependency or pretending this is Git publication.
+    // Keep prepare in the normal pack pipeline; suppress its stdout so npm's
+    // JSON is parseable (pacote versions can run prepare despite ignore-scripts).
+    const packed = JSON.parse(execFileSync("npm", ["pack", "--foreground-scripts=false", "--json", "--pack-destination", root],
+      { cwd: process.cwd(), encoding: "utf8" }));
+    assert.equal(packed.length, 1);
+    assert.ok(packed[0].files.some(f => f.path === ".marketing-build/core/index.d.ts"));
     await mkdir(installed, { recursive: true });
-    for (const file of ["package.json", ...pkg.files])
-      await cp(resolve(file), join(installed, file), { recursive: true });
+    execFileSync("tar", ["-xzf", join(root, packed[0].filename), "--strip-components=1", "-C", installed]);
+    console.log("Clean packed candidate projection:", packed[0].filename, packed[0].integrity);
   } else {
     const lock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8"));
     const entry = lock.packages["node_modules/@handrail/marketing"];
@@ -41,6 +48,9 @@ try {
     types: ["node", "react"], lib: ["ES2022", "DOM"],
   }, files: ["consumer.ts"] }));
   run(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json"]);
+  await writeFile(join(root, "tsconfig.bundler.json"), JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { module: "ESNext", moduleResolution: "Bundler" } }));
+  run(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.bundler.json"]);
+  console.log("Strict NodeNext and Bundler consumer compilation passed");
   await writeFile(join(root, "imports.mjs"), `
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

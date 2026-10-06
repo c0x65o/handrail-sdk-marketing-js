@@ -1,0 +1,93 @@
+{
+  "workRequest": "c86653b9-8e7e-4495-84b5-ead927f0ac50",
+  "baseline": "b5e725a1d2cff4864c98acb98f9e6e8e8e370f51",
+  "candidateDigest": "e5458985daff72417f85f8410bccfab457129862327afd0da766f70e49642f96",
+  "outcome": "Source review and targeted repairs; conditional workspace candidate. Not deploy/cutover ready; no live qualification.",
+  "immutablePredecessor": [
+    "artifacts/provider-capabilities/handoff.json",
+    "artifacts/provider-capabilities/source-manifest.json",
+    "marketing-sdk/PARITY_REVIEW.json"
+  ],
+  "finalEvidence": "artifacts/provider-capabilities-review/handoff.json",
+  "finalSourceManifest": "artifacts/provider-capabilities-review/source-manifest.json",
+  "findings": [
+    {
+      "id": "LI-UTC",
+      "status": "fixed",
+      "detail": "Account verification uses observed ID/currency and documented UTC policy provenance, ignoring optional extra timezone fields. New grants/material/native budgets and reports require UTC; schedules require UTC midnights. Completed reports convert exclusive SDK windows to inclusive API dates and validate returned pivots/ranges/duplicates. Legacy material is retained; safety pause is separate."
+    },
+    {
+      "id": "ACCOUNT-ID",
+      "status": "fixed",
+      "detail": "LinkedIn no longer returns a requested ID without checking observed ID. Meta validates documented act_ string IDs without numeric coercion. Missing/malformed/wrong identities and currencies fail."
+    },
+    {
+      "id": "ELIGIBILITY",
+      "status": "fixed",
+      "detail": "Server-owned grants and receipts bind project, grant ID/revision, account and complete material. Revoked/expired grants cannot show account verification. JSON fields cannot mint authority. Evidence and scope are rechecked after awaits at native writes, including LinkedIn upload/creative subrequests."
+    },
+    {
+      "id": "LI-READBACK",
+      "status": "fixed",
+      "detail": "Campaign conversion inventory must be empty when none was requested, or exactly the requested association. BigDecimal money accepts insignificant trailing zeroes without coercing missing/malformed/sub-cent amounts. Independent GET-shaped matrix fixtures cover Meta feed combinations and all LinkedIn objective/bid rows, including content.reference post expansion."
+    },
+    {
+      "id": "BUDGET-SEMANTICS",
+      "status": "gated",
+      "detail": "Meta daily cap compatibility/exposure remains unverified; account evidence cannot override native preparation/activation and ledger gates. No invented factor, budget mutation or added cap. LinkedIn explicit daily approval reserves up to 150 percent bounded by lifetime. Lifetime-only daily-cap accounting is unsupported; lifetime/days is never a daily ceiling."
+    },
+    {
+      "id": "DELAYED-SPEND",
+      "status": "fixed-conservatively",
+      "detail": "New native typed reservations remain active after observed pause because incurred delayed spend is unsettled. Reductions do not shrink holds. Reuse/rollover requires future qualified final-spend settlement. Existing historical holds are not migrated or recalculated."
+    },
+    {
+      "id": "PAUSE-RECOVERY",
+      "status": "fixed",
+      "detail": "Service verification carries intent so pause does not require current launch eligibility or rewrite old LinkedIn timezone. IDs/digests and unknown-effect no-replay rules remain. LinkedIn image ID is retained immediately on initialization, before upload awaits."
+    },
+    {
+      "id": "SAVE-RETRY",
+      "status": "fixed",
+      "detail": "Optional saveCampaign requestKey uses existing durable SQL request receipts. Identical retry returns the immutable prior campaign without another campaign/revision; changed payload rejects. Browser reuses the key after lost response. Headless/agent additions are backward-compatible."
+    },
+    {
+      "id": "UI-STALE",
+      "status": "fixed",
+      "detail": "Results/conversation responses are fenced by current campaign revision/window and mounted project. Account switching resets fields; review now shows the complete selected material, with only selected assets and accurate budget wording."
+    }
+  ],
+  "auditCoverage": [
+    "All initial 24 dirty paths exactly matched the starting manifest; published baseline and predecessor evidence preserved.",
+    "Native context and running-work reads: only this execution is active. The old foundation row is an idle persistent backing thread, not a concurrent implementation run.",
+    "Meta strict two unique zero expansion bits, exclusions/grouping, modern instagram_user_id, employment restrictions and ApplicantRequestMOU meaning remain explicit and fail closed.",
+    "LinkedIn allowed facet combinations, explicit manual bids versus auto CPM, owned conversions, unexpected associations, nondiscrimination and political consent inspected against official sources.",
+    "Deferred PDF/document/lead-gen/job-application/advanced fields cannot authorize launch; direct client helpers are not advertised SDK launch capabilities.",
+    "SQL durability/concurrency/restart, source identities, packet invalidation and unknown-effect recovery retain v0.1.5 foundations; no schema changes.",
+    "Desktop/390/320 rendered browser interactions include local drafts, double clicks, lost-save response retry, Back/Cancel, keyboard focus, account/project switching, late responses and full review."
+  ],
+  "unresolvedProductGaps": [
+    "No live account eligibility, observed delivery, published Git consumer or host cutover qualification.",
+    "Meta current daily overspend/cap semantics unavailable: official Help login/block and developer prose HTTP 429. Native daily mode remains blocked.",
+    "No complete host eligibility/taxonomy acquisition/onboarding; trusted account-specific receipts and exact resolved options must be supplied.",
+    "Searchable/paginated taxonomy and friendly country/location/identity/pixel/conversion pickers remain missing. Manual IDs/URNs remain; this is only partially guided.",
+    "Dependent objective defaults, convenient completed-day picker and local-draft promotion workflow remain unfinished.",
+    "PDF/document, video ads, Lead Gen Forms, job-application objectives, advanced placements, non-US strict/employment Meta and broader provider normalization remain deferred.",
+    "Final-spend settlement, reservation rollover/release, existing active portfolio import and consumer migration mapping remain separate host work. Pause alone cannot recover delayed-spend headroom.",
+    "The full parity KB slug could not be read by the native tool and native search returned zero results. Prior repository comparison conclusions were preserved; full-baseline reconfirmation is unverified.",
+    "MariaDB qualification depends on the existing runner and local mariadbd availability; exact skip/exit outcomes are in the final handoff."
+  ],
+  "scope": {
+    "workspaceOnly": true,
+    "commits": false,
+    "pushes": false,
+    "branchesOrWorktrees": false,
+    "liveProviders": false,
+    "credentialsOrAccessChanges": false,
+    "handrailStateWrites": false,
+    "productionDatabase": false,
+    "migrationApplication": false,
+    "releasesOrDeployments": false
+  },
+  "verificationPolicy": "Exact final source checks run sequentially, one test worker, whole commands bounded at 300 seconds. Failed intermediate attempts are retained. Disposable SQL test schema setup is confined to the existing runners; no operator database. Final results/counts/timings and source/generated/evidence hashes are recorded outside the source tree hash."
+}

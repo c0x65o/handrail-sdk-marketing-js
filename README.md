@@ -71,3 +71,11 @@ Existing rights are reserved; see [RIGHTS.md](RIGHTS.md) and
 
 See [parity foundation and staged migration](marketing-sdk/PARITY_ROADMAP.md) for
 explicit daily/lifetime budgets, reporting semantics, host contracts and cutover gates.
+
+The workspace provider-capability continuation is documented in
+[marketing-sdk/CAPABILITIES.md](marketing-sdk/CAPABILITIES.md). It includes explicit
+Meta/LinkedIn settings, account eligibility gates and guided fields; legacy
+campaign inspection/safety pause remain available, while new Meta/LinkedIn
+preparation and activation require explicit settings. Independent source review fixed contract defects; Meta daily budget semantics, live
+account qualification, complete guided pickers and host cutover remain gated. This
+workspace candidate has not been published. See the linked review handoff.

@@ -42,12 +42,14 @@ export class FixtureProvider implements ProviderPort {
     retain: (ids: Record<string, string>) => void | Promise<void>,
     beforeWrite: () => void | Promise<void>,
   ) {
+    if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
+    const plan = this.plan(c, g, a);
     await beforeWrite();
     const receipt: Receipt = {
       ids: {
         campaign: `fixture-${key}`,
       },
-      payloadDigest: digest(this.plan(c, g, a)),
+      payloadDigest: digest(plan),
       intent: "paused",
       delivery: "unverified",
       providerRequestId: `fixture-${key}`,

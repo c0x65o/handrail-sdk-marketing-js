@@ -1,3 +1,5 @@
+import { selectedOptions } from "../core/index.js";
+import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, exactTargeting } from "./capabilities.js";
 import type {
   Asset,
   Campaign,
@@ -12,7 +14,7 @@ import { providerDayWindow } from "./reporting.js";
 import { material } from "./validation.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
-import { MetaMarketingClient } from "../support/owner-marketing/meta-client.js";
+import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
 import { LinkedInMarketingClient } from "../support/owner-marketing/linkedin-client.js";
 export interface Credentials {
   accessToken: string;
@@ -45,6 +47,8 @@ const perms: Permission[] = ["setup", "prepare", "activate", "pause", "report"];
 export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
   const m = c.material;
   material(m, g.provider);
+  validateAccountCapability(c, g);
+  const settings = m.settings;
   requireThat(
     g.currency === m.budget.currency && g.timezone === m.timezone,
     "account_context_mismatch",
@@ -163,28 +167,34 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     "single_image_required_video_ads_unsupported",
   );
   const image = assets[0]!;
+  if (settings) requireThat(m.assetIds.length === 1 && m.assetIds[0] === image.id && image.projectId === c.projectId && image.campaignId === c.id, "asset_ownership_mismatch");
   if (g.provider === "meta") {
     requireThat(g.pageId && /^\d+$/.test(g.pageId), "meta_page_required");
+    const ms = settings?.provider === "meta" ? settings : undefined;
     return {
       provider: g.provider,
+      ...(ms ? { capabilityVersion: ms.version, accountId: g.accountId } : {}),
       imageDigest: image.digest,
       campaign: {
         name: m.name,
-        objective: "OUTCOME_TRAFFIC",
-        special_ad_categories: [],
+        objective: ms?.objective ?? "OUTCOME_TRAFFIC",
+        special_ad_categories: ms?.delivery === "employment" ? ["EMPLOYMENT"] : [],
+        ...(ms?.delivery === "employment" ? { special_ad_category_country: ["US"] } : {}),
         ...(m.advertisingBudget?.daily ? { spend_cap: String(m.budget.minor) } : {}),
         status: "PAUSED",
       },
       adset: {
         name: m.name,
         billing_event: "IMPRESSIONS",
-        optimization_goal: "LINK_CLICKS",
+        optimization_goal: ms?.optimization ?? "LINK_CLICKS",
+        ...(ms ? ms.objective === "OUTCOME_AWARENESS" ? { promoted_object: { page_id: ms.identity.pageId } } : { destination_type: "WEBSITE" } : {}),
+        ...(ms?.delivery === "employment" ? { promoted_object: { pixel_id: ms.conversion!.pixelId, custom_conversion_id: ms.conversion!.customConversionId } } : {}),
         bid_strategy: "LOWEST_COST_WITHOUT_CAP",
         ...(m.advertisingBudget?.daily ? { daily_budget: String(m.advertisingBudget.daily.minor) } : { lifetime_budget: String(m.budget.minor) }),
         start_time: m.startAt,
         end_time: m.endAt,
         status: "PAUSED",
-        targeting: {
+        targeting: ms ? metaTargeting(c, ms) : {
           geo_locations: {
             countries: m.audience.locations,
           },
@@ -198,7 +208,8 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         },
       },
       creative: {
-        pageId: g.pageId,
+        pageId: ms?.identity.pageId ?? g.pageId,
+        ...(ms?.identity.instagramUserId ? { instagramUserId: ms.identity.instagramUserId } : {}),
         name: m.headline,
         message: m.body,
         link: m.destination,
@@ -210,8 +221,10 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     "linkedin_organization_required",
   );
   requireThat(m.advertisingBudget?.daily, "linkedin_explicit_daily_budget_required");
+  const ls = settings?.provider === "linkedin" ? settings : undefined;
   return {
     provider: g.provider,
+    ...(ls ? { capabilityVersion: ls.version, conversion: ls.conversion } : {}),
     imageDigest: image.digest,
     accountId: g.accountId,
     group: {
@@ -228,14 +241,15 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
       dailyBudgetCents: m.advertisingBudget.daily.minor,
       startAt: Date.parse(m.startAt),
       endAt: Date.parse(m.endAt),
-      objectiveType: "WEBSITE_VISIT",
+      objectiveType: ls?.objective ?? "WEBSITE_VISIT",
+      ...(ls ? { optimizationTargetType: ls.optimization, politicalIntent: ls.politicalIntent } : {}),
       format: "STANDARD_UPDATE",
       type: "SPONSORED_UPDATES",
-      costType: "CPC",
-      unitCostAmount: "0.10",
+      costType: ls?.bid.costType ?? "CPC",
+      unitCostAmount: ls ? ls.bid.mode === "manual" ? (ls.bid.amountMinor / 100).toFixed(2) : "0" : "0.10",
       audienceExpansionEnabled: false,
       offsiteDeliveryEnabled: false,
-      targetingCriteria: {
+      targetingCriteria: ls ? linkedInTargeting(c, ls) : {
         include: {
           and: [
             {
@@ -281,6 +295,17 @@ function subset(actual: any, expected: any): boolean {
     actual && Object.entries(expected).every(([k, v]) => subset(actual[k], v))
   );
 }
+/** LinkedIn BigDecimal money is a string; insignificant trailing zeroes are not drift. */
+function decimalMinor(value: unknown): bigint | null {
+  if (typeof value !== "string" || !/^\d+(?:\.\d+)?$/.test(value)) return null;
+  const [whole, fraction = ""] = value.split(".");
+  if (/[^0]/.test(fraction.slice(2))) return null;
+  return BigInt(whole!) * 100n + BigInt(fraction.slice(0, 2).padEnd(2, "0"));
+}
+function linkedInMoney(actual: any, amount: string, currency: string): boolean {
+  const expected = decimalMinor(amount);
+  return expected !== null && decimalMinor(actual?.amount) === expected && actual?.currencyCode === currency;
+}
 export class NativeProvider implements ProviderPort {
   readonly evidence = "provider" as const;
   constructor(
@@ -323,8 +348,12 @@ export class NativeProvider implements ProviderPort {
     g: Grant,
     campaign?: Campaign,
     assets: Asset[] = [],
+    intent?: Permission,
   ): ReturnType<ProviderPort["verify"]> {
+    requireThat(intent === "pause" || this.name !== "linkedin" || g.timezone === "UTC", "linkedin_utc_required", 422);
+    if (campaign && intent !== "pause") validateAccountCapability(campaign, g, true);
     return await this.use(g, async (client) => {
+      if (campaign?.material.settings && intent !== "pause") await this.verifySettings(client, campaign, g);
       if (this.name === "google") {
         const c = await client.verify(g.accountId);
         // A read alone is insufficient proof of mutate permission. Validate the
@@ -345,6 +374,9 @@ export class NativeProvider implements ProviderPort {
         pageId: g.pageId,
         organizationId: g.organizationId,
       });
+      requireThat((this.name === "meta" ? accountPath(v.account.id) === accountPath(g.accountId) : v.account.id === g.accountId) &&
+        v.account.currency === g.currency && (intent === "pause" && this.name === "linkedin" || v.account.timezoneName === g.timezone),
+        "provider_account_context_changed");
       const permissions: Permission[] = ["setup"];
       if (
         v.permissions.adsRead &&
@@ -361,12 +393,70 @@ export class NativeProvider implements ProviderPort {
       )
         permissions.push("prepare", "activate", "pause");
       return {
-        accountId: v.account.id,
+        accountId: g.accountId, // Return the grant spelling only after observed identity comparison.
+        timezoneSource: this.name === "linkedin" ? "provider_reporting_and_budget_policy" : "provider_account",
         currency: v.account.currency,
         timezone: v.account.timezoneName,
         permissions,
       };
     });
+  }
+  private async accountContext(client: any, g: Grant) {
+    const a = this.name === "meta" ? await client.getObject(accountPath(g.accountId), "id,currency,timezone_name") : await client.getAdAccount(g.accountId);
+    const timezone = this.name === "meta" ? a.timezone_name : "UTC";
+    const id = this.name === "meta"
+      ? typeof a.id === "string" && /^act_\d+$/.test(a.id) ? a.id : null
+      : typeof a.id === "string" && /^\d+$/.test(a.id) ? a.id
+        : Number.isSafeInteger(a.id) && a.id > 0 ? String(a.id) : null;
+    requireThat(id === (this.name === "meta" ? accountPath(g.accountId) : g.accountId) &&
+      a.currency === g.currency && timezone === g.timezone, "provider_account_context_changed");
+    return { id, currency: a.currency, timezone };
+  }
+
+  private mediaIdentity(v: any) { return { id: v.id, owner: v.owner, status: v.status }; }
+  private async metaImage(client: any, g: Grant, hash: string) {
+    const rows = await client.listImages(g.accountId);
+    const found = rows.data.filter((x: any) => x.hash === hash);
+    requireThat(found.length === 1, "provider_image_ownership_unverified");
+    return { hash: found[0].hash, status: found[0].status };
+  }
+  private validateLinkedInConversion(actual: any, expected: any, account: string) {
+    requireThat(String(actual?.id) === expected.id.split(":").at(-1) &&
+      actual.account === `urn:li:sponsoredAccount:${account}` && actual.enabled === true && actual.type === expected.type,
+      "conversion_owner_or_type_mismatch");
+    if (expected.event === "ApplicantRequestMOU") requireThat(actual.name === "ApplicantRequestMOU" &&
+      actual.conversionMethod === "CONVERSIONS_API" && !actual.urlMatchRuleExpression,
+      "applicant_event_binding_unverified");
+  }
+  private async verifySettings(client: any, c: Campaign, g: Grant) {
+    const s = c.material.settings!;
+    await this.accountContext(client, g);
+    if (s.provider === "meta") {
+      const page = await client.getObject(s.identity.pageId, "id,instagram_business_account");
+      requireThat(String(page.id) === s.identity.pageId && (!s.identity.instagramUserId ||
+        page.instagram_business_account?.id === s.identity.instagramUserId), "instagram_page_ownership_unverified");
+      for (const interest of s.targeting.interestGroups.flat()) {
+        const result = await client.searchTargeting(interest.label);
+        requireThat(result.data?.some((x: any) => String(x.id) === interest.id && x.name === interest.label), "interest_resolution_changed");
+      }
+      if (s.targeting.excludedCustomAudiences.length) {
+        const result = await client.listCustomAudiences(g.accountId);
+        requireThat(s.targeting.excludedCustomAudiences.every(x => result.data.some((r: any) => String(r.id) === x.id && r.name === x.label)), "custom_audience_ownership_unverified");
+      }
+      if (s.conversion) {
+        const conversion = await client.getObject(s.conversion.customConversionId, "id,account_id,pixel,rule");
+        let rule; try { rule = typeof conversion.rule === "string" ? JSON.parse(conversion.rule) : conversion.rule; } catch { rule = null; }
+        requireThat(String(conversion.id) === s.conversion.customConversionId && String(conversion.account_id) === g.accountId.replace(/^act_/, "") &&
+          String(conversion.pixel?.id) === s.conversion.pixelId && exactTargeting(rule, { and: [{ event: { eq: "ApplicantRequestMOU" } }] }), "applicant_event_binding_unverified");
+      }
+    } else {
+      for (const [kind, option] of selectedOptions(c.material.audience, s)) {
+        const label = option.label || g.targetingOptions?.find(x => x.kind === kind && x.id === option.id)?.label;
+        const result = await client.findTargetingEntities({ facet: kind, query: label });
+        requireThat(result.elements?.some((x: any) => x.urn === option.id && x.name === label), "professional_taxonomy_changed");
+      }
+      if (s.conversion) this.validateLinkedInConversion(await client.getConversion(s.conversion.id, g.accountId), s.conversion, g.accountId);
+    }
   }
   plan(c: Campaign, g: Grant, assets: Asset[]) {
     return providerPlan(c, g, assets);
@@ -386,8 +476,17 @@ export class NativeProvider implements ProviderPort {
     retain: (ids: Record<string, string>) => void | Promise<void>,
     beforeWrite: () => void | Promise<void>,
   ) {
+    if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     const plan: any = this.plan(c, g, assets);
-    const ids: Record<string, string> = { readbackVersion: "2" };
+    validateAccountCapability(c, g, true);
+    const hostBeforeWrite = beforeWrite;
+    const scopeDigest = digest({ c, g });
+    beforeWrite = async () => {
+      await hostBeforeWrite();
+      requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
+      validateAccountCapability(c, g, true);
+    };
+    const ids: Record<string, string> = { readbackVersion: c.material.settings ? "3" : "2" };
     const create = async (
       key: string,
       action: () => Promise<{
@@ -417,6 +516,11 @@ export class NativeProvider implements ProviderPort {
       }
     };
     return await this.use(g, async (client) => {
+      if (this.name === "linkedin") {
+        client.beforeWrite = beforeWrite;
+        client.onAssetInitialized = async (image: string) => { ids.image = image; await retain({ ...ids }); };
+      }
+      if (c.material.settings) await this.verifySettings(client, c, g);
       if (this.name === "google") {
         await client.mutate(g.accountId, plan.operations, true);
         await beforeWrite();
@@ -435,11 +539,10 @@ export class NativeProvider implements ProviderPort {
         ids.ad = ids[`resource${rows.length - 1}`]!;
         await retain(ids);
       } else if (this.name === "meta") {
+        const bytes = await this.bytes(c.projectId, assets[0]!);
         await beforeWrite();
         const image = await client.uploadImage(g.accountId, {
-          bytesBase64: (await this.bytes(c.projectId, assets[0]!)).toString(
-            "base64",
-          ),
+          bytesBase64: bytes.toString("base64"),
           filename: `${key}.png`,
         });
         ids.image = String(
@@ -462,12 +565,13 @@ export class NativeProvider implements ProviderPort {
           }),
         );
         await beforeWrite();
-        const creative = await client.request(`${g.accountId}/adcreatives`, {
+        const creative = await client.request(`${accountPath(g.accountId)}/adcreatives`, {
           method: "POST",
           body: {
             name: c.material.name,
             object_story_spec: {
-              page_id: g.pageId,
+              page_id: plan.creative.pageId,
+              ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
               link_data: {
                 image_hash: ids.image,
                 link: plan.creative.link,
@@ -522,6 +626,12 @@ export class NativeProvider implements ProviderPort {
           })
         ).id;
         await retain(ids);
+        if (plan.conversion) {
+          ids.conversion = plan.conversion.id;
+          await retain(ids);
+          await beforeWrite();
+          await client.associateCampaignConversion(ids.campaign, ids.conversion);
+        }
         await beforeWrite();
         ids.creative = (
           await client.createDirectSponsoredCreative(g.accountId, {
@@ -575,23 +685,24 @@ export class NativeProvider implements ProviderPort {
       );
       const campaign = await client.getObject(
         ids.campaign,
-        ids.readbackVersion === "2" ? "id,objective,special_ad_categories,spend_cap,status" : "id,objective,special_ad_categories,status",
+        ["2", "3"].includes(ids.readbackVersion!) ? `id,objective,special_ad_categories,spend_cap,status${ids.readbackVersion === "3" ? ",account_id,special_ad_category_country" : ""}` : "id,objective,special_ad_categories,status",
       );
       const adset = await client.getObject(
         ids.adset,
-        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${ids.readbackVersion === "2" ? "daily_budget," : ""}start_time,end_time,targeting,status`,
+        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${["2", "3"].includes(ids.readbackVersion!) ? "daily_budget," : ""}start_time,end_time,targeting,status${ids.readbackVersion === "3" ? ",account_id,destination_type,promoted_object,targeting_optimization_types" : ""}`,
       );
       const creative = await client.getObject(
         ids.creative,
-        "id,object_story_spec",
+        ids.readbackVersion === "3" ? "id,account_id,object_story_spec" : "id,object_story_spec",
       );
-      const ad = await client.getObject(ids.ad, "id,adset_id,creative,status");
+      const ad = await client.getObject(ids.ad, ids.readbackVersion === "3" ? "id,account_id,adset_id,creative,status" : "id,adset_id,creative,status");
       const statuses = [campaign.status, adset.status, ad.status];
       delete campaign.status;
       delete adset.status;
       delete ad.status;
       return {
         material: {
+          ...(ids.readbackVersion === "3" ? { account: await this.accountContext(client, g), image: await this.metaImage(client, g, ids.image!) } : {}),
           campaign,
           adset,
           creative,
@@ -607,7 +718,13 @@ export class NativeProvider implements ProviderPort {
         campaign = await client.getCampaign(g.accountId, ids.campaign);
       const creative = await client.getCreative(g.accountId, ids.creative);
       const expanded = await client.expandCreativePost(creative);
-      const rawPost = expanded.inlineContent?.post;
+      let rawPost = expanded.inlineContent?.post;
+      if (ids.readbackVersion === "3" && creative.content !== undefined) {
+        const reference = creative.content?.reference;
+        requireThat(Object.keys(creative.content).length === 1 && /^urn:li:(share|ugcPost):[0-9]+$/.test(reference || ""), "creative_reference_unverified");
+        rawPost = await client.request(`posts/${encodeURIComponent(reference)}`, { query: { viewContext: "AUTHOR" } });
+        requireThat(rawPost?.id === reference, "creative_reference_unverified");
+      }
       requireThat(rawPost, "linkedin_post_readback_required");
       const post = {
         author: rawPost.author,
@@ -623,8 +740,13 @@ export class NativeProvider implements ProviderPort {
         Object.fromEntries(fields.map((f) => [f, obj[f]]));
       return {
         material: {
-          group: pick(group, [...(ids.readbackVersion === "2" ? ["account"] : []), "totalBudget", "runSchedule"]),
+          ...(ids.readbackVersion === "3" ? { account: await this.accountContext(client, g), image: this.mediaIdentity(await client.request(`images/${encodeURIComponent(ids.image!)}`)),
+            associations: await client.listCampaignConversions(ids.campaign),
+            ...(ids.conversion ? { conversion: await client.getConversion(ids.conversion, g.accountId),
+              association: await client.getCampaignConversion(ids.campaign, ids.conversion) } : {}) } : {}),
+          group: pick(group, [...(ids.readbackVersion === "3" ? ["id"] : []), ...(["2", "3"].includes(ids.readbackVersion!) ? ["account"] : []), "totalBudget", "runSchedule"]),
           campaign: pick(campaign, [
+            ...(ids.readbackVersion === "3" ? ["id"] : []),
             "account",
             "campaignGroup",
             "associatedEntity",
@@ -634,11 +756,12 @@ export class NativeProvider implements ProviderPort {
             "audienceExpansionEnabled",
             "offsiteDeliveryEnabled",
             "unitCost",
-            ...(ids.readbackVersion === "2" ? ["costType", "format"] : []),
+            ...(["2", "3"].includes(ids.readbackVersion!) ? ["costType", "format"] : []),
             "objectiveType",
             "type",
+            ...(ids.readbackVersion === "3" ? ["optimizationTargetType", "politicalIntent", "locale", "connectedTelevisionOnly"] : []),
           ]),
-          creative: pick(creative, ["campaign", "content"]),
+          creative: pick(creative, [...(ids.readbackVersion === "3" ? ["id"] : []), "campaign", "content"]),
           post,
         },
         paused: statuses.every((x) => ["DRAFT", "PAUSED"].includes(x)),
@@ -697,6 +820,22 @@ export class NativeProvider implements ProviderPort {
   }
   private validateSnapshot(s: any, plan: any, ids: Record<string, string>) {
     if (this.name === "meta") {
+      if (plan.capabilityVersion) {
+        const account = plan.accountId.replace(/^act_/, "");
+        requireThat(["campaign", "adset", "creative", "ad"].every(k => s[k].id === ids[k]), "provider_object_identity_mismatch");
+        requireThat([s.campaign, s.adset, s.creative, s.ad].every(o => String(o.account_id) === account) &&
+          s.image?.hash === ids.image && s.image?.status === "ACTIVE", "provider_media_or_account_mismatch");
+        requireThat(exactTargeting(s.adset.targeting, plan.adset.targeting), "provider_targeting_mismatch");
+        if (plan.campaign.objective === "OUTCOME_AWARENESS") requireThat(s.adset.destination_type === "UNDEFINED", "awareness_destination_unverified");
+        if (plan.adset.promoted_object) requireThat(exactTargeting(s.adset.promoted_object, plan.adset.promoted_object), "promoted_object_mismatch");
+        else requireThat(s.adset.promoted_object === undefined || exactTargeting(s.adset.promoted_object, {}), "unexpected_promoted_object");
+        requireThat(exactTargeting(s.creative.object_story_spec, {
+          page_id: plan.creative.pageId, ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
+          link_data: { image_hash: ids.image, link: plan.creative.link, message: plan.creative.message, name: plan.creative.name,
+            call_to_action: { type: "LEARN_MORE", value: { link: plan.creative.link } } },
+        }), "creative_identity_or_content_mismatch");
+        if (plan.adset.targeting.targeting_optimization === "none") requireThat(metaExpansionOff(s.adset.targeting_optimization_types), "meta_expansion_off_unverified");
+      }
       const { name: _name, status: _status, ...expected } = plan.adset;
       expected.start_time = new Date(expected.start_time).getTime();
       expected.end_time = new Date(expected.end_time).getTime();
@@ -712,6 +851,7 @@ export class NativeProvider implements ProviderPort {
           subset(s.campaign, {
             objective: plan.campaign.objective,
             special_ad_categories: plan.campaign.special_ad_categories,
+            ...(plan.campaign.special_ad_category_country ? { special_ad_category_country: plan.campaign.special_ad_category_country } : {}),
             ...(plan.campaign.spend_cap ? { spend_cap: plan.campaign.spend_cap } : {}),
           }) &&
           s.adset.campaign_id === ids.campaign &&
@@ -719,6 +859,7 @@ export class NativeProvider implements ProviderPort {
           s.ad.creative?.id === ids.creative &&
           subset(s.creative.object_story_spec, {
             page_id: plan.creative.pageId,
+            ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
             link_data: {
               image_hash: ids.image,
               name: plan.creative.name,
@@ -788,19 +929,33 @@ export class NativeProvider implements ProviderPort {
         "provider_keyword_or_location_mismatch",
       );
     } else {
+      if (plan.capabilityVersion) {
+        requireThat(String(s.group.id) === ids.group && String(s.campaign.id) === ids.campaign &&
+          String(s.creative.id).replace(/^urn:li:sponsoredCreative:/, "") === ids.creative, "provider_object_identity_mismatch");
+        requireThat(s.campaign.optimizationTargetType === plan.campaign.optimizationTargetType &&
+          s.campaign.politicalIntent === plan.campaign.politicalIntent && s.campaign.connectedTelevisionOnly === false &&
+          exactTargeting(s.campaign.locale, { country: "US", language: "en" }) &&
+          exactTargeting(s.campaign.targetingCriteria, plan.campaign.targetingCriteria), "provider_targeting_or_optimization_mismatch");
+        requireThat(s.post.contentCallToActionLabel === plan.creative.callToActionLabel &&
+          exactTargeting(s.post.distribution, { feedDistribution: "NONE", thirdPartyDistributionChannels: [] }), "creative_distribution_mismatch");
+        requireThat(s.image?.id === ids.image && s.image?.owner === `urn:li:organization:${plan.creative.organizationId}` && s.image?.status === "AVAILABLE", "provider_media_owner_unverified");
+        if (!plan.conversion) requireThat(Array.isArray(s.associations) && s.associations.length === 0, "unexpected_conversion_associations");
+        if (plan.conversion) {
+          this.validateLinkedInConversion(s.conversion, plan.conversion, plan.accountId);
+          requireThat(s.associations?.length === 1 && s.associations[0].campaign === s.association?.campaign && s.associations[0].conversion === ids.conversion, "unexpected_conversion_associations");
+          requireThat(s.association?.campaign === `urn:li:sponsoredCampaign:${ids.campaign}` && s.association?.conversion === ids.conversion, "conversion_association_unverified");
+        }
+      }
       requireThat(
         s.group.account === s.campaign.account &&
         s.campaign.account === `urn:li:sponsoredAccount:${plan.accountId}` &&
         s.campaign.associatedEntity === `urn:li:organization:${plan.campaign.organizationId}` &&
-        subset(s.campaign.dailyBudget, { amount: (plan.campaign.dailyBudgetCents / 100).toFixed(2), currencyCode: plan.campaign.currencyCode }) &&
-        subset(s.campaign.unitCost, { amount: plan.campaign.unitCostAmount, currencyCode: plan.campaign.currencyCode }) &&
+        linkedInMoney(s.campaign.dailyBudget, (plan.campaign.dailyBudgetCents / 100).toFixed(2), plan.campaign.currencyCode) &&
+        linkedInMoney(s.campaign.unitCost, plan.campaign.unitCostAmount, plan.campaign.currencyCode) &&
         s.campaign.objectiveType === plan.campaign.objectiveType &&
         s.campaign.type === plan.campaign.type && s.campaign.costType === plan.campaign.costType &&
         s.campaign.format === plan.campaign.format &&
-        subset(s.group.totalBudget, {
-          amount: (plan.group.totalBudgetCents / 100).toFixed(2),
-          currencyCode: plan.group.currencyCode,
-        }) &&
+        linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode) &&
           subset(
             s.campaign.targetingCriteria,
             plan.campaign.targetingCriteria,
@@ -844,7 +999,17 @@ export class NativeProvider implements ProviderPort {
       "verified_provider_objects_required",
     );
     const ids = c.receipt.ids;
+    const scopeDigest = digest({ c, g });
+    const hostBeforeWrite = beforeWrite;
+    beforeWrite = async () => {
+      await hostBeforeWrite();
+      requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
+      if (activate) validateAccountCapability(c, g, true);
+    };
+    if (activate) validateAccountCapability(c, g, true);
     return await this.use(g, async (client) => {
+      if (this.name === "linkedin") client.beforeWrite = beforeWrite;
+      if (activate && c.material.settings) await this.verifySettings(client, c, g);
       const before = await this.snapshot(client, g, ids);
       requireThat(
         digest(before.material) === ids.readbackDigest &&
@@ -930,6 +1095,7 @@ export class NativeProvider implements ProviderPort {
     beforeWrite: () => void | Promise<void>,
   ) {
     requireThat(this.name !== "linkedin" || c.material.advertisingBudget?.daily, "linkedin_explicit_daily_budget_required");
+    if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     return await this.status(c, g, true, beforeWrite);
   }
   async pause(c: Campaign, g: Grant, beforeWrite: () => void | Promise<void>) {
@@ -993,13 +1159,16 @@ export class NativeProvider implements ProviderPort {
     until: string,
   ): Promise<Omit<Metrics, "id" | "projectId" | "campaignId">> {
     requireThat(c.receipt?.ids.campaign, "provider_campaign_not_prepared");
-    const reportingBasis = providerDayWindow(from, until, g.timezone);
+    requireThat(this.name !== "linkedin" || (g.timezone === "UTC" && c.material.timezone === "UTC"), "linkedin_utc_required", 422);
+    const reportingBasis = { ...providerDayWindow(from, until, g.timezone),
+      ...(this.name === "linkedin" ? { timezoneSource: "provider_reporting_and_budget_policy" as const } : this.name === "meta" ? { timezoneSource: "provider_account" as const } : {}) };
     const since = dateInZone(from, g.timezone).slice(0, 10),
       through = dateInZone(
         new Date(Date.parse(until) - 1).toISOString(),
         g.timezone,
       ).slice(0, 10);
     const values = await this.use(g, async (client) => {
+      if (this.name !== "google") await this.accountContext(client, g);
       if (this.name === "google") {
         const key = c.receipt!.ids.campaign!.split("/").at(-1);
         requireThat(/^\d+$/.test(key!), "invalid_campaign_identity");
@@ -1042,6 +1211,19 @@ export class NativeProvider implements ProviderPort {
         campaignUrns: [`urn:li:sponsoredCampaign:${c.receipt!.ids.campaign}`],
       });
       requireThat(Array.isArray(r.elements), "provider_metrics_unavailable");
+      const reportDate = (d: any) => {
+        requireThat(d && [d.year, d.month, d.day].every(Number.isInteger), "provider_metrics_scope_mismatch");
+        const value = `${String(d.year).padStart(4, "0")}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`;
+        requireThat(Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "provider_metrics_scope_mismatch");
+        return value;
+      };
+      const days = new Set<string>();
+      for (const row of r.elements) {
+        const start = reportDate(row.dateRange?.start), end = reportDate(row.dateRange?.end);
+        requireThat(start === end && start >= since && end <= through && !days.has(start) &&
+          exactTargeting(row.pivotValues, [`urn:li:sponsoredCampaign:${c.receipt!.ids.campaign}`]), "provider_metrics_scope_mismatch");
+        days.add(start);
+      }
       return summarizeMetrics(
         r.elements,
         {

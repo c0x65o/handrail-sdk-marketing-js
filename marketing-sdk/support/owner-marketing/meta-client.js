@@ -32,8 +32,8 @@ function classifyError(status, payload) {
   return { code: "provider_error", status: 502, providerCode };
 }
 
-function accountPath(accountId) {
-  const id = String(accountId || "").trim().replace(/^act_/, "");
+export function accountPath(accountId) {
+  const id = typeof accountId === "string" ? accountId.replace(/^act_/, "") : "";
   if (!/^\d+$/.test(id)) throw new MetaMarketingError("A numeric Meta ad account ID is required", { code: "invalid_configuration", status: 400 });
   return `act_${id}`;
 }
@@ -87,6 +87,8 @@ export class MetaMarketingClient {
       this.request(accountPath(adAccountId), { params: { fields: "id,name,account_status,disable_reason,currency,timezone_name,business,amount_spent,balance,spend_cap,funding_source_details" } }),
       this.request("me/permissions"),
     ]);
+    if (typeof account.id !== "string" || !/^act_\d+$/.test(account.id) || account.id !== accountPath(adAccountId))
+      throw new MetaMarketingError("Account identity was not verified", { code: "verification_failed", status: 502 });
     const optionalAsset = async (id, fields) => {
       if (!id) return { configured: false, accessible: false, details: null, errorCode: null };
       try {

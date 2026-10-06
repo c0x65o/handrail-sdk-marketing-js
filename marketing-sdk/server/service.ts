@@ -1,3 +1,5 @@
+import { validateAccountCapability } from "./capabilities.js";
+import { capabilityBlockers } from "../core/index.js";
 import type {
   Asset,
   Campaign,
@@ -393,12 +395,14 @@ export class MarketingServer {
       await this.auth(p, project, true);
       const g = await this.grant(project, input.grantId);
       material(input.material, g.provider);
+      const blockers = capabilityBlockers(input.material, g);
+      requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
       requireThat(
         input.material.budget.currency === g.currency &&
           input.material.timezone === g.timezone,
         "account_currency_or_timezone_mismatch",
       );
-      return await this.store.transaction(async () => {
+      const save = async () => {
         const old = input.id
           ? await this.store.get<Campaign>(project, "campaign", input.id)
           : null;
@@ -452,7 +456,14 @@ export class MarketingServer {
           revision: c.revision,
         });
         return c;
-      });
+      };
+      if (input.requestKey === undefined) return save();
+      const write = await this.request<{ id: string; campaign: Campaign }>(project, input.requestKey,
+        { command: "saveCampaign", actorId: p.userId, grantRevision: g.revision, ...input }, "campaignWrite", async () => {
+          const campaign = await save();
+          return { id: `${campaign.id}:${campaign.revision}`, campaign };
+        });
+      return write.campaign;
     });
   }
   private async reserve(
@@ -468,6 +479,7 @@ export class MarketingServer {
     if (kind === "pause") requireThat(c.receipt, "provider_objects_required");
     const g = await this.grant(project, c.grantId, kind);
     const a = await this.assets(c);
+    if (kind !== "pause" && g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     // A safety pause binds the observed receipt, including legacy provider plans.
     // It must not require inventing a daily approval or rebuilding provider objects.
     const plan = kind === "pause" ? { pauseReceipt: c.receipt } : this.providers[g.provider].plan(c, g, a);
@@ -824,11 +836,12 @@ export class MarketingServer {
         g,
         c,
         await this.assets(c),
+        o.kind,
       );
       requireThat(
         v.accountId === g.accountId &&
           v.currency === g.currency &&
-          v.timezone === g.timezone &&
+          (o.kind === "pause" && g.provider === "linkedin" || v.timezone === g.timezone) &&
           v.permissions.includes(o.kind),
         "provider_capability_missing",
       );
@@ -952,6 +965,7 @@ export class MarketingServer {
           "stale_material",
         );
         if (o.packetId) await this.approved(project, o.packetId);
+        if (provider.evidence === "provider" && o.kind !== "pause") validateAccountCapability(c, current, true);
         const lease = await this.store.db.prepare("SELECT operation_id FROM leases WHERE project_id=? AND account_id=?").get(project, g.accountId);
         requireThat(lease?.operation_id === o.id, "operation_lease_lost");
         if (o.kind === "activate") await this.advertisingBudgets.assert(c, o);
@@ -1378,7 +1392,7 @@ export class MarketingServer {
         422,
       );
       requireThat(
-        ["click", "form_completed", "qualified", "purchase", "application_completed", "applicant_qualified", "hired"].includes(
+        ["click", "form_completed", "qualified", "purchase", "applicant_request_mou", "application_completed", "applicant_qualified", "hired"].includes(
           input.kind,
         ),
         "invalid_event",
@@ -1395,7 +1409,7 @@ export class MarketingServer {
       if (input.sourceId !== undefined) text(input.sourceId);
       requireThat(input.purpose === undefined || ["acquisition", "recruitment"].includes(input.purpose), "invalid_purpose", 422);
       for (const flag of [input.synthetic, input.test, input.productionMetricsExcluded]) requireThat(flag === undefined || typeof flag === "boolean", "invalid_test_flag", 422);
-      const recruitment = ["application_completed", "applicant_qualified", "hired"].includes(input.kind);
+      const recruitment = ["applicant_request_mou", "application_completed", "applicant_qualified", "hired"].includes(input.kind);
       requireThat(!recruitment || input.purpose === "recruitment", "recruitment_purpose_required", 422);
       requireThat(input.purpose !== "recruitment" || !["form_completed", "qualified", "purchase"].includes(input.kind), "purpose_outcome_mismatch", 422);
       // A source event cannot become a different outcome by changing kind on retry.
@@ -1588,7 +1602,8 @@ export class MarketingServer {
       );
       const g = await this.grant(project, c.grantId, "report");
       const reportingBasis = this.providers[g.provider].evidence === "provider"
-        ? providerDayWindow(input.from, input.until, g.timezone, this.now())
+        ? { ...providerDayWindow(input.from, input.until, g.timezone, this.now()),
+          ...(g.provider === "linkedin" ? { timezoneSource: "provider_reporting_and_budget_policy" as const } : g.provider === "meta" ? { timezoneSource: "provider_account" as const } : {}) }
         : { window: "fixture-window" as const, timezone: g.timezone, from: input.from, until: input.until, completeThrough: null };
       const values = await this.providers[g.provider].metrics(
         c,
@@ -1603,6 +1618,11 @@ export class MarketingServer {
           values.until === input.until,
         "metrics_scope_mismatch",
       );
+      await this.auth(p, project, true);
+      const currentGrant = await this.grant(project, g.id, "report");
+      requireThat(digest(currentGrant) === digest(g) &&
+        (await this.store.get<Campaign>(project, "campaign", c.id)).revision === c.revision,
+        "metrics_scope_changed");
       const snap: Metrics = {
         ...values,
         reportingBasis,
@@ -1685,6 +1705,9 @@ export class MarketingServer {
         leads: metric(leads, "collector_coverage_unknown"),
         completedSubmissions: metric(coverage ? submissions("form_completed", "acquisition") : null, "collector_coverage_unknown"),
         uniquePeople: metric(leads, "collector_coverage_unknown"),
+        purpose: c.material.purpose ?? "acquisition",
+        applicantGoal: c.material.applicantGoal,
+        applicantRequests: metric(recruitmentCoverage ? submissions("applicant_request_mou", "recruitment") : null, "collector_coverage_unknown"),
         applicants: metric(recruitmentCoverage ? submissions("application_completed", "recruitment") : null, "collector_coverage_unknown"),
         qualifiedApplicants: metric(recruitmentCoverage ? submissions("applicant_qualified", "recruitment") : null, "collector_coverage_unknown"),
         hires: metric(recruitmentCoverage ? submissions("hired", "recruitment") : null, "collector_coverage_unknown"),
@@ -1721,7 +1744,7 @@ export class MarketingServer {
         workspace: [],
         setup: ["grantId", "requestKey"],
         resumeSetup: ["setupId", "expectedRevision"],
-        saveCampaign: ["id", "expectedRevision", "grantId", "material"],
+        saveCampaign: ["id", "expectedRevision", "grantId", "material", "requestKey"],
         saveDraft: ["id", "expectedRevision", "requestKey", "material"],
         prepare: ["campaignId", "requestKey"],
         packet: ["campaignId"],

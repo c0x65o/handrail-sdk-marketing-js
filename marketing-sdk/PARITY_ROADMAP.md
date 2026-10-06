@@ -253,3 +253,27 @@ Rollback must retain revocation state, event input evidence, all reservations,
 leases and operation identities. Quiesce dispatch, reconcile unknown effects and
 prove a single writer before routing rollback. Never downgrade typed-budget
 execution or replay uncertain operations to make an old host work.
+
+## Provider-capability workspace continuation (2026-10-06)
+
+The next bounded implementation is recorded in [CAPABILITIES.md](CAPABILITIES.md),
+including the exact conditional matrix, guided editor, recruitment MOU semantics,
+source evidence and remaining account/document gates. It starts from published
+v0.1.5 and does not change the independent qualification record above. Independent
+review and publication of this new workspace candidate are still outstanding.
+
+
+## Independent provider/editor qualification (2026-10-06)
+
+The new review in [PROVIDER_REVIEW.json](PROVIDER_REVIEW.json) and the leading
+constraints in [CAPABILITIES.md](CAPABILITIES.md) supersede only the candidate's
+provider/editor readiness claims. Original foundation qualification and immutable
+implementation artifacts remain unchanged. LinkedIn new execution/reporting is UTC
+only; Meta daily exposure semantics are unqualified and native writes for that mode
+are blocked. Full-material eligibility, actual account IDs, independent GET response
+shapes, post-await authority, unexpected conversion associations, durable save retry
+and late UI reads were repaired. Native typed reservations remain held after pause
+until a qualified delayed-spend settlement path exists. No database migration,
+publication, consumer cutover, credentials or provider effects are part of this review.
+Search/pickers and local-draft promotion remain product gaps, not completed guided UX.
+Exact checks and final source identity live in the separate ignored review handoff.

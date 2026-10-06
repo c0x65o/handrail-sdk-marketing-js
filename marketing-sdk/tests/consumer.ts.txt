@@ -29,3 +29,22 @@ export async function migrationFreeHost(options: PostgresStoreOptions): Promise<
 }
 export const trustedMigration: (options: PostgresStoreOptions) => Promise<void> = Store.migratePostgres;
 export const expectedSchemaVersion: number = POSTGRES_SCHEMA_VERSION;
+
+import { CAPABILITY_MATRIX, capabilityBlockers, capabilityKey, type MetaSettings, type LinkedInSettings } from '@handrail/marketing/core';
+export const metaSettings: MetaSettings = {
+  version: CAPABILITY_MATRIX.version, provider: 'meta', accountId: 'act_123', apiVersion: 'v26.0', format: 'single_image',
+  objective: 'OUTCOME_TRAFFIC', optimization: 'REACH', delivery: 'strict', placements: ['facebook_feed'],
+  identity: { pageId: '42' }, targeting: { languages: [], interestGroups: [[{ id: '1', label: 'Resolved interest' }]], excludedCustomAudiences: [] },
+  nondiscriminationAccepted: true,
+};
+export const linkedinSettings: LinkedInSettings = {
+  version: CAPABILITY_MATRIX.version, provider: 'linkedin', accountId: '123', apiVersion: '202609', format: 'STANDARD_UPDATE',
+  objective: 'WEBSITE_VISIT', optimization: 'MAX_CLICK', bid: { mode: 'auto', costType: 'CPM' }, placements: ['linkedin_feed'],
+  identity: { organizationId: '42' }, targeting: { include: {}, exclude: {} }, politicalIntent: 'NOT_POLITICAL', politicalConsent: true,
+  nondiscriminationAccepted: true,
+};
+// @ts-expect-error LinkedIn wire objectives use singular WEBSITE_VISIT.
+const badObjective: LinkedInSettings['objective'] = 'WEBSITE_VISITS';
+// @ts-expect-error Document ad publishing is not offered.
+const badFormat: LinkedInSettings['format'] = 'SPONSORED_UPDATE_NATIVE_DOCUMENT';
+export const capabilityHelpers = { capabilityBlockers, capabilityKey, badObjective, badFormat };

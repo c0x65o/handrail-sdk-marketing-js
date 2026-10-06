@@ -1,5 +1,7 @@
+import { AudienceFields, GuidedFields, GuidedMaterialEditor, DraftCard, initialMaterial } from "./guided.js";
+import { capabilityBlockers, capabilityStatus, dailyExposureMinor, providerBudgetBlockers } from "../core/index.js";
 import React, { useEffect, useRef, useState } from "react";
-import { defaultCampaignSchedule, completedCampaignWindow } from "./schedule.js";
+import { completedCampaignWindow } from "./schedule.js";
 import type {
   Asset,
   Conversation,
@@ -45,7 +47,20 @@ export function MaterialReview({
         {material.destination}
       </a>
       <dl>
-        <dt>Lifetime media ceiling</dt>
+        <dt>Purpose / goal</dt><dd>{material.purpose || "acquisition"}{material.applicantGoal && ` · ${material.applicantGoal.event} · completed MOU request`}</dd>
+        <dt>Provider settings</dt><dd>{material.settings ? `${material.settings.provider} · ${material.settings.objective} · ${material.settings.optimization} · ${material.settings.format}` : "Legacy material — review the retained plan"}</dd>
+        {material.settings && <><dt>Provider contract</dt><dd>API {material.settings.apiVersion} · {material.settings.accountId} · {material.settings.version}</dd>
+          {material.settings.provider === "meta" && <><dt>Delivery and bidding</dt><dd>{material.settings.delivery} · billed on impressions · lowest cost without cap</dd>
+            <dt>Special ad category</dt><dd>{material.settings.specialAdCategory || "none"}{material.settings.specialAdCategoryCountry && ` · ${material.settings.specialAdCategoryCountry}`}</dd></>}
+          {material.settings.conversion && <><dt>Exact conversion binding</dt><dd>{material.settings.provider === "meta" ? `Pixel ${material.settings.conversion!.pixelId} · custom conversion ${material.settings.conversion!.customConversionId} · ${material.settings.conversion!.event}` : `${material.settings.conversion!.id} · ${material.settings.conversion!.type} · ${material.settings.conversion!.event}`}</dd></>}
+          <dt>Identity and placements</dt><dd>{Object.entries(material.settings.identity).map(([k, v]) => `${k}: ${v}`).join(" · ")} · {material.settings.placements.join(", ")}</dd>
+          <dt>Audience</dt><dd>{material.audience.locations.join(", ")}{material.audience.ageMin !== undefined && ` · ages ${material.audience.ageMin}–${material.audience.ageMax}`} · expansion off</dd>
+          {material.settings.provider === "linkedin" && <><dt>Bidding</dt><dd>{material.settings.bid.mode} · {material.settings.bid.costType}{material.settings.bid.mode === "manual" && ` · ${material.budget.currency} ${material.settings.bid.amountMinor / 100}`}</dd></>}
+          <dt>Targeting details</dt><dd>{material.settings.provider === "meta" ? <>
+            Languages: {material.settings.targeting.languages.map(x => `${x.label} (${x.id})`).join(", ") || "all"}. Interests: {material.settings.targeting.interestGroups.map(group => `(${group.map(x => `${x.label} (${x.id})`).join(" OR ")})`).join(" AND ") || "none"}. Excluded: {material.settings.targeting.excludedCustomAudiences.map(x => `${x.label} (${x.id})`).join(", ") || "none"}.
+          </> : (["include", "exclude"] as const).map(side => <p key={side}>{side}: {Object.entries(material.settings!.provider === "linkedin" ? material.settings!.targeting[side] : {}).map(([facet, options]) => `${facet}: (${(options as { id: string; label: string }[]).map(x => `${x.label} (${x.id})`).join(" OR ")})`).join(side === "include" ? " AND " : " OR ") || "none"}</p>)}</dd>
+        </>}
+        <dt>Approved lifetime media budget</dt>
         <dd>
           {material.budget.currency} {(material.budget.minor / 100).toFixed(2)}{" "}
           · excludes fees/taxes
@@ -54,6 +69,7 @@ export function MaterialReview({
           <dt>Daily media budget</dt>
           <dd>{material.advertisingBudget.daily.currency} {(material.advertisingBudget.daily.minor / 100).toFixed(2)}</dd>
         </>}
+        {material.settings?.provider === "linkedin" && <><dt>Required daily reservation exposure (150%, bounded by lifetime)</dt><dd>{material.budget.currency} {((dailyExposureMinor(material) || 0) / 100).toFixed(2)}</dd></>}
         <dt>Delivery window</dt>
         <dd>
           {material.startAt} → {material.endAt} (exclusive)
@@ -61,6 +77,8 @@ export function MaterialReview({
           {material.timezone}
         </dd>
       </dl>
+      <p>Daily budgets are pacing targets. Required reservations are not observed spend or an independently enforceable daily cap. Managed media excludes fees and taxes; external campaigns need host coverage.</p>
+      {providerBudgetBlockers(material).length > 0 && <p>Meta daily cap compatibility remains unverified; native preparation and activation are blocked.</p>}
       <details>
         <summary>Complete targeting, copy and destination snapshot</summary>
         <pre>{JSON.stringify(material, null, 2)}</pre>
@@ -195,9 +213,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     ),
     [rights, setRights] = useState(""),
     [storyboard, setStoryboard] = useState(""),
-    [audienceText, setAudienceText] = useState("");
+    [audienceDraft, setAudienceDraft] = useState<Material["audience"] | null>(null);
   const campaign =
     data?.campaigns.find((c) => c.id === selected) || data?.campaigns[0];
+  const currentView = useRef("");
+  currentView.current = `${campaign?.id}:${campaign?.revision}:${reportWindow}`;
   const assets =
     data?.assets.filter((a) => a.campaignId === campaign?.id) || [];
   const canEdit = data && ["admin", "editor"].includes(data.role),
@@ -232,9 +252,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     };
   }, [client]);
   useEffect(() => {
-    setAudienceText(
-      campaign ? JSON.stringify(campaign.material.audience, null, 2) : "",
-    );
+    setAudienceDraft(campaign?.material.audience || null);
     setResult(null);
     setConversations(null);
   }, [campaign?.id, campaign?.revision]);
@@ -260,6 +278,15 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
         material: next,
       });
   }
+  const selectedGrant = data?.grants.find(g => g.id === campaign?.grantId);
+  const readiness = campaign && selectedGrant ? [
+    ...capabilityBlockers(campaign.material, selectedGrant),
+    ...(data?.mode === "live" ? providerBudgetBlockers(campaign.material) : []),
+    ...(selectedGrant.provider !== "google" && !campaign.material.settings ? ["explicit_provider_settings_required"] : []),
+    ...(selectedGrant.provider !== "google" && campaign.material.assetIds.length !== 1 ? ["single_image_required"] : []),
+    ...(!data?.setups.some(s => s.grantId === campaign.grantId && s.state === "ready") ? ["verified_setup_required"] : []),
+    ...(data?.mode === "live" && campaign.material.settings && !capabilityStatus(campaign.material, selectedGrant).accountVerified ? ["account_capability_unverified"] : []),
+  ] : ["account_required"];
   const completedWindow = campaign ? completedCampaignWindow(campaign.material.startAt,
     campaign.material.endAt, campaign.material.timezone) : null;
   const window = campaign && (reportWindow === "campaign" || completedWindow)
@@ -368,6 +395,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 <span>Outcomes to reconcile</span>
               </article>
             </div>
+            <div className="grid" aria-label="Unconnected drafts">
+              <DraftCard client={client} disabled={!canEdit || busy} onSaved={refresh} />
+              {data.drafts.map(d => <DraftCard key={`${d.id}:${d.revision}`} draft={d} client={client} disabled={!canEdit || busy} onSaved={refresh} />)}
+            </div>
+            <p>Create → Launch → Results · one creative set per campaign</p>
             <div className="grid">
               <section className="card">
                 <h2>Create a campaign</h2>
@@ -724,22 +756,14 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   Provider-native location identifiers and explicit supported
                   rules. No automatic expansion.
                 </p>
-                <label>
-                  Audience definition
-                  <textarea
-                    className="code-input"
-                    rows={14}
-                    value={audienceText}
-                    onChange={(e) => setAudienceText(e.target.value)}
-                  />
-                </label>
+                {audienceDraft && <AudienceFields value={audienceDraft} onChange={setAudienceDraft} />}
                 <button
                   disabled={busy || !canEdit}
                   onClick={() =>
                     void act(() =>
                       save({
                         ...campaign.material,
-                        audience: JSON.parse(audienceText),
+                        audience: audienceDraft!,
                       }),
                     )
                   }
@@ -761,9 +785,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   <br />
                   LinkedIn: geo URNs and optional title URNs.
                 </p>
-                <MaterialEditor
-                  key={`${campaign.id}:${campaign.revision}`}
+                <GuidedMaterialEditor
+                  key={`${campaign.id}:${campaign.revision}:${selectedGrant?.revision}`}
                   value={campaign.material}
+                  renderReview={m => <MaterialReview material={m} assets={(assets || []).filter(a => m.assetIds.includes(a.id))} client={client} />}
+                  grant={data.grants.find(g => g.id === campaign.grantId)!}
                   disabled={busy || !canEdit}
                   onSave={(m) =>
                     act(async () => {
@@ -794,9 +820,10 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   )}
                   client={client}
                 />
+                {readiness.length > 0 && <div role="status"><strong>Launch readiness blockers</strong><ul>{readiness.map(x => <li key={x}>{x.replaceAll("_", " ")}</li>)}</ul></div>}
                 <div className="actions">
                   <button
-                    disabled={busy || !canEdit || campaign.state !== "draft"}
+                    disabled={busy || !canEdit || campaign.state !== "draft" || readiness.length > 0}
                     onClick={() =>
                       void act(() =>
                         client.call("prepare", {
@@ -930,11 +957,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                     disabled={busy}
                     onClick={() =>
                       void act(async () =>
-                        setConversations(
-                          await client.call("conversations", {
-                            campaignId: campaign.id,
-                          }),
-                        ),
+                        {
+                          const scope = currentView.current;
+                          const value = await client.call("conversations", { campaignId: campaign.id });
+                          if (reads.current.active && scope === currentView.current) setConversations(value);
+                        },
                       )
                     }
                   >
@@ -972,7 +999,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
           ) : (
             <>
               <section className="card">
-                <h2>Measured outcomes</h2>
+                <h2>Measured outcomes · {campaign.material.purpose || "acquisition"}</h2>
                 <p>
                   {campaign.material.timezone} ·{" "}
                   {campaign.material.budget.currency}. Submissions, people and paid customers remain distinct.
@@ -996,7 +1023,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                     disabled={busy || !window}
                     onClick={() =>
                       void act(async () =>
-                        setResult(await client.call("results", window!)),
+                        {
+                          const scope = currentView.current;
+                          const value = await client.call("results", window!);
+                          if (reads.current.active && scope === currentView.current) setResult(value);
+                        },
                       )
                     }
                   >
@@ -1007,8 +1038,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                     disabled={busy || !canEdit || !window || reportWindow !== "completed"}
                     onClick={() =>
                       void act(async () => {
+                        const scope = currentView.current;
                         await client.call("syncMetrics", window!);
-                        setResult(await client.call("results", window!));
+                        if (!reads.current.active || scope !== currentView.current) return;
+                        const value = await client.call("results", window!);
+                        if (reads.current.active && scope === currentView.current) setResult(value);
                       })
                     }
                   >
@@ -1032,6 +1066,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                         "clicks",
                         "leads",
                         "completedSubmissions",
+                        "applicantRequests",
                         "applicants",
                         "qualifiedApplicants",
                         "hires",
@@ -1050,6 +1085,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                           {{
                             leads: "Unique people (completed forms)",
                             completedSubmissions: "Completed submissions",
+                            applicantRequests: "Completed MOU requests",
                             applicants: "Completed applications",
                             qualifiedApplicants: "Qualified applicants",
                             hires: "Hires",
@@ -1098,218 +1134,25 @@ function Empty() {
     </section>
   );
 }
-function MaterialEditor({
-  value,
-  disabled,
-  onSave,
-}: {
-  value: Material;
-  disabled: boolean;
-  onSave: (m: Material) => Promise<void>;
-}) {
-  const [draft, setDraft] = useState(JSON.stringify(value, null, 2)),
-    [error, setError] = useState("");
-  return (
-    <details>
-      <summary>Edit complete campaign material</summary>
-      <p className="muted">
-        Changing copy, schedule, budget, targeting or destination creates a new
-        version and invalidates earlier launch authority.
-      </p>
-      <label>
-        Complete material
-        <textarea
-          rows={18}
-          className="code-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-        />
-      </label>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <button
-        disabled={disabled}
-        onClick={() => {
-          try {
-            const material = JSON.parse(draft) as Material;
-            setError("");
-            void onSave(material);
-          } catch {
-            setError("Enter valid JSON before saving.");
-          }
-        }}
-      >
-        Save material revision
-      </button>
-    </details>
-  );
+function CampaignForm({ grants, disabled, onCreate }: { grants: Workspace["grants"]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }) => Promise<void> }) {
+  const [grantId, setGrantId] = useState(grants[0]?.id || "");
+  const g = grants.find(x => x.id === grantId);
+  return <><label>Account<select aria-label="Account" value={grantId} disabled={disabled} onChange={e => setGrantId(e.target.value)}>
+    {grants.map(x => <option key={x.id} value={x.id}>{x.provider} · {x.label} · {x.accountId}</option>)}</select></label>
+    {g ? <ConnectedForm key={`${g.id}:${g.revision}`} grant={g} disabled={disabled} onCreate={onCreate} /> : <p>Save an unconnected draft below. A verified account is required to prepare provider objects.</p>}</>;
 }
-function CampaignForm({
-  grants,
-  disabled,
-  onCreate,
-}: {
-  grants: Workspace["grants"];
-  disabled: boolean;
-  onCreate: (m: { grantId: string; material: Material }) => Promise<void>;
-}) {
-  const [grantId, setGrantId] = useState(grants[0]?.id || ""),
-    [name, setName] = useState("Autumn desk kit"),
-    [headline, setHeadline] = useState("A little room to think"),
-    [body, setBody] = useState("Explore a calmer workspace."),
-    [destination, setDestination] = useState(
-      "https://fieldwork.example/desk-kit",
-    ),
-    [budget, setBudget] = useState("42"),
-    [dailyBudget, setDailyBudget] = useState(""),
-    [scheduleError, setScheduleError] = useState("");
-  const g = grants.find((x) => x.id === grantId);
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!g) return;
-    let schedule;
+function ConnectedForm({ grant: g, disabled, onCreate }: { grant: Workspace["grants"][number]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }) => Promise<void> }) {
+  const [m, setMaterial] = useState(() => initialMaterial(g)), [busy, setBusy] = useState(false);
+  const saving = useRef(false);
+  const request = useRef({ material: "", key: crypto.randomUUID() });
+  return <form onSubmit={async e => { e.preventDefault(); if (saving.current) return; saving.current = true; setBusy(true);
     try {
-      schedule = defaultCampaignSchedule(g.timezone);
-      setScheduleError("");
-    } catch (error) {
-      setScheduleError((error as Error).message);
-      return;
-    }
-    const bytes = new TextEncoder().encode(destination);
-    const hash = Array.from(
-      new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-    )
-      .map((x) => x.toString(16).padStart(2, "0"))
-      .join("");
-    await onCreate({
-      grantId,
-      material: {
-        name,
-        headline,
-        body,
-        destination,
-        destinationDigest: hash,
-        assetIds: [],
-        budget: {
-          currency: g.currency,
-          minor: Math.round(Number(budget) * 100),
-        },
-        ...(g.provider === "linkedin" || (g.provider === "meta" && dailyBudget) ? {
-          advertisingBudget: {
-            lifetime: { currency: g.currency, minor: Math.round(Number(budget) * 100) },
-            daily: { currency: g.currency, minor: Math.round(Number(dailyBudget) * 100) },
-          },
-        } : {}),
-        ...schedule,
-        timezone: g.timezone,
-        audience:
-          g.provider === "meta"
-            ? {
-                provider: "meta",
-                locations: ["US"],
-                ageMin: 25,
-                ageMax: 54,
-                expansion: false,
-              }
-            : g.provider === "google"
-              ? {
-                  provider: "google",
-                  locations: ["geoTargetConstants/2840"],
-                  keywords: ["desk kit"],
-                  expansion: false,
-                }
-              : {
-                  provider: "linkedin",
-                  locations: ["urn:li:geo:103644278"],
-                  expansion: false,
-                },
-        ...(g.provider === "google"
-          ? {
-              searchHeadlines: [
-                headline,
-                "Explore the desk kit",
-                "Make space for your work",
-              ],
-              searchDescriptions: [
-                body,
-                "Learn about the kit and see what fits your workspace.",
-              ],
-            }
-          : {}),
-      },
-    });
-  }
-  return (
-    <form onSubmit={(e) => void submit(e)}>
-      <label>
-        Account
-        <select value={grantId} onChange={(e) => setGrantId(e.target.value)}>
-          {grants.map((g) => (
-            <option key={g.id} value={g.id}>
-              {g.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Campaign name
-        <input
-          required
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-      </label>
-      <label>
-        Headline
-        <input
-          required
-          value={headline}
-          onChange={(e) => setHeadline(e.target.value)}
-        />
-      </label>
-      <label>
-        Copy
-        <textarea
-          required
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-        />
-      </label>
-      <label>
-        Destination URL
-        <input
-          type="url"
-          required
-          value={destination}
-          onChange={(e) => setDestination(e.target.value)}
-        />
-      </label>
-      <label>
-        Lifetime media budget ({g?.currency})
-        <input
-          type="number"
-          min="0.01"
-          step="0.01"
-          required
-          value={budget}
-          onChange={(e) => setBudget(e.target.value)}
-        />
-      </label>
-      {g && g.provider !== "google" && <label>
-        Daily media budget ({g.currency}){g.provider === "linkedin" ? " — required" : " — optional"}
-        <input type="number" min="0.01" step="0.01" required={g.provider === "linkedin"}
-          value={dailyBudget} onChange={e => setDailyBudget(e.target.value)} />
-      </label>}
-      <p className="muted">
-        Draft starts at the beginning of tomorrow in {g?.timezone} for seven
-        calendar days. Review exact dates and all mapped
-        copy at Launch before authorizing.
-      </p>
-      {scheduleError && <p role="alert" className="error">{scheduleError}</p>}
-      <button disabled={disabled || !g}>Save campaign draft</button>
-    </form>
-  );
+      const serialized = JSON.stringify(m);
+      if (request.current.material !== serialized) request.current = { material: serialized, key: crypto.randomUUID() };
+      await onCreate({ grantId: g.id, material: m, requestKey: request.current.key });
+    } finally { saving.current = false; setBusy(false); }
+  }}><GuidedFields value={m} grant={g} onChange={setMaterial} />
+    <p className="muted">Initial draft starts at the beginning of tomorrow in {g.timezone} for seven calendar days. Review or edit the exact schedule above.</p>
+    <button disabled={disabled || busy || capabilityBlockers(m, g).length > 0}>Save campaign draft</button>
+  </form>;
 }

@@ -81,7 +81,7 @@ test("budget pacing uses current observed spend, null is unknown, and legacy lif
     await budget.configure({ ...p, dailyCeilingMinor: 2000 });
     // Daily capacity now fits, but observed period spend plus 2 days does not.
     await assert.rejects(budget.reserve(c, operation(c)), /advertising_budget_exceeded/);
-    await assert.rejects(new AdvertisingBudgets(s, () => now, "provider").reserve(c, operation(c)), /current_observed_spend_required/);
+    await assert.rejects(new AdvertisingBudgets(s, () => now, "provider").reserve(c, operation(c)), /linkedin_utc_required/);
     await assert.rejects(budget.reserve({ ...c, material: { ...c.material, endAt: "2026-11-04T06:00:00Z" } }, operation(c)), /campaign_outside_budget_period/);
   } finally { await s.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -127,4 +127,55 @@ test("budget observations cannot cross project, currency, timezone or interval b
     await assert.rejects(budget.reserve(c, op), /current_observed_spend_required/);
     assert.deepEqual(await s.list("a", "advertisingBudgetReservation"), []);
   } finally { await s.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("typed LinkedIn policy reserves 150 percent daily exposure without changing the authored daily amount", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "linkedin-exposure-")), store = await testStore(join(dir, "db"));
+  try {
+    await store.db.prepare("INSERT INTO projects VALUES(?,?)").run("p", "synthetic");
+    const ledger = new AdvertisingBudgets(store, () => now, "fixture"), p = { ...policy("p"), campaignDailyCeilingMinor: 950 };
+    await ledger.configure(p);
+    await ledger.observe("p", { policyId: p.id, from: p.from, until: p.until, day: "2026-11-01", currency: p.currency, timezone: p.timezone,
+      observedAt: new Date(now).toISOString(), todayMinor: 100, periodMinor: 200, source: "fixture", receipt: "synthetic-complete-observation" });
+    const c = campaign("p"); c.material.settings = (await import("./capability-fixtures.js")).fixtureSettings("linkedin", "123", "42");
+    c.material.advertisingBudget!.daily!.minor = 601;
+    await assert.rejects(ledger.reserve(c, operation(c)), /advertising_budget_exceeded/);
+    assert.deepEqual(await store.list("p", "advertisingBudgetReservation"), []);
+    c.material.advertisingBudget!.daily!.minor = 600;
+    await ledger.reserve(c, operation(c));
+    const rows = await store.list<AdvertisingBudgetReservation>("p", "advertisingBudgetReservation");
+    assert.equal(rows[0]!.dailyMinor, 900); assert.equal(rows[0]!.periodMinor, 1800);
+    assert.equal(c.material.advertisingBudget!.daily!.minor, 600);
+  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("review: UTC native reservations retain incurred exposure after pause/reduction and reject unsupported daily-cap modes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "review-exposure-")), store = await testStore(join(dir, "db"));
+  try {
+    await store.db.prepare("INSERT INTO projects VALUES(?,?)").run("p", "synthetic");
+    const p = { ...policy("p"), timezone: "UTC", from: "2026-11-01T00:00:00Z", until: "2026-11-03T00:00:00Z", campaignDailyCeilingMinor: 1000 };
+    const ledger = new AdvertisingBudgets(store, () => now, "provider");
+    await ledger.configure(p);
+    // Synthetic trusted-host record tests SQL accounting only, never actual spend coverage.
+    await ledger.observe("p", { policyId: p.id, from: p.from, until: p.until, day: "2026-11-01", currency: "USD", timezone: "UTC",
+      observedAt: new Date(now).toISOString(), todayMinor: 0, periodMinor: 0, source: "provider", receipt: "synthetic-accounting-only" });
+    const c = campaign("p"); c.material.timezone = "UTC"; c.material.startAt = p.from; c.material.endAt = p.until;
+    c.material.settings = (await import("./capability-fixtures.js")).fixtureSettings("linkedin", "123", "42");
+    const op = operation(c);
+    await ledger.reserve(c, op);
+    const original = (await store.list<AdvertisingBudgetReservation>("p", "advertisingBudgetReservation"))[0]!;
+    assert.equal(original.dailyMinor, 900); assert.equal(original.periodMinor, 1800);
+    c.material.advertisingBudget!.daily!.minor = 100;
+    await ledger.assert(c, op);
+    assert.equal((await store.get<AdvertisingBudgetReservation>("p", "advertisingBudgetReservation", original.id)).dailyMinor, 900);
+    await ledger.settle(c, op, "enabled");
+    await ledger.settle(c, { ...op, id: "pause", kind: "pause" }, "paused");
+    assert.equal((await store.get<AdvertisingBudgetReservation>("p", "advertisingBudgetReservation", original.id)).state, "active");
+    await assert.rejects(ledger.reserve(c, { ...op, id: "retry" }), /requires_reconciliation/);
+    await assert.rejects(ledger.configure({ ...p, dailyCeilingMinor: 9000 }), /unsettled_reservations/);
+    const lifetimeOnly = { ...campaign("p", "lifetime"), material: { ...c.material, advertisingBudget: { lifetime: c.material.budget } } };
+    await assert.rejects(ledger.reserve(lifetimeOnly, operation(lifetimeOnly)), /explicit_daily_budget_required/);
+    const meta = { ...campaign("p", "meta"), material: { ...c.material, audience: { provider: "meta" as const, locations: ["US"], expansion: false as const } } };
+    await assert.rejects(ledger.reserve(meta, operation(meta)), /meta_daily_budget_semantics_unverified/);
+  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

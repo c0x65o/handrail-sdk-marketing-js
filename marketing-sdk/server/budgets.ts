@@ -1,3 +1,4 @@
+import { dailyExposureMinor } from "../core/index.js";
 import type { Campaign, Operation } from "../core/index.js";
 import { Store, digest, requireThat } from "./store.js";
 import { advertisingBudget, instant, text } from "./validation.js";
@@ -100,10 +101,17 @@ export class AdvertisingBudgets {
     requireThat(Date.parse(c.material.startAt) >= Date.parse(p.from) && Date.parse(c.material.endAt) <= Date.parse(p.until), "campaign_outside_budget_period");
     requireThat(daily && daily.currency === p.currency && c.material.budget.currency === p.currency &&
       c.material.timezone === p.timezone, "explicit_daily_budget_required");
+    if (this.evidence === "provider") {
+      requireThat(c.material.audience.provider !== "meta", "meta_daily_budget_semantics_unverified");
+      requireThat(c.material.audience.provider !== "linkedin" || c.material.timezone === "UTC", "linkedin_utc_required");
+    }
     advertisingBudget(c.material.advertisingBudget!);
     requireThat(c.material.advertisingBudget!.lifetime.minor === c.material.budget.minor &&
       c.material.advertisingBudget!.lifetime.currency === c.material.budget.currency, "legacy_lifetime_budget_mismatch");
-    requireThat(daily.minor <= p.campaignDailyCeilingMinor && c.material.budget.minor <= p.campaignLifetimeCeilingMinor,
+    // Fixtures can exercise SQL arithmetic, never qualify native budget semantics.
+    const exposure = dailyExposureMinor(c.material) ?? (this.evidence === "fixture" ? daily.minor : null);
+    requireThat(exposure !== null, "daily_exposure_unverified");
+    requireThat(exposure <= p.campaignDailyCeilingMinor && c.material.budget.minor <= p.campaignLifetimeCeilingMinor,
       "campaign_budget_ceiling_exceeded");
     const spend = await this.store.get<ObservedAdvertisingSpend>(p.projectId, "advertisingObservedSpend", p.id);
     requireThat(spend.from === p.from && spend.until === p.until && spend.currency === p.currency && spend.timezone === p.timezone &&
@@ -114,12 +122,12 @@ export class AdvertisingBudgets {
     // Conservative remaining headroom: observations plus new commitments. Never
     // subtract observed spend from an uncertain operation's reservation.
     const days = remainingCalendarDays(at, p.until, p.timezone);
-    const period = Math.min(c.material.budget.minor, daily.minor * days);
-    const dailyTotal = rows.reduce((n, r) => n + r.dailyMinor, own?.dailyMinor ?? daily.minor);
+    const period = Math.min(c.material.budget.minor, exposure * days);
+    const dailyTotal = rows.reduce((n, r) => n + r.dailyMinor, own?.dailyMinor ?? exposure);
     const periodTotal = rows.reduce((n, r) => n + r.periodMinor, own?.periodMinor ?? period);
     requireThat(spend.todayMinor + dailyTotal <= p.dailyCeilingMinor &&
       spend.periodMinor + periodTotal <= p.periodCeilingMinor, "advertising_budget_exceeded");
-    return { dailyMinor: own?.dailyMinor ?? daily.minor, periodMinor: own?.periodMinor ?? period, observedSpendReceipt: spend.receipt };
+    return { dailyMinor: own?.dailyMinor ?? exposure, periodMinor: own?.periodMinor ?? period, observedSpendReceipt: spend.receipt };
   }
   async reserve(c: Campaign, operation: Operation) {
     await this.store.transaction(async () => {
@@ -151,7 +159,7 @@ export class AdvertisingBudgets {
         const rows = await this.store.list<AdvertisingBudgetReservation>(p.projectId, "advertisingBudgetReservation");
         for (const r of rows.filter(r => r.policyId === p.id && r.projectId === c.projectId && r.campaignId === c.id &&
           r.state !== "released" && (outcome === "paused" || r.operationId === operation.id))) {
-          await this.store.put(p.projectId, "advertisingBudgetReservation", r.id, { ...r, state: outcome === "enabled" ? "active" : "released" });
+          await this.store.put(p.projectId, "advertisingBudgetReservation", r.id, { ...r, state: outcome === "enabled" || (outcome === "paused" && this.evidence === "provider" && c.material.settings) ? "active" : "released" });
         }
       }
     });

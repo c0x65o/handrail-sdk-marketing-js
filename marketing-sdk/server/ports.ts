@@ -17,10 +17,12 @@ export interface ProviderPort {
     grant: Grant,
     campaign?: Campaign,
     assets?: Asset[],
+    intent?: Permission,
   ): Promise<{
     accountId: string;
     currency: string;
     timezone: string;
+    timezoneSource?: "provider_account" | "provider_reporting_and_budget_policy";
     permissions: Permission[];
   }>;
   plan(campaign: Campaign, grant: Grant, assets: Asset[]): unknown;

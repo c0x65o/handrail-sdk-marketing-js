@@ -1,3 +1,5 @@
+export * from "./capabilities.js";
+import type { ProviderSettings, ApplicantGoal, AccountCapabilityEvidence, TargetingOption } from "./capabilities.js";
 /** Browser-safe public contract. No credentials, React or server imports. */
 export type Provider = "meta" | "google" | "linkedin";
 export type Role =
@@ -23,6 +25,7 @@ export type MarketingPurpose = "acquisition" | "recruitment";
 export interface ReportingBasis {
   window: "completed-provider-days" | "fixture-window" | "partial-or-open-window";
   timezone: string;
+  timezoneSource?: "provider_account" | "provider_reporting_and_budget_policy";
   from: string;
   until: string;
   /** Exclusive end; provider aggregates are observations, never delivery proof. */
@@ -39,6 +42,9 @@ export interface Audience {
   expansion: false;
 }
 export interface Material {
+  /** Omitted only for legacy inspection/compatibility. */
+  settings?: ProviderSettings;
+  applicantGoal?: ApplicantGoal;
   name: string;
   headline: string;
   body: string;
@@ -66,7 +72,9 @@ export interface Campaign {
   receipt: Receipt | null;
 }
 /** Local planning material. Missing/blank fields are not publication readiness. */
-export type DraftMaterial = Omit<Partial<Material>, "name" | "audience" | "budget"> & {
+export type PartialSettings<T> = T extends (infer U)[] ? PartialSettings<U>[] : T extends object ? { [K in keyof T]?: PartialSettings<T[K]> } : T;
+export type DraftMaterial = Omit<Partial<Material>, "name" | "audience" | "budget" | "settings"> & {
+  settings?: PartialSettings<ProviderSettings>;
   name: string;
   audience?: Partial<Audience>;
   budget?: Partial<Money>;
@@ -99,12 +107,17 @@ export interface Grant {
   accountId: string;
   label: string;
   currency: string;
+  /** Provider reporting/budget zone. LinkedIn is UTC by policy, not an account field. */
   timezone: string;
   permissions: Permission[];
   expiresAt: string;
   revokedAt: string | null;
   secretRef: string;
   pageId?: string;
+  instagramUserId?: string;
+  /** Trusted account-scoped resolver/eligibility evidence, never browser authority. */
+  targetingOptions?: TargetingOption[];
+  capabilityEvidence?: AccountCapabilityEvidence[];
   organizationId?: string;
 }
 export type PublicGrant = Omit<Grant, "secretRef">;
@@ -227,7 +240,7 @@ export interface FirstPartyEvent {
   id: string;
   projectId: string;
   campaignId: string | null;
-  kind: "click" | "form_completed" | "qualified" | "purchase" | "application_completed" | "applicant_qualified" | "hired";
+  kind: "click" | "form_completed" | "qualified" | "purchase" | "applicant_request_mou" | "application_completed" | "applicant_qualified" | "hired";
   /** Server-selected collector namespace; omission preserves the legacy namespace. */
   sourceId?: string;
   purpose?: MarketingPurpose;
@@ -287,7 +300,10 @@ export interface Results {
   /** Additive v2 basis; leads retains the historical unique-person contract. */
   completedSubmissions?: Metric;
   uniquePeople?: Metric;
+  applicantRequests?: Metric;
   applicants?: Metric;
+  purpose?: MarketingPurpose;
+  applicantGoal?: ApplicantGoal;
   qualifiedApplicants?: Metric;
   hires?: Metric;
   excludedTestEvents?: Metric;
@@ -335,6 +351,7 @@ export interface Commands {
   };
   saveCampaign: {
     input: {
+      requestKey?: string;
       id?: string;
       expectedRevision?: number;
       grantId: string;

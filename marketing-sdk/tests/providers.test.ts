@@ -486,7 +486,6 @@ test("native Meta and LinkedIn verification reuse existing clients and filter ef
       return Response.json({
         id: "123",
         currency: "USD",
-        timeZone: "America/Chicago",
         reference: "urn:li:organization:43",
         servingStatuses: ["RUNNABLE"],
         status: "ACTIVE",
@@ -495,6 +494,7 @@ test("native Meta and LinkedIn verification reuse existing clients and filter ef
     const linked = await li.verify({
       ...g,
       provider: "linkedin",
+      timezone: "UTC",
       accountId: "123",
     });
     assert.ok(linked.permissions.includes("activate"));
@@ -845,7 +845,8 @@ test("native reporting refuses partial/future provider days before transport and
   const dir = mkdtempSync(join(tmpdir(), "report-days-")), store = await testStore(join(dir, "db"));
   try {
     let reads = 0;
-    const provider = new NativeProvider("meta", { use: async (_g, fn) => fn({ accessToken: "fixture" }) }, store, async () => {
+    const provider = new NativeProvider("meta", { use: async (_g, fn) => fn({ accessToken: "fixture" }) }, store, async (url) => {
+      if (new URL(String(url)).pathname.endsWith("/act_123")) return Response.json({ id: "act_123", currency: "USD", timezone_name: "America/Chicago" });
       reads++; return Response.json({ data: [] });
     });
     const campaign: Campaign = { ...c, receipt: { ids: { campaign: "123" }, payloadDigest: "fixture", intent: "paused", delivery: "unverified",

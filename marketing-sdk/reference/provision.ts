@@ -53,6 +53,7 @@ export async function provision(store: Store, input: Provision) {
           Date.parse(g.expiresAt) > Date.now(),
         "invalid_account_grant",
       );
+      requireThat(g.provider !== "linkedin" || g.timezone === "UTC", "linkedin_utc_required");
       await store.put(g.projectId, "grant", g.id, g);
     }
     for (const g of input.generationGrants) {
