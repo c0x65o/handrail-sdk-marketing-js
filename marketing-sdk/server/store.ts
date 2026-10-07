@@ -34,6 +34,8 @@ export interface Principal {
   userId: string;
   /** Set by authenticate, never accepted from command input. */
   sessionTokenHash?: string;
+  /** Opaque reference from trusted host authentication, validated afresh by Connections.sessions. Never command input. */
+  externalSessionRef?: string;
 }
 export class Store {
   readonly db: Database;

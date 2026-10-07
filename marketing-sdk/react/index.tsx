@@ -1,3 +1,5 @@
+import { MarketingConnections } from "./connections.js";
+export { MarketingConnections } from "./connections.js";
 import { AudienceFields, GuidedFields, GuidedMaterialEditor, DraftCard, initialMaterial, DraftPromotion } from "./guided.js";
 import { capabilityBlockers, capabilityStatus, dailyExposureMinor, providerBudgetBlockers } from "../core/index.js";
 import React, { useEffect, useRef, useState } from "react";
@@ -262,7 +264,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
       const next = await client.call("workspace", {});
       if (!scope.active || request < scope.settled) return;
       scope.settled = request;
-      setData(next);
+      setData(previous => { if (!previous && next.grants.length === 0) setTab("Connections"); return next; });
       setReadError("");
     } catch (e) {
       if (!scope.active || request < scope.settled) return;
@@ -348,6 +350,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
           {tabs.map((t) => (
             <button
               className={tab === t ? "selected" : ""}
+              aria-current={tab === t ? "page" : undefined}
               key={t}
               onClick={() => setTab(t)}
             >
@@ -510,116 +513,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
             </>}
           </>
         )}
-        {tab === "Connections" && (
-          <>
-            <p className="intro">
-              Select a project-granted account. Resume verifies identity and
-              permissions again; a browser sign-in alone never proves API
-              access.
-            </p>
-            <div className="grid">
-              {data.grants.map((g) => {
-                const setup = data.setups
-                  .filter((s) => s.grantId === g.id)
-                  .at(-1);
-                return (
-                  <section className="card" key={g.id}>
-                    <div className="eyebrow">{g.provider}</div>
-                    <h2>{g.label}</h2>
-                    <p>
-                      {g.accountId} · {g.currency}
-                      <br />
-                      {g.timezone}
-                    </p>
-                    <span className="badge">
-                      {setup?.state.replaceAll("_", " ") || "Not verified"}
-                    </span>
-                    {setup?.reason && (
-                      <p>{setup.reason.replaceAll("_", " ")}</p>
-                    )}
-                    <p className="muted">
-                      {setup?.verifiedAt
-                        ? `Verified ${new Date(setup.verifiedAt).toLocaleString()}`
-                        : "Readiness has not been observed."}
-                    </p>
-                    <div className="actions">
-                      {!setup ? (
-                        <button
-                          disabled={busy || !canEdit}
-                          onClick={() =>
-                            void act(() =>
-                              client.call("setup", {
-                                grantId: g.id,
-                                requestKey: key(),
-                              }),
-                            )
-                          }
-                        >
-                          Connect {g.provider}
-                        </button>
-                      ) : (
-                        <button
-                          disabled={busy || !canEdit}
-                          onClick={() =>
-                            void act(() =>
-                              client.call("resumeSetup", {
-                                setupId: setup.id,
-                                expectedRevision: setup.revision,
-                              }),
-                            )
-                          }
-                        >
-                          Resume and verify
-                        </button>
-                      )}
-                      {setup?.handoffUrl &&
-                        (data.mode === "fixture" ? (
-                          <button
-                            className="secondary"
-                            disabled={
-                              !canEdit || data.principalKind !== "human"
-                            }
-                            onClick={() =>
-                              void act(async () => {
-                                const r = await fetch(setup.handoffUrl!, {
-                                  method: "POST",
-                                  headers: {
-                                    "content-type": "application/json",
-                                  },
-                                  body: "{}",
-                                });
-                                if (!r.ok) throw new Error("takeover_denied");
-                              })
-                            }
-                          >
-                            Confirm fixture takeover
-                          </button>
-                        ) : (
-                          <a
-                            className="button secondary"
-                            href={setup.handoffUrl}
-                          >
-                            Continue securely with {g.provider}
-                          </a>
-                        ))}
-                    </div>
-                    <details>
-                      <summary>Declared capabilities</summary>
-                      <p>
-                        {setup?.capabilities.join(", ") ||
-                          "Awaiting verification"}
-                      </p>
-                      <p>
-                        Account creation, payment changes and provider access
-                        review require their own authority.
-                      </p>
-                    </details>
-                  </section>
-                );
-              })}
-            </div>
-          </>
-        )}
+        {tab === "Connections" && <MarketingConnections client={client} embedded onContinue={() => { void refresh(); setTab("Workspace"); }} />}
         {tab === "Creative" &&
           (!campaign ? (
             <Empty />

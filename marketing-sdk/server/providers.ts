@@ -11,6 +11,7 @@ import type {
 import type { ProviderPort } from "./ports.js";
 import { digest, requireThat, Store, DomainError } from "./store.js";
 import { providerDayWindow } from "./reporting.js";
+import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
@@ -378,29 +379,61 @@ export class NativeProvider implements ProviderPort {
       requireThat((this.name === "meta" ? accountPath(v.account.id) === accountPath(g.accountId) : v.account.id === g.accountId) &&
         v.account.currency === g.currency && (intent === "pause" && this.name === "linkedin" || v.account.timezoneName === g.timezone),
         "provider_account_context_changed");
+      if (this.name === "linkedin") return {
+        accountId: g.accountId, currency: v.account.currency, timezone: v.account.timezoneName,
+        timezoneSource: "provider_reporting_and_budget_policy",
+        permissions: await this.linkedInPermissions(client, g, v, undefined, intent),
+      };
       const permissions: Permission[] = ["setup"];
-      if (
-        v.permissions.adsRead &&
-        (this.name === "meta" || v.permissions.adsReporting)
-      )
-        permissions.push("report");
+      if (v.permissions.adsRead) permissions.push("report");
       if (
         v.permissions.adsManagement &&
         v.paymentReady &&
-        (this.name === "meta"
-          ? v.assets.page.accessible
-          : v.assets.organization.matchesAccountReference &&
-            v.permissions.organizationSocialWrite)
+        v.assets.page.accessible
       )
         permissions.push("prepare", "activate", "pause");
       return {
         accountId: g.accountId, // Return the grant spelling only after observed identity comparison.
-        timezoneSource: this.name === "linkedin" ? "provider_reporting_and_budget_policy" : "provider_account",
+        timezoneSource: "provider_account",
         currency: v.account.currency,
         timezone: v.account.timezoneName,
         permissions,
       };
     });
+  }
+  /** Reuse the Connections finder/ACL contract at the native operation boundary.
+   * Scopes alone never establish account/Page roles. Page denial leaves separately
+   * verified reporting and safety-pause access available. */
+  private async linkedInPermissions(client: any, g: Grant, verified?: any, guard: () => Promise<void> = async () => {}, intent?: Permission) {
+    await guard();
+    const v = verified ?? await client.verifyConnection({ adAccountId: g.accountId, organizationId: g.organizationId });
+    await guard();
+    requireThat(v.account.id === g.accountId && v.account.currency === g.currency, "provider_account_context_changed");
+    const credentials = { accessToken: client.accessToken, clientId: client.clientId, clientSecret: client.clientSecret };
+    const discovery = new ConnectionDiscovery(this.fetcher);
+    const accounts = await discovery.accounts("linkedin", credentials, undefined, guard);
+    const account = accounts.rows.find(a => a.id === g.accountId);
+    requireThat(account && account.currency === g.currency, "provider_account_role_missing");
+    const permissions: Permission[] = ["setup"];
+    const scopes = await discovery.linkedinScopes(credentials, [], guard);
+    if (scopes.includes("r_ads_reporting") && (scopes.includes("r_ads") || scopes.includes("rw_ads"))) permissions.push("report");
+    if (scopes.includes("rw_ads") && account.permissions.includes("pause")) permissions.push("pause");
+    if (intent !== "report" && intent !== "pause" && g.organizationId && account.organizationId === g.organizationId && v.assets.organization.matchesAccountReference &&
+        v.paymentReady && account.permissions.includes("prepare") && connectionScopes("linkedin", ["prepare"]).every(s => scopes.includes(s))) {
+      try {
+        await discovery.identities("linkedin", credentials, account, undefined, guard);
+        await discovery.linkedinScopes(credentials, connectionScopes("linkedin", ["prepare"]), guard);
+        permissions.push("prepare", "activate");
+      } catch (error) {
+        if (!(error instanceof DomainError) || !["provider_page_role_missing", "provider_member_mismatch", "provider_identity_mismatch", "provider_access_expired_or_denied", "provider_scope_missing"].includes(error.code)) throw error;
+      }
+    }
+    // Recheck even after Page denial; cached exchange scope cannot override loss.
+    const finalScopes = await discovery.linkedinScopes(credentials, [], guard);
+    await guard();
+    return permissions.filter(p => p === "setup" || (p === "report"
+      ? finalScopes.includes("r_ads_reporting") && (finalScopes.includes("r_ads") || finalScopes.includes("rw_ads"))
+      : connectionScopes("linkedin", [p]).every(s => finalScopes.includes(s))));
   }
   private async accountContext(client: any, g: Grant) {
     const a = this.name === "meta" ? await client.getObject(accountPath(g.accountId), "id,currency,timezone_name") : await client.getAdAccount(g.accountId);
@@ -518,7 +551,11 @@ export class NativeProvider implements ProviderPort {
     };
     return await this.use(g, async (client) => {
       if (this.name === "linkedin") {
-        client.beforeWrite = beforeWrite;
+        client.beforeWrite = async () => {
+          const guard = async () => { await beforeWrite(); };
+          requireThat((await this.linkedInPermissions(client, g, undefined, guard, "prepare")).includes("prepare"), "provider_capability_missing");
+          await beforeWrite();
+        };
         client.onAssetInitialized = async (image: string) => { ids.image = image; await retain({ ...ids }); };
       }
       if (c.material.settings) await this.verifySettings(client, c, g);
@@ -1018,7 +1055,12 @@ export class NativeProvider implements ProviderPort {
     };
     if (activate) validateAccountCapability(c, g, true);
     return await this.use(g, async (client) => {
-      if (this.name === "linkedin") client.beforeWrite = beforeWrite;
+      if (this.name === "linkedin") client.beforeWrite = async () => {
+        const guard = async () => { await beforeWrite(); };
+        const intent = activate ? "activate" : "pause";
+        requireThat((await this.linkedInPermissions(client, g, undefined, guard, intent)).includes(intent), "provider_capability_missing");
+        await beforeWrite();
+      };
       if (activate && c.material.settings) await this.verifySettings(client, c, g);
       const before = await this.snapshot(client, g, ids);
       if (activate && this.name === "meta") requireThat(before.material.campaign.is_adset_budget_sharing_enabled === false,
@@ -1182,6 +1224,7 @@ export class NativeProvider implements ProviderPort {
         g.timezone,
       ).slice(0, 10);
     const values = await this.use(g, async (client) => {
+      if (this.name === "linkedin") requireThat((await this.linkedInPermissions(client, g, undefined, undefined, "report")).includes("report"), "provider_capability_missing");
       if (this.name !== "google") await this.accountContext(client, g);
       if (this.name === "google") {
         const key = c.receipt!.ids.campaign!.split("/").at(-1);

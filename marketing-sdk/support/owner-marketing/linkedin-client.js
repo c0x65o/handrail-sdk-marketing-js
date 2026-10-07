@@ -219,7 +219,7 @@ export class LinkedInMarketingClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let response;
     try {
-      response = await this.fetchImpl(url, { ...init, signal: controller.signal });
+      response = await this.fetchImpl(url, { ...init, redirect: "error", signal: controller.signal });
     } catch (error) {
       throw new LinkedInMarketingError(error?.name === "AbortError" ? `${label} timed out` : "LinkedIn is unavailable", { code: "provider_unavailable", status: 503, retryable: true });
     } finally { clearTimeout(timer); }
@@ -675,6 +675,8 @@ export class LinkedInMarketingClient {
     try {
       uploaded = await this.fetchImpl(uploadUrl, {
         method: "PUT",
+        redirect: "error",
+        signal: AbortSignal.timeout(this.timeoutMs),
         headers: {
           authorization: `Bearer ${accessToken}`,
           "content-type": mediaType || (kind === "image" ? "image/jpeg" : "application/pdf"),
@@ -768,13 +770,22 @@ export class LinkedInMarketingClient {
     return this.introspectToken({ retryInactive: false });
   }
 
-  async verifyConnection({ adAccountId, organizationId = null } = {}) {
+  /** @param {{adAccountId: string, organizationId?: string | null}} input */
+  async verifyConnection({ adAccountId, organizationId = null }) {
     const id = accountId(adAccountId);
     const token = await this.introspectToken();
     const inspectedAccessToken = this.accessToken;
-    // LinkedIn can report a freshly refreshed token as revoked while accepting
-    // that same token at the Marketing API. Require a real account read before
-    // deciding access works; scope grants still need OAuth evidence.
+    // Account reads and refresh responses cannot override current introspection
+    // denial. Historical rw_ads grants remain readable; missing or contradictory
+    // current evidence requires fresh qualification.
+    const assertToken = () => {
+      if (token.active !== true || inspectedAccessToken !== this.accessToken || (token.status !== undefined && token.status !== "active") ||
+          (token.client_id !== undefined && token.client_id !== this.clientId) ||
+          (token.auth_type !== undefined && token.auth_type !== "3L") ||
+          (token.expires_at !== undefined && (!Number.isFinite(token.expires_at) || token.expires_at * 1000 <= this.now())))
+        throw new LinkedInMarketingError("Current token authority was not verified", { code: "verification_failed", status: 403 });
+    };
+    assertToken();
     const account = await this.getAdAccount(id);
     // adAccounts has no account timezone. Reporting and daily budgets use UTC
     // by provider policy; unrelated extra response fields are not provenance.
@@ -782,9 +793,10 @@ export class LinkedInMarketingClient {
       : Number.isSafeInteger(account.id) && account.id > 0 ? String(account.id) : null;
     if (observedId !== id)
       throw new LinkedInMarketingError("Account identity was not verified", { code: "verification_failed", status: 502 });
-    const introspectionApplies = token.active === true && inspectedAccessToken === this.accessToken;
-    const granted = this.accessTokenScopes ?? scopes(introspectionApplies ? token.scope || token.scopes : null);
-    const adsRead = granted.includes("rw_ads");
+    assertToken();
+    const introspectionApplies = true;
+    const granted = scopes(token.scope ?? token.scopes);
+    const adsRead = granted.includes("r_ads") || granted.includes("rw_ads");
     const servingStatuses = Array.isArray(account.servingStatuses) ? account.servingStatuses.map(String) : [];
     const referencedOrganizationId = /^urn:li:organization:(\d+)$/.exec(String(account.reference || ""))?.[1] || null;
     const resolvedOrganizationId = organizationId ? String(organizationId).replace(/^urn:li:organization:/, "") : referencedOrganizationId;
@@ -805,7 +817,7 @@ export class LinkedInMarketingClient {
       },
       permissions: {
         granted,
-        missing: adsRead ? [] : ["rw_ads"],
+        missing: adsRead ? [] : ["r_ads"],
         adsRead,
         adsManagement: granted.includes("rw_ads"),
         adsReporting: granted.includes("r_ads_reporting"),

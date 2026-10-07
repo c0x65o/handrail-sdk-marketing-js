@@ -1,13 +1,14 @@
 import { useMemo } from "react";
-import { createMarketingClient } from "../core/index.js";
-import { MarketingWorkspace } from "../react/index.js";
-import "../react/style.css";
+import { createMarketingClient } from "@handrail/marketing";
+import { MarketingWorkspace } from "@handrail/marketing/react";
+import "@handrail/marketing/react/style.css";
 
-/** Host supplies its authenticated project selection and same-origin API. */
-export function EmbeddedMarketing({ projectId }: { projectId: string }) {
+/** Host supplies project selection, same-origin API and a non-secret UI epoch
+ * that changes on login/logout/session replacement (never a session token). */
+export function EmbeddedMarketing({ projectId, sessionEpoch }: { projectId: string; sessionEpoch: string }) {
   const client = useMemo(
     () => createMarketingClient(window.location.origin, projectId),
-    [projectId],
+    [projectId, sessionEpoch],
   );
-  return <MarketingWorkspace key={projectId} client={client} />;
+  return <MarketingWorkspace key={`${projectId}:${sessionEpoch}`} client={client} />;
 }

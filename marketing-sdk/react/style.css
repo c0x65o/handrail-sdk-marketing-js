@@ -611,3 +611,28 @@
 @container handrail-marketing (max-width: 380px) {
   .marketing-root nav button { font-size: 10px; padding-inline: 2px; white-space: nowrap; }
 }
+
+/* Connections uses its embedding container, including standalone mounts. */
+.marketing-root .connections-content { padding: 12px; min-width: 0; }
+.marketing-root .connection-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 265px), 1fr)); gap: 18px; }
+.marketing-root .connection-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(230px, 1fr); align-items: start; gap: 18px; }
+.marketing-root .connection-steps { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.marketing-root .connection-steps li { flex: 1 1 140px; border-top: 3px solid #cbd0d9; padding: 10px; }
+.marketing-root .connection-steps li[aria-current] { border-color: #315bea; background: #e9eefc; }
+.marketing-root .connection-steps span { display: block; font-size: 13px; }
+.marketing-root .connection-choice { display: flex; align-items: flex-start; gap: 12px; border: 1px solid #cbd0d9; border-radius: 8px; padding: 14px; cursor: pointer; }
+.marketing-root .connection-choice input { flex: 0 0 20px; width: 20px; }
+.marketing-root .connection-saved { margin-top: 18px; border-top: 1px solid #cbd0d9; padding-top: 14px; }
+.marketing-root .connection-review { border: 2px solid #315bea; padding: 16px; border-radius: 8px; margin: 16px 0; }
+.marketing-root .connections-content code,
+.marketing-root .connections-content p,
+.marketing-root .connections-content li,
+.marketing-root .connections-content button { overflow-wrap: anywhere; white-space: normal; }
+.marketing-root .connections-content fieldset { min-width: 0; border: 1px solid #cbd0d9; margin: 16px 0; padding: 12px; }
+.marketing-root .connection-evidence { color: #20232b; background: #fff; padding: 22px; }
+@container handrail-marketing (max-width: 760px) {
+  .marketing-root .connection-layout { grid-template-columns: minmax(0, 1fr); }
+  .marketing-root .connections-content { padding: 4px; }
+  .marketing-root .connection-review { padding: 12px; }
+}
+.marketing-root .connection-project { display: block; font-weight: 700; font-size: 14px; }

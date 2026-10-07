@@ -259,6 +259,9 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     let objects = new Map<string, any>(), writes = 0, loseRead = false, drift: ((o: any, collection: string) => void) | null = null;
     const fetcher: typeof fetch = async (raw, init) => {
       const url = new URL(String(raw)), path = decodeURIComponent(url.pathname), last = path.split("/").at(-1)!;
+      if (path.endsWith("/introspectToken")) return Response.json({ active: true, scope: "rw_ads r_ads_reporting r_organization_admin w_organization_social r_organization_social" });
+      if (path.endsWith("/adAccountUsers")) return Response.json({ elements: [{ account: "urn:li:sponsoredAccount:123", user: "urn:li:person:fixture", role: "ACCOUNT_MANAGER" }], paging: { start: 0, count: 25, total: 1 } });
+      if (path.endsWith("/organizationAcls")) return Response.json({ elements: [{ organization: "urn:li:organization:42", roleAssignee: "urn:li:person:fixture", role: "ADMINISTRATOR", state: "APPROVED" }], paging: { start: 0, count: 25, total: 1 } });
       if (init?.method === "PUT") { writes++; return new Response(null, { status: 201 }); }
       if (init?.method === "POST") {
         writes++;
@@ -274,7 +277,7 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         return Response.json({}, { status: 201, headers: { "x-restli-id": id } });
       }
       if (path === "/rest/campaignConversions") return Response.json({ elements: [] });
-      if (path === "/rest/adAccounts/123") return Response.json({ id: 123, currency: "USD" });
+      if (path === "/rest/adAccounts/123") return Response.json({ id: 123, currency: "USD", status: "ACTIVE", servingStatuses: ["RUNNABLE"], reference: "urn:li:organization:42" });
       if (path.includes("/images/")) return Response.json({ id: "urn:li:image:fixture", owner: "urn:li:organization:42", status: "AVAILABLE" });
       if (path.includes("/adTargetingEntities")) return Response.json({ elements: [{ urn: "urn:li:geo:1", name: "United States" }] });
       if (loseRead && last === "urn:li:sponsoredCreative:103") { loseRead = false; throw new Error("lost acknowledgment fixture"); }

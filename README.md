@@ -1,5 +1,22 @@
 # @handrail/marketing
 
+**Product direction and acceptance:** [From idea to accountable outcome — maintained
+product specification](marketing-sdk/PRODUCT.md). Start with the [first-time
+Connections journey](marketing-sdk/design/CONNECTIONS.md), [public contract design](marketing-sdk/design/CONNECTIONS-CONTRACT.md)
+and [independent review gates](marketing-sdk/design/ACCEPTANCE.md).
+
+Marketing 0.1.7 is a frozen engineering qualification baseline, not acceptance of
+the complete marketing product. The deployed Preview described in the work request
+is a custom draft form backed by `MarketingServer.unconnected`, not adoption of
+`MarketingWorkspace`. A package upgrade alone cannot supply its missing journey.
+The reviewed design now has an uncommitted shared server/React advertising
+Connections candidate. Manual OpenAI/xAI secure configuration now has an SDK-owned
+private route and harmless status adapter; independent review, live, native and
+product qualification remain open.
+Historical receipts remain intact.
+See the [independent review verdict](marketing-sdk/design/ACCEPTANCE.md#independent-review-verdict-2026-10-06)
+for corrected consent contracts, the bounded implementation path and native UI gate.
+
 Typed headless marketing workflows, durable trusted-server authority, optional
 React components, and a reference HTTP host. Node 22.23.1 (22.x) is required.
 
@@ -17,8 +34,8 @@ publishing job or registry package is required. Keep the matching npm lockfile.
 | Import | Purpose |
 | --- | --- |
 | `@handrail/marketing` or `/core` | Browser-safe types and `createMarketingClient` |
-| `@handrail/marketing/server` | MarketingServer, Store, provider/billing/generation ports, HostAgent and credential cipher |
-| `@handrail/marketing/react` | Optional MarketingRoot, MarketingWorkspace, ApprovalPanel, MaterialReview |
+| `@handrail/marketing/server` | MarketingServer, createConnections, Store, provider/billing/generation ports, HostAgent and credential cipher |
+| `@handrail/marketing/react` | Optional MarketingRoot, MarketingWorkspace, MarketingConnections, ApprovalPanel, MaterialReview |
 | `@handrail/marketing/react/style.css` | Optional UI styles |
 | `@handrail/marketing/agent` | Restricted tool dispatcher; no human approval tool or browser runtime |
 | `@handrail/marketing/reference` | runtime, createHost, bootstrapFixture, openDatastore, provision |
@@ -116,4 +133,32 @@ Meta/LinkedIn settings, account eligibility gates and guided fields; legacy
 campaign inspection/safety pause remain available, while new Meta/LinkedIn
 preparation and activation require explicit settings. Independent source review fixed contract defects; Meta daily budget semantics, live
 account qualification, complete guided pickers and host cutover remain gated. This
-workspace candidate has not been published. See the linked review handoff.
+historical workspace-candidate description predates this checkout's 0.1.7 baseline.
+See the linked review handoff for its original scope; source/fixture qualification
+does not establish a reusable first-time journey or deployed product acceptance.
+
+## Connections candidate (unpublished)
+
+The shared advertising journey starts with zero grants: requirements → exact human
+provider-access review → SDK secure handoff → authenticated account and context
+selection → separate project-access review → fresh verification → one real Grant.
+Manual setup works without Agent. OpenAI/xAI use SDK-owned private secure entry,
+exact persistent-access consent, encrypted custody, status and local disconnect.
+Configuration does not issue a generation grant or authorize billing. No paid
+verification or provider campaign mutation is used. See the [creative integration](marketing-sdk/README.md#manual-creative-connections).
+
+Use the public-only [server adapter example](marketing-sdk/examples/connections-server.ts)
+and [Workspace mount](marketing-sdk/examples/embedded.tsx). The standalone
+`MarketingConnections` also accepts the same `MarketingClient`; replace its
+`client` or `sessionKey` when host identity/project changes. New commands route
+through `MarketingServer.call`; the factory's Fetch-compatible `routes` owns OAuth
+handoff/callbacks. A trusted static `returnPath` may select the host Marketing route.
+Do not log callback query strings upstream. Read the [implemented contracts and
+retention](marketing-sdk/design/CONNECTIONS-CONTRACT.md#candidate-implementation-contracts)
+before integrating. Ordinary PostgreSQL startup remains migration-free.
+
+`node marketing-sdk/tests/consumer.mjs --connections` compiles the actual public
+mount/adapter in a disposable packed consumer and exercises real HTTP and SQLite
+with synthetic provider boundaries. A local pack projection does **not** qualify
+installation from a newly published full Git SHA. See [candidate evidence and
+limits](marketing-sdk/design/ACCEPTANCE.md#connections-implementation-candidate-2026-10-06).

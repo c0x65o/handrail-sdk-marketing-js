@@ -8,3 +8,8 @@ export * from "./billing.js";
 export * from "../support/vault-crypto.js";
 export * from "./budgets.js";
 export * from "./reporting.js";
+
+export * from "./connections.js";
+
+export * from "./credential-custody.js";
+export * from "./creative-connections.js";

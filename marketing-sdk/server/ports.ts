@@ -100,6 +100,8 @@ export interface AgentPort {
   }>;
 }
 export interface BillingPort {
+  /** Harmless local metadata only: no provider call, reservation or spend authority. */
+  inspect?(grant: GenerationGrant): Promise<{ state: "configured" | "unavailable"; currency?: string; maxUnitMinor?: number; expiresAt?: string }>;
   /** Existing, externally enforced generation authority; never inferred from ads authority. */
   authorize(grant: GenerationGrant, job: GenerationJob): Promise<void>;
 }

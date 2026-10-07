@@ -1,6 +1,6 @@
 {
   "name": "@handrail/marketing",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "engines": {
@@ -20,7 +20,10 @@
       "types": "./.marketing-build/react/index.d.ts",
       "import": "./.marketing-build/react/index.js"
     },
-    "./react/style.css": "./marketing-sdk/react/style.css",
+    "./react/style.css": {
+      "types": "./marketing-sdk/react/style.d.ts",
+      "default": "./marketing-sdk/react/style.css"
+    },
     "./package.json": "./package.json",
     "./core": {
       "types": "./.marketing-build/core/index.d.ts",

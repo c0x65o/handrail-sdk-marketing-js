@@ -421,3 +421,15 @@ promotion after destination capture. Server-retained unresolved results survive
 those UI lifetimes. Fresh local proof is in
 `artifacts/combined-review-20261006/handoff.json`; this does not qualify any platform
 cutover, live account, Meta daily mode or deployment.
+
+## LinkedIn Connections source qualification (2026-10-07 candidate)
+
+[The bounded Connections contract](design/LINKEDIN-CONNECTIONS.md) now supports
+reporting with `r_ads+r_ads_reporting` and separately reviewed publishing with
+`rw_ads+r_organization_admin+w_organization_social+r_organization_social` (reporting
+only when requested). Trusted server app capability precedes new publishing OAuth;
+actual granted scopes and exact member/account/approved Page roles follow consent.
+This changes setup qualification, not campaign tuples or daily/budget denials.
+Account reference/display alone never establishes Page rights. The associated
+organization/campaign entity/post author equality is an SDK restriction.
+Live app/account evidence and independent final-candidate review remain open.

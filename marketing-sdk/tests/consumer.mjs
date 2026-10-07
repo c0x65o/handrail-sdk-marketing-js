@@ -6,14 +6,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 const pkg = JSON.parse(await readFile("package.json", "utf8"));
-const sha = process.argv[2];
+const creativeBrowser = process.argv.includes("--creative");
+const connectionsBrowser = process.argv.includes("--connections") || creativeBrowser;
+const sha = process.argv.slice(2).find(a => a !== "--connections" && a !== "--creative");
 assert.ok(!sha || /^[a-f0-9]{40}$/.test(sha), "Supply a full public commit SHA or no argument for candidate projection");
 const root = await mkdtemp(join(tmpdir(), "marketing-consumer-"));
 const run = (bin, args) => execFileSync(bin, args, { cwd: root, stdio: "inherit", env: { ...process.env, NODE_ENV: "development" } });
 try {
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "marketing-qualification-consumer", private: true, type: "module",
     dependencies: sha ? { "@handrail/marketing": `git+https://github.com/c0x65o/handrail-sdk-marketing-js.git#${sha}` } : pkg.dependencies,
-    devDependencies: Object.fromEntries(["typescript", "@types/node", "@types/react", "vite"].map(k => [k, pkg.devDependencies[k]])),
+    devDependencies: Object.fromEntries(["typescript", "@types/node", "@types/react", "@types/react-dom", "vite", ...(connectionsBrowser ? ["playwright"] : [])].filter(k => pkg.devDependencies[k]).map(k => [k, pkg.devDependencies[k]])),
   }, null, 2));
   run("npm", ["install", "--include=dev", "--no-audit", "--no-fund"]);
   const installed = join(root, "node_modules/@handrail/marketing");
@@ -100,5 +102,18 @@ for (const output of outputs) if (output.type === 'chunk') {
 console.log('Core/React browser bundle excludes server modules');
 `);
   run(process.execPath, ["bundle.mjs"]);
+  if (connectionsBrowser) {
+    await cp(resolve("marketing-sdk/examples/connections-server.ts"), join(root, "connections-server.ts"));
+    await cp(resolve("marketing-sdk/examples/embedded.tsx"), join(root, "embedded.tsx"));
+    await cp(resolve("marketing-sdk/examples/creative-server.ts"), join(root, "creative-server.ts"));
+    await cp(resolve(creativeBrowser ? "marketing-sdk/tests/creative-consumer.mjs" : "marketing-sdk/tests/connections-consumer.mjs"), join(root, "connections-check.mjs"));
+    await cp(resolve("marketing-sdk/tests/connection-network-guard.mjs"), join(root, "connection-network-guard.mjs"));
+    await writeFile(join(root, "tsconfig.connections.json"), JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { noEmit: false, outDir: "compiled", jsx: "react-jsx" }, files: ["connections-server.ts", "creative-server.ts", "embedded.tsx"] }));
+    run(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.connections.json"]);
+    const artifacts = resolve(process.env.MARKETING_CONNECTION_ARTIFACTS || "artifacts/connections-review/browser");
+    await mkdir(artifacts, { recursive: true });
+    await cp(resolve(".marketing-build/source-manifest.json"), join(artifacts, "source-manifest.json"));
+    run(process.execPath, ["connections-check.mjs", artifacts]);
+  }
   console.log(sha ? `Qualified public Git install ${sha}` : "Qualified uncommitted candidate package projection; public Git publication remains separate");
 } finally { await rm(root, { recursive: true, force: true }); }

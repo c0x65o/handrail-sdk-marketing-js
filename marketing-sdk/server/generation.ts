@@ -99,6 +99,9 @@ export class NativeGeneration implements GenerationPort {
     ) => Promise<string>,
     private billing: BillingPort,
     private fetcher: typeof fetch = fetch,
+    /** Optional custody-use fence after awaited executor authorization. Existing
+     * credential callback and billing reservation semantics remain unchanged. */
+    private beforeCredentialUse?: (provider: "openai" | "xai", project: string, grantId: string) => Promise<void>,
   ) {}
   validate(g: GenerationGrant) {
     requireThat(
@@ -146,6 +149,7 @@ export class NativeGeneration implements GenerationPort {
         g.id,
       );
       await beforeWrite();
+      await this.beforeCredentialUse?.(g.provider as "openai" | "xai", job.projectId, g.id);
       if (job.kind === "image") {
         const client = new OpenAI({
           apiKey: key,
@@ -226,6 +230,7 @@ export class NativeGeneration implements GenerationPort {
         "invalid_provider_request_id",
       );
       const key = await this.credentials("xai", job.projectId, g.id);
+      await this.beforeCredentialUse?.("xai", job.projectId, g.id);
       const response = await this.fetcher(
         `https://api.x.ai/v1/videos/${job.providerRequestId}`,
         {

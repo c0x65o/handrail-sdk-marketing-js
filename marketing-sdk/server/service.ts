@@ -1,3 +1,5 @@
+import { createConnections, connectionCommandFields, type MarketingConnectionsService } from "./connections.js";
+import type { ConnectionCommands } from "../core/connections.js";
 import { validateAccountCapability } from "./capabilities.js";
 import { capabilityBlockers } from "../core/index.js";
 import type {
@@ -76,7 +78,10 @@ export class MarketingServer {
     readonly mode: "fixture" | "live",
     readonly now = () => Date.now(),
     readonly readDestination = capturePublicDestination,
-  ) {}
+    readonly options: { connections?: MarketingConnectionsService } = {},
+  ) { requireThat(!options.connections || options.connections.store === store, "connections_store_mismatch"); }
+  private defaultConnections?: MarketingConnectionsService;
+  get connections() { return this.options.connections ?? (this.defaultConnections ??= createConnections({ store: this.store, evidence: this.mode === "fixture" ? "fixture" : "provider" })); }
   get advertisingBudgets() { return new AdvertisingBudgets(this.store, this.now, this.mode === "fixture" ? "fixture" : "provider"); }
   private async auth(p: Principal, project: string, write = false) {
     return await this.store.authorize(
@@ -1825,9 +1830,10 @@ export class MarketingServer {
     command: K,
     input: Commands[K]["input"],
   ): Promise<Commands[K]["output"]> {
+    if (Object.hasOwn(connectionCommandFields, command)) return this.connections.call(p, project, command as keyof ConnectionCommands, input as never) as Promise<Commands[K]["output"]>;
     return await this.store.transaction(async () => {
       await this.auth(p, project);
-      const fields: Record<Command, string[]> = {
+      const fields: Record<Exclude<Command, keyof ConnectionCommands>, string[]> = {
         captureDestination: ["url"],
         workspace: [],
         planningWrite: ["command", "input", "requestKey", "scope"],
@@ -1877,9 +1883,9 @@ export class MarketingServer {
         syncMetrics: ["campaignId", "from", "until"],
       };
       requireThat(Object.hasOwn(fields, command), "unknown_command", 404);
-      keys(input, fields[command]);
+      keys(input, fields[command as keyof typeof fields]);
       // Dispatch only the closed command allowlist; internal executor methods are never exposed.
-      const fn = this[command] as (
+      const fn = this[command as keyof typeof fields] as (
         p: Principal,
         project: string,
         input: Commands[K]["input"],

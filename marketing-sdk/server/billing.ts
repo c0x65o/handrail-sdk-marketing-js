@@ -14,7 +14,8 @@ export interface GenerationBinding {
   provider: "openai" | "xai";
   model: string;
   capabilityRef: string;
-  apiKey: string;
+  /** Legacy mounted credential. Omit when using CreativeConnections.credentials. */
+  apiKey?: string;
   expiresAt: string;
   currency: string;
   maxUnitMinor: number;
@@ -50,6 +51,13 @@ export class BoundGenerationBilling implements BillingPort {
     );
     return b;
   }
+  async inspect(g: GenerationGrant) {
+    try {
+      const b = this.binding(g);
+      if (g.revokedAt || Date.parse(g.expiresAt) <= Date.now()) return { state: "unavailable" as const };
+      return { state: "configured" as const, currency: b.currency, maxUnitMinor: b.maxUnitMinor, expiresAt: b.expiresAt };
+    } catch { return { state: "unavailable" as const }; }
+  }
   async credentials(
     provider: "openai" | "xai",
     project: string,
@@ -59,7 +67,9 @@ export class BoundGenerationBilling implements BillingPort {
       await this.store.list<GenerationGrant>(project, "generationGrant")
     ).filter((g) => g.provider === provider && (!grantId || g.id === grantId));
     requireThat(grants.length === 1, "generation_credential_binding_ambiguous");
-    return this.binding(grants[0]!).apiKey;
+    const key = this.binding(grants[0]!).apiKey;
+    requireThat(typeof key === "string" && key.length > 0, "generation_credential_binding_missing");
+    return key;
   }
   async authorize(g: GenerationGrant, job: GenerationJob) {
     const b = this.binding(g);

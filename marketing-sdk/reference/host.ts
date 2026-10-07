@@ -15,6 +15,7 @@ import {
   requireThat,
   byteDigest,
 } from "../server/store.js";
+import { createConnections } from "../server/connections.js";
 import { MarketingServer } from "../server/service.js";
 import {
   FixtureAgent,
@@ -116,6 +117,10 @@ export async function createHost(options: {
         });
     return drain;
   };
+  const connectionRoutes = service.connections.routes({ origin: options.origin, authenticate: async request => {
+    const token = request.headers.get("authorization")?.replace(/^Bearer /, "") || /(?:^|; )marketing_session=([^;]+)/.exec(request.headers.get("cookie") || "")?.[1] || "";
+    return store.authenticate(token);
+  } });
   const server = createServer(async (req, res) => {
     res.setHeader("cache-control", "no-store");
     res.setHeader("x-content-type-options", "nosniff");
@@ -127,6 +132,11 @@ export async function createHost(options: {
     try {
       await store.db.assertExecutor();
       const url = new URL(req.url || "/", options.origin);
+      if (req.method === "GET" && (/^\/api\/oauth\//.test(url.pathname) || /\/connections\/[^/]+\/handoff$/.test(url.pathname))) {
+        const headers = new Headers(); for (const [name, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(name, value);
+        const response = await connectionRoutes(new Request(url, { headers }));
+        if (response) { res.writeHead(response.status, Object.fromEntries(response.headers)); return res.end(await response.text()); }
+      }
       if (req.method === "GET" && url.pathname === "/healthz") {
         requireThat(
           await store.db
@@ -468,6 +478,7 @@ export async function runtime(
       generation,
       agent,
       mode,
+      undefined, undefined, { connections: createConnections({ store, custody: agent }) },
     );
   }
   return {

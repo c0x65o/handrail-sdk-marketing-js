@@ -476,11 +476,13 @@ test("native Meta and LinkedIn verification reuse existing clients and filter ef
       });
     }
     const li = new NativeProvider("linkedin", vault, store, async (url) => {
+      if (String(url).includes("adAccountUsers")) return Response.json({ elements: [{ account: "urn:li:sponsoredAccount:123", user: "urn:li:person:fixture", role: "ACCOUNT_MANAGER" }], paging: { start: 0, count: 25, total: 1 } });
+      if (String(url).includes("organizationAcls")) return Response.json({ elements: [{ organization: "urn:li:organization:43", roleAssignee: "urn:li:person:fixture", role: "ADMINISTRATOR", state: "APPROVED" }], paging: { start: 0, count: 25, total: 1 } });
       if (String(url).includes("introspectToken"))
         return Response.json({
           active: true,
           scope:
-            "rw_ads r_ads_reporting w_organization_social r_organization_social",
+            "rw_ads r_ads_reporting r_organization_admin w_organization_social r_organization_social",
           expires_at: 9999999999,
         });
       return Response.json({
@@ -496,6 +498,7 @@ test("native Meta and LinkedIn verification reuse existing clients and filter ef
       provider: "linkedin",
       timezone: "UTC",
       accountId: "123",
+      organizationId: "43",
     });
     assert.ok(linked.permissions.includes("activate"));
   } finally {

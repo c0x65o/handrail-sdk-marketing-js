@@ -182,7 +182,10 @@ async function native(provider: "meta" | "linkedin") {
       const requested = url.searchParams.get("fields")?.split(",");
       return response(requested ? Object.fromEntries(requested.filter(k => Object.hasOwn(fields, k)).map(k => [k, fields[k]])) : fields, _kind);
     }
-    if (path === "/rest/adAccounts/123") return response({ id: 123, currency: "USD" }, "account");
+    if (path.endsWith("/introspectToken")) return Response.json({ active: true, scope: "rw_ads r_ads_reporting r_organization_admin w_organization_social r_organization_social" });
+    if (path.endsWith("/adAccountUsers")) return Response.json({ elements: [{ account: "urn:li:sponsoredAccount:123", user: "urn:li:person:fixture-member", role: "ACCOUNT_MANAGER" }], paging: { start: 0, count: 25, total: 1 } });
+    if (path.endsWith("/organizationAcls")) return Response.json({ elements: [{ organization: "urn:li:organization:44", roleAssignee: "urn:li:person:fixture-member", role: "ADMINISTRATOR", state: "APPROVED" }], paging: { start: 0, count: 25, total: 1 } });
+    if (path === "/rest/adAccounts/123") return response({ id: 123, currency: "USD", status: "ACTIVE", servingStatuses: ["RUNNABLE"], reference: "urn:li:organization:44" }, "account");
     if (path.includes("/adTargetingEntities")) return response({ elements: fixture.g.targetingOptions!.map(o => ({ urn: o.id, name: o.label })) }, "taxonomy");
     if (path.includes("/conversions/")) {
       const s = fixture.c.material.settings as LinkedInSettings;

@@ -1,4 +1,7 @@
+export * from "./creative-connections.js";
 export * from "./capabilities.js";
+export * from "./connections.js";
+import type { ConnectionCommands } from "./connections.js";
 import type { ProviderSettings, ApplicantGoal, AccountCapabilityEvidence, TargetingOption } from "./capabilities.js";
 /** Browser-safe public contract. No credentials, React or server imports. */
 export type Provider = "meta" | "google" | "linkedin";
@@ -352,7 +355,7 @@ export interface PlanningWrite {
   result: Campaign | CampaignDraft;
   acknowledged: boolean;
 }
-export interface Commands {
+export interface Commands extends ConnectionCommands {
   planningWrite: { input: PlanningInput & { requestKey: string; scope: string }; output: PlanningWrite };
   acknowledgePlanningWrite: { input: { id: string }; output: PlanningWrite };
   captureDestination: {
@@ -455,6 +458,7 @@ export interface MarketingClient {
   call<K extends Command>(
     command: K,
     input: Commands[K]["input"],
+    options?: { signal?: AbortSignal },
   ): Promise<Commands[K]["output"]>;
   assetUrl(id: string): string;
 }
@@ -465,9 +469,10 @@ export function createMarketingClient(
 ): MarketingClient {
   const root = `${baseUrl.replace(/\/$/, "")}/api/projects/${encodeURIComponent(projectId)}`;
   return {
-    async call(command, input) {
+    async call(command, input, options) {
       const response = await fetcher(`${root}/${command}`, {
         method: "POST",
+        signal: options?.signal,
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),

@@ -28,9 +28,11 @@ const analytic = { dateRange: { start: { year: 2026, month: 1, day: 1 }, end: { 
 async function seam(provider: "linkedin" | "meta", response: () => object, rows: () => unknown[] = () => [analytic]) {
   const dir = mkdtempSync(join(tmpdir(), "provider-review-")), store = await testStore(join(dir, "db"));
   const requests: URL[] = [];
-  const port = new NativeProvider(provider, { use: async (_g, fn) => fn({ accessToken: "fixture", clientId: "fixture", clientSecret: "fixture" }) }, store, async (url) => {
+  const port = new NativeProvider(provider, { use: async (_g, fn) => fn({ accessToken: "fixture-only-token", clientId: "fixture-app", clientSecret: "fixture-only-secret" }) }, store, async (url) => {
     const u = new URL(String(url)); requests.push(u);
-    if (u.pathname.endsWith("introspectToken")) return Response.json({ active: true, scope: "rw_ads r_ads_reporting w_organization_social" });
+    if (u.pathname.endsWith("introspectToken")) return Response.json({ active: true, scope: "rw_ads r_ads_reporting r_organization_admin w_organization_social r_organization_social" });
+    if (u.pathname.endsWith("/adAccountUsers")) return Response.json({ elements: [{ account: "urn:li:sponsoredAccount:123456", user: "urn:li:person:fixture", role: "ACCOUNT_MANAGER" }], paging: { start: 0, count: 25, total: 1 } });
+    if (u.pathname.endsWith("/organizationAcls")) return Response.json({ elements: [{ organization: "urn:li:organization:2414183", roleAssignee: "urn:li:person:fixture", role: "ADMINISTRATOR", state: "APPROVED" }], paging: { start: 0, count: 25, total: 1 } });
     if (u.pathname.endsWith("/me/permissions")) return Response.json({ data: [{ permission: "ads_management", status: "granted" }] });
     if (u.pathname.endsWith("/42")) return Response.json({ id: "42" });
     if (u.pathname.endsWith("/adAnalytics")) return Response.json({ elements: structuredClone(rows()) });
@@ -99,7 +101,7 @@ test("review: LinkedIn reports completed UTC days with inclusive API end, reject
       await assert.rejects(t.port.metrics(campaign, grant, from!, until!));
     await assert.rejects(t.port.metrics(campaign, { ...grant, timezone: "America/Chicago" }, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"), /linkedin_utc_required/);
     assert.equal(t.requests.length, before);
-    const client = new LinkedInMarketingClient({ accessToken: "fixture", clientId: "fixture", clientSecret: "fixture", fetchImpl: async () => { throw new Error("must reject before transport"); } });
+    const client = new LinkedInMarketingClient({ accessToken: "fixture-only-token", clientId: "fixture-app", clientSecret: "fixture-only-secret", fetchImpl: async () => { throw new Error("must reject before transport"); } });
     for (const since of ["2026-01-01T06:00:00Z", "2026-01-01T00:00:00-06:00", "2026-02-30", "2099-01-01"])
       await assert.rejects(client.getAnalytics("123456", { since, until: since }), /inclusive reporting date/);
   } finally { await t.close(); }
@@ -122,7 +124,7 @@ test("review: full material, project and grant identity bind eligibility; Meta d
 
 test("review: LinkedIn initialization retains image identity and a post-await authority loss prevents upload PUT", async () => {
   let permitted = true, retained = "", writes = 0;
-  const client = new LinkedInMarketingClient({ accessToken: "fixture", clientId: "fixture", clientSecret: "fixture", fetchImpl: async () => {
+  const client = new LinkedInMarketingClient({ accessToken: "fixture-only-token", clientId: "fixture-app", clientSecret: "fixture-only-secret", fetchImpl: async () => {
     writes++;
     permitted = false;
     return Response.json({ value: { image: "urn:li:image:review", uploadUrl: "https://fixture.invalid/upload" } });

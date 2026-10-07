@@ -1,12 +1,20 @@
+import { EncryptedCredentialCustody } from "./credential-custody.js";
 import { randomBytes, createHash } from "node:crypto";
 import type { Grant, Setup } from "../core/index.js";
 import type { AgentPort } from "./ports.js";
 import type { Credentials, VaultPort } from "./providers.js";
 import { Store, type Principal, byteDigest, requireThat } from "./store.js";
 import type { CredentialCipher } from "../support/vault-crypto.js";
+export interface ConnectionCredentials extends Credentials { expiresAt: number; scopes: string[]; }
 export interface OAuthApp {
   clientId: string;
   clientSecret: string;
+  /** Trusted server configuration for paid-ad publishing discovery. Not provider
+   * permission evidence, and never supplied by browser commands. */
+  linkedinAdvertising?: {
+    appId: string; clientId: string; revision: string;
+    tier: "development" | "standard"; supportedScopes: string[];
+  };
 }
 const endpoints = {
   google: {
@@ -37,6 +45,60 @@ export class HostAgent implements AgentPort, VaultPort {
     readonly cipher: CredentialCipher,
     readonly fetcher: typeof fetch = fetch,
   ) {}
+  /** Server-only pre-grant custody. Uses the same cipher and vault records as Grants.
+   * Callers must journal the effect and supply a fresh authority guard; no refresh
+   * or OAuth retry is implicit on this path. */
+  connectionAuthorization(provider: Grant["provider"], project: string, scopes: string[], offline: boolean) {
+    const app = this.apps[provider]; requireThat(app, "oauth_application_not_configured");
+    const state = randomBytes(32).toString("base64url"), verifier = randomBytes(32).toString("base64url");
+    const url = new URL(endpoints[provider].authorize);
+    url.search = new URLSearchParams({ client_id: app.clientId,
+      redirect_uri: `${this.origin}/api/oauth/${encodeURIComponent(project)}/${provider}/callback`, response_type: "code", state,
+      scope: scopes.join(provider === "meta" ? "," : " "),
+      ...(provider === "google" ? { code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+        code_challenge_method: "S256", access_type: offline ? "offline" : "online", prompt: "consent" } : {}),
+    }).toString();
+    return { stateHash: byteDigest(Buffer.from(state)), encrypted: this.cipher.encryptPayload(JSON.stringify({ url: url.toString(), verifier })) };
+  }
+  connectionAuthorizationUrl(encrypted: { encrypted: string; keyId: string }) {
+    return JSON.parse(this.cipher.decryptPayloadAsString(encrypted.encrypted, encrypted.keyId)).url as string;
+  }
+  async exchangeConnection(provider: Grant["provider"], project: string, code: string,
+    sealed: { encrypted: string; keyId: string }, scopes: string[], offline: boolean, guard: () => Promise<void>): Promise<ConnectionCredentials> {
+    const app = this.apps[provider]; requireThat(app, "oauth_application_not_configured");
+    const { verifier } = JSON.parse(this.cipher.decryptPayloadAsString(sealed.encrypted, sealed.keyId));
+    await guard();
+    const response = await this.fetcher(endpoints[provider].token, { method: "POST", redirect: "error", signal: AbortSignal.timeout(20000),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: app.clientId, client_secret: app.clientSecret,
+        redirect_uri: `${this.origin}/api/oauth/${encodeURIComponent(project)}/${provider}/callback`,
+        ...(provider === "google" ? { code_verifier: verifier } : {}),
+      }) });
+    // Read and retain restricted encrypted outcome even if authority changed in flight.
+    // The manager reauthorizes before promoting this receipt or revealing any result.
+    requireThat(response.ok, "oauth_exchange_outcome_unknown");
+    const token = await response.json();
+    requireThat(typeof token.access_token === "string" && token.access_token.length > 0 && Number.isFinite(Number(token.expires_in)) && Number(token.expires_in) > 0, "oauth_exchange_outcome_unknown");
+    // Missing exchange scope is only the expected consent envelope, never grant
+    // proof. LinkedIn discovery requires fresh active introspection matching this
+    // exact envelope before its first finder and again before promotion.
+    const actual: string[] = typeof token.scope === "string" ? token.scope.split(/[ ,]+/).filter(Boolean) : scopes;
+    requireThat(scopes.every(s => actual.includes(s)) && actual.every(s => scopes.includes(s)), "oauth_scope_mismatch");
+    return { accessToken: token.access_token, ...(offline && typeof token.refresh_token === "string" ? { refreshToken: token.refresh_token } : {}),
+      clientId: app.clientId, clientSecret: app.clientSecret, ...(provider === "meta" ? { appSecret: app.clientSecret } : {}),
+      expiresAt: Date.now() + Number(token.expires_in) * 1000, scopes: actual };
+  }
+  async retainConnectionCredentials(project: string, secretRef: string, credentials: ConnectionCredentials) {
+    await new EncryptedCredentialCustody(this.store, this.cipher).retain(project, secretRef, credentials);
+  }
+  async useConnection<T>(project: string, secretRef: string, scopes: string[], guard: () => Promise<void>, action: (credentials: ConnectionCredentials) => Promise<T>): Promise<T> {
+    await guard();
+    const sealed = await this.store.get<{ encrypted: string; keyId: string }>(project, "vault", secretRef);
+    await guard();
+    const credentials = JSON.parse(this.cipher.decryptPayloadAsString(sealed.encrypted, sealed.keyId)) as ConnectionCredentials;
+    requireThat(credentials.expiresAt > Date.now() + 5000 && scopes.every(s => credentials.scopes.includes(s)), "provider_access_expired_or_denied");
+    const result = await action(credentials); await guard(); return result;
+  }
   private async read(g: Grant): Promise<
     Credentials & {
       expiresAt: number;
@@ -54,12 +116,7 @@ export class HostAgent implements AgentPort, VaultPort {
       expiresAt: number;
     },
   ) {
-    await this.store.put(
-      g.projectId,
-      "vault",
-      g.secretRef,
-      this.cipher.encryptPayload(JSON.stringify(credentials)),
-    );
+    await new EncryptedCredentialCustody(this.store, this.cipher).retain(g.projectId, g.secretRef, credentials);
   }
   async inspect(_s: Setup, g: Grant) {
     try {

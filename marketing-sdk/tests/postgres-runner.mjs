@@ -16,8 +16,10 @@ try {
   execFileSync(join(bin, "pg_ctl"), ["-D", join(root, "data"), "-l", join(root, "server.log"), "-o",
     `-k ${root} -h '' -c unix_socket_permissions=0700 -c shared_buffers=32MB -c max_connections=30`, "-w", "start"], { stdio: "ignore" });
   started = true;
+  const selected = process.argv.slice(2).filter(s => s.endsWith(".test.js"));
+  if (selected.some(s => !/^[a-z0-9-]+\.test\.js$/.test(s))) throw new Error("Use compiled test basenames only");
   const args = process.argv.includes("--browser") ? ["marketing-sdk/tests/browser.mjs"] : ["--test", "--test-concurrency=1",
-    ...(await readdir(".marketing-build/tests")).filter(s => s.endsWith(".test.js")).sort().map(s => `.marketing-build/tests/${s}`)];
+    ...(selected.length ? selected : (await readdir(".marketing-build/tests")).filter(s => s.endsWith(".test.js")).sort()).map(s => `.marketing-build/tests/${s}`)];
   const child = spawn(process.execPath, args, {
     stdio: "inherit", env: { ...testEnv, MARKETING_TEST_MARIADB_SOCKET: "",
       MARKETING_TEST_POSTGRES_ROOT: root, MARKETING_TEST_POSTGRES_SOCKET: root },
