@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { GenerationGrant, GenerationJob } from "../core/index.js";
-import type { BillingPort, GenerationOutput, GenerationPort } from "./ports.js";
+import type { BillingPort, GenerationOutput } from "./ports.js";
 import { requireThat, DomainError } from "./store.js";
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -89,7 +89,7 @@ export async function inspectMedia(bytes: Uint8Array, kind: "image" | "video", e
     });
   }
 }
-export class NativeGeneration implements GenerationPort {
+export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = GenerationJob> {
   readonly evidence = "generated" as const;
   constructor(
     private credentials: (
@@ -97,7 +97,7 @@ export class NativeGeneration implements GenerationPort {
       project: string,
       grantId: string,
     ) => Promise<string>,
-    private billing: BillingPort,
+    private billing: Omit<BillingPort, "authorize"> & { authorize(grant: GenerationGrant, job: J): Promise<void> },
     private fetcher: typeof fetch = fetch,
     /** Optional custody-use fence after awaited executor authorization. Existing
      * credential callback and billing reservation semantics remain unchanged. */
@@ -131,7 +131,7 @@ export class NativeGeneration implements GenerationPort {
     );
   }
   async submit(
-    job: GenerationJob,
+    job: J,
     g: GenerationGrant,
     retain: (requestId: string) => void | Promise<void>,
     beforeWrite: () => Promise<void> = async () => {},
@@ -214,7 +214,7 @@ export class NativeGeneration implements GenerationPort {
     }
   }
   async reconcile(
-    job: GenerationJob,
+    job: J,
     g: GenerationGrant,
   ): Promise<GenerationOutput> {
     try {

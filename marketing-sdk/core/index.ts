@@ -1,3 +1,12 @@
+export * from "./audience.js";
+import type { AudienceCommands } from "./audience.js";
+import type { CampaignCheckCommands } from "./preflight.js";
+export type { CampaignCheck, CampaignCheckCommands } from "./preflight.js";
+export * from './text-planning.js';
+export * from "./tracking.js";
+import type { TrackingCommands } from "./tracking.js";
+export * from "./studio.js";
+import type { StudioCommands, StudioState } from "./studio.js";
 export * from "./creative-connections.js";
 export * from "./capabilities.js";
 export * from "./connections.js";
@@ -86,6 +95,7 @@ export type DraftMaterial = Omit<Partial<Material>, "name" | "audience" | "budge
 };
 /** Project-owned local document, never a provider campaign or an account grant. */
 export interface CampaignDraft {
+  studio?: StudioState;
   id: string;
   projectId: string;
   revision: number;
@@ -153,6 +163,8 @@ export interface Packet {
   accountId: string;
   action: "activate";
   material: Material;
+  /** Exact saved configuration, not test success or production completeness. */
+  tracking?: import('./tracking.js').TrackingBinding | null;
   assetDigests: string[];
   effectivePlan: unknown;
   receipt: Receipt;
@@ -239,7 +251,7 @@ export interface Asset {
   rightsReceipt: string;
   parentAssetIds: string[];
 }
-/** Host-attested collector completeness; omitted purpose is legacy acquisition only. */
+/** Legacy interval evidence retained for compatibility. Does not establish validated completeness. */
 export interface FirstPartyCoverage {
   from: string;
   until: string;
@@ -325,8 +337,12 @@ export interface Results {
   mediaCacMinor: Metric;
   mediaRoas: Metric;
   providerConversions: Metric;
+  purchases?: Metric;
+  coverage?: { state: "validated" | "unknown"; sourceIds: string[]; checkpoints: string[]; reason: string };
+  refundTreatment?: "gross_before_refunds";
 }
 export interface Workspace {
+  nativePrerequisiteProviders?: Provider[];
   project: { id: string; name: string };
   role: Role;
   principalKind: "human" | "agent";
@@ -355,7 +371,7 @@ export interface PlanningWrite {
   result: Campaign | CampaignDraft;
   acknowledged: boolean;
 }
-export interface Commands extends ConnectionCommands {
+export interface Commands extends AudienceCommands, ConnectionCommands, StudioCommands, TrackingCommands, CampaignCheckCommands {
   planningWrite: { input: PlanningInput & { requestKey: string; scope: string }; output: PlanningWrite };
   acknowledgePlanningWrite: { input: { id: string }; output: PlanningWrite };
   captureDestination: {
@@ -461,6 +477,20 @@ export interface MarketingClient {
     options?: { signal?: AbortSignal },
   ): Promise<Commands[K]["output"]>;
   assetUrl(id: string): string;
+  studioAssetUrl?(id: string): string;
+  importStudioRaster?(input: { draftId: string; expectedRevision: number; requestKey: string; rights: string }, bytes: Blob): Promise<import("./studio.js").StudioAsset>;
+}
+/** A definitive HTTP rejection is distinct from an uncertain transport failure. */
+export class MarketingRequestError extends Error {
+  constructor(public readonly status: number, public readonly code: string, public readonly retryAfterSeconds: number | null = null) {
+    super(status === 429 ? `Request limit reached. ${retryAfterSeconds === null ? 'Wait before retrying the original action.' : `Retry the original action after ${retryAfterSeconds} seconds.`} No automatic retry was sent.` : code);
+    this.name = "MarketingRequestError";
+  }
+}
+function requestError(response: Response, code: string) {
+  const raw = response.headers.get("retry-after");
+  const seconds = raw && /^\d+$/.test(raw) ? Number(raw) : raw ? Math.ceil((Date.parse(raw) - Date.now()) / 1000) : NaN;
+  return new MarketingRequestError(response.status, code, Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : null);
 }
 export function createMarketingClient(
   baseUrl: string,
@@ -478,10 +508,17 @@ export function createMarketingClient(
         body: JSON.stringify(input),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "Request failed");
+      if (!response.ok) throw requestError(response, body.error || "Request failed");
       return body;
     },
     assetUrl: (id) => `${root}/assets/${encodeURIComponent(id)}`,
+    studioAssetUrl: (id) => `${root}/studio-media/${encodeURIComponent(id)}`,
+    async importStudioRaster(input, bytes) {
+      const response = await fetcher(`${root}/studio-media/${encodeURIComponent(input.draftId)}`, {
+        method: "POST", credentials: "same-origin", headers: { "content-type": "application/octet-stream", "x-studio-intent": encodeURIComponent(JSON.stringify(input)) }, body: bytes,
+      });
+      const result = await response.json(); if (!response.ok) throw requestError(response, result.error || "Import failed"); return result;
+    },
   };
 }
 export function canonical(value: unknown): string {

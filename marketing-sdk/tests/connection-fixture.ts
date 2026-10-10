@@ -1,3 +1,4 @@
+import { externalSessionFixture } from "./external-session-fixture.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,14 +8,18 @@ import { MarketingServer, HostAgent, NativeProvider, createCredentialCipher, cre
 import type { ConnectionCommands, ConnectionView, Permission, Provider } from "../core/index.js";
 
 /** Only external HTTP is synthetic. Real SQL, auth, cipher, transport and domain commands. */
-export async function connectionFixture(provider: Provider = "meta", write = false) {
+export async function connectionFixture(provider: Provider = "meta", write = false, external = false) {
   const dir = mkdtempSync(join(tmpdir(), "marketing-connections-")), path = join(dir, "db"), store = await testStore(path);
   await store.db.prepare("INSERT INTO projects VALUES(?,?)").run("p", "FIXTURE Fieldwork");
   await store.db.prepare("INSERT INTO projects VALUES(?,?)").run("other", "Other project");
   const alice = await store.createUser("alice", ""), bob = await store.createUser("bob", ""), agentId = await store.createUser("agent", "", "agent");
   for (const uid of [alice, bob, agentId]) await store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(uid, "p", "admin");
-  const aliceToken = (await store.login("alice", "", "alice"))!, bobToken = (await store.login("bob", "", "bob"))!;
-  const principal = await store.authenticate(aliceToken), bobPrincipal = await store.authenticate(bobToken);
+  let aliceToken = (await store.login("alice", "", "alice"))!, bobToken = (await store.login("bob", "", "bob"))!;
+  const hostPath = join(dir, "external-host"), hostStore = external ? await testStore(hostPath) : null;
+  const host = hostStore ? await externalSessionFixture(store, hostStore) : null;
+  if (host) { aliceToken = (await host.login("alice")).token; bobToken = (await host.login("bob")).token; }
+  const authenticate = (token: string) => host ? host.principal(token) : store.authenticate(token);
+  const principal = await authenticate(aliceToken), bobPrincipal = await authenticate(bobToken);
   const scopes = provider === "google" ? ["https://www.googleapis.com/auth/adwords"] : provider === "linkedin" ? [write ? "rw_ads" : "r_ads", "r_ads_reporting", ...(write ? ["r_organization_admin", "w_organization_social", "r_organization_social"] : [])] : ["ads_read", ...(write ? ["ads_management", "pages_read_engagement"] : [])];
   const calls: string[] = []; let boundary: ((url: URL) => Promise<void>) | null = null, failExchange = false, failRead = false, tokenSeconds = 3600;
   const page = (id: string, name: string) => ({ id, name, currency: "USD", timezone_name: "America/Chicago", account_status: 1, business: { name: "FIXTURE business" }, user_tasks: ["ANALYZE", "ADVERTISE"] });
@@ -47,25 +52,29 @@ export async function connectionFixture(provider: Provider = "meta", write = fal
   const key = randomBytes(32);
   const custody = new HostAgent(store, "https://sdk.example", { [provider]: { clientId: "SYNTHETIC_APP", clientSecret: "SYNTHETIC_APP_SECRET", ...(provider === "linkedin" ? { linkedinAdvertising: { appId: "SYNTHETIC_APP_ID", clientId: "SYNTHETIC_APP", revision: "fixture-1", tier: "development" as const, supportedScopes: scopes } } : {}) } }, createCredentialCipher("fixture", () => key), fetcher);
   let policy: ConnectionAccessPolicy = { revision: "1", appLabel: "FIXTURE Marketing app", allowedOperations: ["setup", "report", "prepare", "activate", "pause"], allowedOAuthScopes: scopes, allowOffline: false, maxDurationSeconds: 7200, discoveryRetentionSeconds: 3600 };
-  const connections = createConnections({ store, custody, accessPolicy: async () => policy, evidence: "fixture" });
+  const connections = createConnections({ store, custody, accessPolicy: async () => policy, evidence: "fixture", ...(host ? {sessionAuthority:host.authority} : {}) });
   const unavailable = (): never => { throw new Error("paid_generation_forbidden_in_fixture"); };
   const native = new NativeProvider("linkedin", custody, store, (input, init) => connections.discovery.fetcher(input, init));
-  const server = new MarketingServer(store, { meta: new NativeProvider("meta", custody, store, fetcher), google: new NativeProvider("google", custody, store, fetcher), linkedin: native }, { evidence: "generated", validate: unavailable, submit: unavailable, reconcile: unavailable }, custody, "fixture", undefined, undefined, { connections });
+  const server = new MarketingServer(store, { meta: new NativeProvider("meta", custody, store, fetcher), google: new NativeProvider("google", custody, store, fetcher), linkedin: native }, { evidence: "generated", validate: unavailable, submit: unavailable, reconcile: unavailable }, custody, "fixture", undefined, undefined, { connections, ...(host ? {studio:{sessions:host.authority}} : {}) });
   const call = <K extends keyof ConnectionCommands>(command: K, input: ConnectionCommands[K]["input"]) => server.call(principal, "p", command, input);
   const change = (c: ConnectionView, extra = {}) => ({ connectionId: c.id, expectedRevision: c.revision, requestKey: randomBytes(16).toString("hex"), ...extra });
   const start = () => call("startConnection", { provider: { kind: "advertising", provider }, intent: { kind: "advertising", operations: write ? ["setup", "report", "prepare", "activate", "pause"] : ["setup", "report"] as Permission[] }, requestKey: randomBytes(16).toString("hex"), expiresAt: new Date(Date.now() + 3600000).toISOString(), offlineAccess: false });
-  const routes = connections.routes({ origin: custody.origin, authenticate: async r => store.authenticate(r.headers.get("x-fixture-session") ?? aliceToken) });
+  const routes = connections.routes({ origin: custody.origin, authenticate: async r => authenticate(r.headers.get("x-fixture-session") ?? aliceToken) });
   const authorize = async (c: ConnectionView) => {
     c = await call("reviewConnectionProviderAccess", change(c)); const r = c.accessReview!;
     c = await call("decideConnectionProviderAccess", { ...change(c), decisionRef: r.decisionRef, digest: r.digest, decision: "approved" });
     c = await call("beginConnectionHandoff", change(c));
-    const handoff = await routes(new Request(custody.origin + c.handoffPath));
-    const location = new URL(handoff!.headers.get("location")!);
-    const callbackUrl = `${custody.origin}/api/oauth/p/${provider}/callback?state=${location.searchParams.get("state")}&code=SYNTHETIC_CODE`;
+    const handoff = await routes(new Request(custody.origin + c.handoffPath, { method: "POST", headers: { origin: custody.origin, "content-type": "application/x-www-form-urlencoded" }, body: `revision=${c.revision}` }));
+    const location = new URL((await handoff!.json()).browserLocation);
+    const callbackUrl = `${location.searchParams.get("redirect_uri")}?state=${location.searchParams.get("state")}&code=SYNTHETIC_CODE`;
     return { c: await call("connection", { connectionId: c.id }), callbackUrl, location };
   };
+  const completeCallback = (callback: string | URL, token = aliceToken) => {
+    const url = new URL(callback);
+    return routes(new Request(url.origin + url.pathname.replace(/callback$/, "complete"), { method: "POST", headers: { origin: custody.origin, "content-type": "application/json", "x-fixture-session": token }, body: JSON.stringify({ state: url.searchParams.get("state"), code: url.searchParams.get("code") }) }));
+  };
   const discovered = async () => {
-    const a = await authorize(await start()); await routes(new Request(a.callbackUrl));
+    const a = await authorize(await start()); await completeCallback(a.callbackUrl);
     return call("discoverConnectionAccounts", change(await call("connection", { connectionId: a.c.id })));
   };
   const selected = async () => {
@@ -77,9 +86,9 @@ export async function connectionFixture(provider: Provider = "meta", write = fal
     let c = await selected(); c = await call("reviewConnectionAccess", change(c)); const r = c.accessReview!;
     return call("decideConnectionAccess", { ...change(c), decisionRef: r.decisionRef, digest: r.digest, decision: "approved" });
   };
-  return { store, path, server, native, connections, custody, fixtureKey: key.toString("base64"), principal, alice, bobPrincipal, bobToken, aliceToken, calls, call, change, start, authorize, discovered, selected, approved, routes,
+  return { store, path, host, hostPath, server, native, connections, custody, fixtureKey: key.toString("base64"), principal, alice, bobPrincipal, bobToken, aliceToken, calls, call, change, start, authorize, discovered, selected, approved, routes, completeCallback,
     tokenLifetime: (seconds: number) => { tokenSeconds = seconds; },
     boundary: (fn: typeof boundary) => { boundary = fn; }, failExchange: () => { failExchange = true; }, failRead: (v: boolean) => { failRead = v; },
     policy: (next: ConnectionAccessPolicy) => { policy = next; }, currentPolicy: () => policy,
-    close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
+    close: async () => { await hostStore?.close(); await store.close(); if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, { recursive: true, force: true }); } };
 }

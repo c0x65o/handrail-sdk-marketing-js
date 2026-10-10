@@ -1,3 +1,5 @@
+import { classifyConnectionRoute, privatePage, callbackLanding, escapeHtml, safeLocalPath, readPrivateJson, privateMutationHeaders, scriptJson, type PrivateMutationHeaders } from "./handoff-http.js";
+import { createStoreSessionAuthority, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from "./session-authority.js";
 import type { CreativeConnections } from "./creative-connections.js";
 import type {
   AccountChoice, Campaign, ConnectionCatalogue, ConnectionCommands,
@@ -18,11 +20,14 @@ export interface ConnectionsOptions {
   accessPolicy?: (principal: Principal, project: string, provider: Provider) => Promise<ConnectionAccessPolicy | null>;
   /** External hosts return a current opaque session reference, null after logout. SDK sessions need no adapter. */
   sessions?: { current(principal: Principal, project: string): Promise<string | null> };
+  /** Required for new external-host authority; legacy sessions.current cannot fence commits. */
+  sessionAuthority?: SessionAuthority;
   /** Synthetic HTTP tests must explicitly label all resulting evidence. */
   evidence?: "fixture" | "provider";
 }
 interface PrivateConnection {
   id: string; projectId: string; revision: number; view: ConnectionView;
+  authority?: SessionInspection; browser?: SessionInspection;
   actorId: string; session: string; configuration: string; expiresAt: string; retainUntil: string; causationRef: string;
   scopes: string[]; offline: boolean; providerDecision: ConnectionAccessReview | null; bindingDecision: ConnectionAccessReview | null;
   account: DiscoveredAccount | null; identities: DiscoveredIdentity[];
@@ -36,6 +41,8 @@ interface PrivateConnection {
 interface Callback {
   id: string; connectionId: string; actorId: string; session: string; configuration: string; revision: number;
   expiresAt: string; status: "prepared" | "exchanging" | "received" | "unknown" | "denied";
+  connectionRevision?: number; decisionDigest?: string;
+  callbackUri?: string; appBinding?: string; browser?: SessionInspection; authority?: SessionInspection;
   receiptRef: string; stateHash: string; sealed: { encrypted: string; keyId: string }; tokenExpiresAt?: string;
 }
 const transitions = ["connectionId", "expectedRevision", "requestKey"];
@@ -66,17 +73,46 @@ const routePart = (s: string) => encodeURIComponent(s);
 export function createConnections(options: ConnectionsOptions) { return new MarketingConnectionsService(options); }
 /** Durable pre-grant journey; owns no scheduler, session engine, credential store or campaign executor. */
 export class MarketingConnectionsService {
+  readonly sessionAuthority: SessionAuthority;
   readonly store: Store; readonly discovery: ConnectionDiscovery; readonly evidence: "fixture" | "provider";
   constructor(readonly options: ConnectionsOptions) {
     requireThat(!options.creative || options.creative.store === options.store, "connections_store_mismatch");
+    this.sessionAuthority = options.sessionAuthority ?? createStoreSessionAuthority(options.store);
+    requireThat(!options.creative || options.creative.store === options.store && (options.creative.options.sessionAuthority === options.sessionAuthority), "connections_session_authority_mismatch");
     this.store = options.store; this.evidence = options.evidence ?? "provider";
     requireThat(!options.custody || options.custody.store === options.store, "connections_store_mismatch");
     this.discovery = new ConnectionDiscovery(options.custody?.fetcher);
   }
+  private async inspection(p: Principal, project: string) {
+    const binding = sessionBinding(p);
+    const current = await this.sessionAuthority.inspectSession(binding, project);
+    assertSessionInspection(current, binding, project);
+    return current;
+  }
+  private expected(c: PrivateConnection) {
+    return [c.authority, c.browser].filter((s): s is SessionInspection => !!s);
+  }
+  private async transition<T>(p: Principal, project: string, local: () => Promise<T>, c?: PrivateConnection) {
+    const current = await this.inspection(p, project);
+    const expected = [...(c ? this.expected(c) : []), current];
+    return this.sessionAuthority.withLiveSessions(expected, () => this.store.transaction(async () => {
+      await inspectLiveSessions(this.sessionAuthority, expected);
+      const result = await local();
+      // Expiry is time-based even while revocation writers are locked out. This
+      // final inspection is INSIDE the SDK transaction, before its commit.
+      await inspectLiveSessions(this.sessionAuthority, expected);
+      return result;
+    }));
+  }
   private async auth(p: Principal, project: string, write = false, human = false) {
     await this.store.authorize(p, project, write ? ["admin", "editor"] : undefined, human);
     let session = p.sessionTokenHash ?? null;
-    if (!session && this.options.sessions && p.externalSessionRef) {
+    if (this.options.sessionAuthority && (p.externalSessionRef || p.sessionTokenHash)) {
+      const current = await this.inspection(p, project);
+      requireThat((!write || ["admin", "editor"].includes(current.role)) && (!human || current.kind === "human"), "forbidden", 403);
+      session = current.binding.sessionRef;
+    }
+    if (!session && !this.options.sessionAuthority && this.options.sessions && p.externalSessionRef) {
       let current: string | null;
       try { current = await this.options.sessions.current(p, project); } catch { throw new DomainError("host_session_validation_unavailable", 401); }
       session = current === p.externalSessionRef ? current : null;
@@ -107,7 +143,9 @@ export class MarketingConnectionsService {
   private async guard(p: Principal, c: PrivateConnection, human = false) {
     const policy = await this.policy(p, c.projectId, isAd(c));
     const a = await this.auth(p, c.projectId, true, human);
-    requireThat(a.session && a.session === c.session && c.actorId === p.userId, "connection_session_changed", 401);
+    requireThat(a.session && (a.session === c.session || a.session === c.browser?.binding.sessionRef) && c.actorId === p.userId, "connection_session_changed", 401);
+    await inspectLiveSessions(this.sessionAuthority, this.expected(c));
+    requireThat(!p.externalSessionRef || this.options.sessionAuthority && c.authority, "host_session_authority_required", 401);
     requireThat(c.configuration === this.configuration(isAd(c), policy, operations(c)), "connection_configuration_changed");
     if (isAd(c) === "linkedin" && needsPublishingIdentity(operations(c))) requireThat(this.linkedinPublishingConfigured(c.scopes), "linkedin_app_capability_missing");
     requireThat(Date.parse(c.expiresAt) > Date.now() && Date.parse(c.retainUntil) > Date.now(), "connection_access_expired");
@@ -118,6 +156,31 @@ export class MarketingConnectionsService {
       const g = await this.store.get<Grant>(c.projectId, "grant", c.view.grantId);
       requireThat(!g.revokedAt && Date.parse(g.expiresAt) > Date.now() && g.revision === c.grantRevision, "grant_expired_or_revoked");
     }
+  }
+  /** Private prerequisite binding, never a browser receipt or an expanded grant.
+   * The policy callback must only inspect current host configuration. */
+  async campaignAuthority(p: Principal, g: Grant, observedCredentialExpiry?: number) {
+    await this.auth(p, g.projectId, true);
+    const matches = (await this.store.list<PrivateConnection>(g.projectId, "connection")).filter(c => c.view.grantId === g.id);
+    requireThat(matches.length === 1, "campaign_connection_required");
+    const c = matches[0]!;
+    const sessions = [...this.expected(c), await this.inspection(p, g.projectId)];
+    await inspectLiveSessions(this.sessionAuthority, sessions);
+    const policy = await this.policy(p, g.projectId, g.provider);
+    requireThat(policy && policy.allowedOperations.includes("prepare") && c.configuration === this.configuration(g.provider, policy, operations(c)), "connection_configuration_changed");
+    requireThat(c.view.phase === "verified" && c.grantRevision === g.revision && c.secretRef === g.secretRef &&
+      c.account?.id === g.accountId && c.account.currency === g.currency && c.account.timezone === g.timezone &&
+      c.identities.some(i => i.kind === "meta_page" && i.id === g.pageId) && g.permissions.includes("prepare"), "campaign_connection_changed");
+    requireThat(this.options.custody, "credential_custody_unavailable");
+    const accessExpiry = observedCredentialExpiry ?? await this.options.custody.useReadOnly(g, async () => {}, async credentials => credentials.expiresAt);
+    // Native credential use requires a one-minute remaining-use margin. A read-only
+    // check must not label credentials ready when ordinary use would need refresh.
+    const expiresAt = Math.min(Date.parse(g.expiresAt), Date.parse(c.expiresAt), Date.parse(c.retainUntil),
+      Date.parse(c.view.providerAuthorized.expiresAt ?? ""), accessExpiry - 60000, ...sessions.map(s => s.expiresAt));
+    requireThat(Number.isFinite(expiresAt) && expiresAt > Date.now(), "connection_access_expired");
+    const sealed = await this.store.get(g.projectId, "vault", g.secretRef);
+    return { digest: digest({ c, policy, configuration: this.configuration(g.provider, policy, operations(c)), sealed, sessions }),
+      sessions, expiresAt, credentialExpiresAt: accessExpiry, account: c.account, identities: c.identities, receiptReferences: [c.view.accountVerified.receiptRef, c.view.consented.receiptRef].filter((r): r is string => !!r) };
   }
   private async save(c: PrivateConnection, phase: ConnectionView["phase"], reason: string) {
     const previous = c.revision; c.revision++;
@@ -154,13 +217,16 @@ export class MarketingConnectionsService {
     v.readiness = (c.view.intent.kind === "advertising" ? c.view.intent.operations : [c.view.intent.operation]).map(a => ({ action: a, materialDigest: null,
       ready: this.evidence === "provider" && a === "report" && v.accountVerified.status === "verified" && v.consented.status === "verified" && v.providerAuthorized.status === "verified" && v.configured.status === "verified",
       blockers: this.evidence === "fixture" ? ["Synthetic fixture evidence; no live readiness"] : a === "report" && v.accountVerified.status === "verified" && v.consented.status === "verified" && v.providerAuthorized.status === "verified" && v.configured.status === "verified" ? [] : ["Campaign-specific verification and exact action authority required"], evidence: [v.accountVerified] }));
-    if (!owner) { v.account = null; v.identities = []; v.accessReview = null; v.handoffPath = null; v.discovery = { accounts: [], identities: [], cursor: null, complete: false, expiresAt: null }; }
+    if (!v.handoffPath) v.handoff = null;
+    if (!owner) { v.handoff = null; v.account = null; v.identities = []; v.accessReview = null; v.handoffPath = null; v.discovery = { accounts: [], identities: [], cursor: null, complete: false, expiresAt: null }; }
     return v;
   }
   private async view(p: Principal, c: PrivateConnection) {
     const a = await this.auth(p, c.projectId);
     const canEdit = ["admin", "editor"].includes(a.member.role);
-    const v = this.safe(c, canEdit && c.actorId === p.userId && !!a.session && a.session === c.session);
+    let live = true;
+    try { await inspectLiveSessions(this.sessionAuthority, this.expected(c)); } catch { live = false; }
+    const v = this.safe(c, live && canEdit && c.actorId === p.userId && !!a.session && (a.session === c.session || a.session === c.browser?.binding.sessionRef));
     if (canEdit && a.member.kind === "human" && a.session && c.view.grantId) {
       const revoke = v.actions.find(x => x.action === "revoke"); if (revoke) { revoke.available = true; revoke.reason = null; }
       if (c.revocation?.actor === p.userId && c.revocation.session === a.session && c.view.accessReview && Date.parse(c.view.accessReview.expiresAt) > Date.now()) v.accessReview = c.view.accessReview;
@@ -171,7 +237,7 @@ export class MarketingConnectionsService {
       if (this.configuration(c.view.provider.provider, currentPolicy, operations(c)) !== c.configuration) {
         v.configured = { ...v.configured, status: "unavailable", reason: "Host configuration or access policy changed. Cancel pending setup and review fresh access." };
         v.readiness.forEach(r => { r.ready = false; r.blockers = ["Configuration changed"]; });
-        v.handoffPath = null; if (v.accessReview?.purpose !== "revoke_project_access") v.accessReview = null;
+        v.handoffPath = null; v.handoff = null; if (v.accessReview?.purpose !== "revoke_project_access") v.accessReview = null;
       }
     }
     // Re-read binding after policy/session adapters have yielded. A separate
@@ -190,6 +256,7 @@ export class MarketingConnectionsService {
     const finalAuth = await this.auth(p, c.projectId);
     requireThat(finalAuth.session === a.session, "connection_session_changed", 401);
     requireThat(digest(finalAuth.member) === digest(a.member), "connection_authority_changed", 403);
+    if (live) await inspectLiveSessions(this.sessionAuthority, this.expected(c));
     const latest = await this.store.get<PrivateConnection>(c.projectId, "connection", c.id);
     requireThat(latest.revision === c.revision, "revision_conflict");
     return v;
@@ -213,11 +280,11 @@ export class MarketingConnectionsService {
       if (!custody?.apps[provider]) req("oauth_application_not_configured", `An administrator must bind the ${card.label} OAuth application's client ID and secret through existing protected configuration.`);
       const policy = await this.policy(p, project, provider);
       if (!policy) req("connection_access_policy_missing", "Map current grant-makers, allowed operations, OAuth scopes, explicit maximum duration and discovery retention in the public accessPolicy adapter.");
-      if (!session) req("host_session_validation_unavailable", "Bind a current host session reference and logout validation, or use the SDK's authenticated session principal.");
+      if (!session || p.externalSessionRef && !this.options.sessionAuthority) req("host_session_validation_unavailable", "Bind a current host session reference and logout validation, or use the SDK's authenticated session principal.");
       if (!custody) req("credential_key_unavailable", "Bind the existing HostAgent and CredentialCipher to the same Store. No credentials enter Marketing views.");
       else {
-        try { const origin = new URL(custody.origin); requireThat(origin.origin === custody.origin && (origin.protocol === "https:" || this.evidence === "fixture" && origin.hostname === "127.0.0.1"), "callback_origin_mismatch");
-          card.callbackUri = `${custody.origin}/api/oauth/${routePart(project)}/${provider}/callback`;
+        try { const origin = new URL(custody.origin); requireThat(origin.origin === custody.origin && (origin.protocol === "https:" || this.evidence === "fixture" && origin.protocol === "http:" && origin.hostname === "127.0.0.1"), "callback_origin_mismatch");
+          card.callbackUri = custody.connectionCallbackUri(provider);
           const sealed = custody.cipher.encryptPayload("custody-check"); requireThat(custody.cipher.decryptPayloadAsString(sealed.encrypted, sealed.keyId) === "custody-check", "credential_key_unavailable");
         } catch { req("credential_or_callback_configuration_invalid", "Check the active cipher key and canonical HTTPS origin; register the exact callback route shown by your administrator."); }
       }
@@ -255,7 +322,7 @@ export class MarketingConnectionsService {
     this.validateStart(input);
     const catalogue = await this.catalogue(p, project), card = catalogue.providers.find(c => digest(c.provider) === digest(input.provider))!;
     const policy = input.provider.kind === "advertising" ? await this.policy(p, project, input.provider.provider) : null;
-    return this.store.transaction(async () => {
+    return this.transition(p, project, async () => {
       const a = await this.auth(p, project, true); requireThat(a.session, "host_session_validation_unavailable");
       const result = await this.request(p, project, "startConnection", input, async () => {
         // Expiry/new keys cannot erase an unresolved external effect. Reconcile the
@@ -284,7 +351,7 @@ export class MarketingConnectionsService {
           configured: { ...emptyEvidence("configuration"), status: card.configured ? "verified" : "unavailable" },
           providerAuthorized: emptyEvidence(this.evidence), consented: emptyEvidence("human_decision"), accountVerified: emptyEvidence(this.evidence), capabilityVerified: emptyEvidence(this.evidence),
           readiness: [], actions: [], updatedAt: new Date().toISOString(), discovery: { accounts: [], identities: [], cursor: null, complete: false, expiresAt: null }, handoffPath: null };
-        const c: PrivateConnection = { id: cid, projectId: project, revision: 1, view, actorId: p.userId, session: a.session!,
+        const c: PrivateConnection = { authority: await this.inspection(p, project), id: cid, projectId: project, revision: 1, view, actorId: p.userId, session: a.session!,
           configuration: input.provider.kind === "advertising" ? this.configuration(input.provider.provider, policy, input.intent.kind === "advertising" ? input.intent.operations : []) : "creative-contract-missing",
           expiresAt: input.expiresAt, retainUntil: until, causationRef: this.requestId(p, input.requestKey), scopes, offline: input.offlineAccess, providerDecision: null, bindingDecision: null,
           account: null, identities: [], accounts: [], identityChoices: [], cursor: null, secretRef: `connection:${cid}`, callbackId: null, effect: null };
@@ -293,8 +360,8 @@ export class MarketingConnectionsService {
       return this.view(p, result.c);
     });
   }
-  private review(c: PrivateConnection, purpose: ConnectionAccessReview["purpose"], summary: string) {
-    const r = { decisionRef: id(), expiresAt: new Date(Math.min(Date.now() + 300000, Date.parse(c.expiresAt), Date.parse(c.retainUntil))).toISOString(), purpose, summary,
+  private review(c: PrivateConnection, purpose: ConnectionAccessReview["purpose"], summary: string, providerAppLabel?: string) {
+    const r = { ...(providerAppLabel ? { providerAppLabel, discoveryExpiresAt: c.retainUntil } : {}), decisionRef: id(), expiresAt: new Date(Math.min(Date.now() + 300000, Date.parse(c.expiresAt), Date.parse(c.retainUntil))).toISOString(), purpose, summary,
       oauthScopes: purpose === "provider_authorization" ? c.scopes : [], providerAccountRange: purpose === "provider_authorization" ? isAd(c) === "linkedin" ? "Sponsored accounts accessible to the consenting LinkedIn member. Publishing also checks that same member’s approved roles on the selected account-associated Page. Provider scopes are broader than this later project binding." : "Accounts accessible to the signed-in provider identity, including its manager hierarchy; accounts cannot be enumerated until authorization." : c.view.account?.label ?? "Selected project access",
       offlineAccess: purpose === "provider_authorization" && c.offline, providerLifetime: "Provider authorization can persist after local expiry or cancellation. Revoke at the provider separately; this wizard does not revoke it.", projectAccessExpiresAt: c.expiresAt };
     return { ...r, digest: digest([r, c.projectId, c.actorId, c.session, c.configuration, c.account, c.identities, c.view.intent, c.view.grantId, c.revision]) };
@@ -304,7 +371,10 @@ export class MarketingConnectionsService {
     requireThat(r && r.purpose === purpose && r.decisionRef === input.decisionRef && r.digest === input.digest && Date.parse(r.expiresAt) > Date.now() && ["approved", "rejected"].includes(input.decision), "connection_decision_stale"); return r;
   }
   private async mutate(p: Principal, project: string, command: keyof ConnectionCommands, input: ConnectionTransition & Record<string, any>) {
-    const outcome = await this.store.transaction(async () => {
+    const previous = await this.store.get<PrivateConnection>(project, "connection", input.connectionId);
+    const received = command === "reconcileConnection" && previous.callbackId && (await this.store.get<Callback>(project, "connectionCallback", previous.callbackId)).status === "received";
+    const ownOnly = ["reassignConnection", "reviewConnectionRevocation", "decideConnectionRevocation", "cancelConnection"].includes(command) || command === "reconcileConnection" && !received;
+    const outcome = await this.transition(p, project, async () => {
       await this.auth(p, project, true, command.startsWith("decide") || command === "reassignConnection");
       return this.request(p, project, command, input, async () => {
         const c = await this.store.get<PrivateConnection>(project, "connection", input.connectionId);
@@ -314,6 +384,7 @@ export class MarketingConnectionsService {
           const oldCallback = c.callbackId ? await this.store.get<Callback>(project, "connectionCallback", c.callbackId) : null;
           requireThat(!c.view.grantId && !c.effect && !["exchanging", "unknown"].includes(oldCallback?.status ?? "") && c.view.phase !== "cancelling", "connection_outcome_requires_original_actor");
           const a = await this.auth(p, project, true, true); requireThat(a.session, "host_session_validation_unavailable");
+          c.authority = await this.inspection(p, project); delete c.browser; c.view.handoff = null;
           c.actorId = p.userId; c.session = a.session; c.account = null; c.identities = []; c.accounts = []; c.identityChoices = []; c.cursor = null;
           c.providerDecision = null; c.bindingDecision = null; c.callbackId = null; c.secretRef = `connection:${id()}`;
           c.view = { ...c.view, account: null, identities: [], accessReview: null, handoffPath: null, providerAuthorized: emptyEvidence(this.evidence), consented: emptyEvidence("human_decision"), accountVerified: emptyEvidence(this.evidence), discovery: { accounts: [], identities: [], cursor: null, complete: false, expiresAt: null } };
@@ -374,7 +445,7 @@ export class MarketingConnectionsService {
           if (c.callbackId) { const old = await this.store.get<Callback>(project, "connectionCallback", c.callbackId); requireThat(old.status === "prepared", "original_callback_outcome_required"); }
           c.callbackId = null; c.providerDecision = null; c.view.handoffPath = null;
           const policy = await this.policy(p, project, provider); requireThat(policy, "connection_access_policy_missing");
-          c.view.accessReview = this.review(c, "provider_authorization", `Authorize ${policy.appLabel}${provider === "linkedin" ? ` (OAuth client ${this.options.custody!.apps.linkedin!.clientId}${needsPublishingIdentity(operations(c)) ? `; Advertising API app ${this.options.custody!.apps.linkedin!.linkedinAdvertising!.appId}, ${this.options.custody!.apps.linkedin!.linkedinAdvertising!.tier} tier` : ""})` : ""} to discover ${provider} advertising accounts using exactly ${c.scopes.join(", ")}. ${provider === "google" ? "Google adwords is a broad advertising-management scope even for reporting-only project access." : provider === "linkedin" ? (c.scopes.includes("rw_ads") ? "rw_ads reads and manages advertising accounts and campaigns. r_organization_admin verifies approved Page roles; w_organization_social creates sponsored posts; r_organization_social reads them back. These permissions cover eligible accounts and Pages of the signed-in member, not only the later selected account. r_ads_reporting is included only when reporting is requested. This SDK supports only the account-associated organization as campaign associated entity and post author." : "r_ads reads advertising accounts and roles; r_ads_reporting reads reports when requested. No organization API access or publishing permission is requested.") : c.scopes.includes("ads_management") ? "This provider authorization includes advertising management access." : "Only advertising read access is requested."} ${c.offline ? "Refresh/offline access is requested." : "No offline refresh access is requested."} Local discovery use ends ${c.retainUntil}. This may grant persistent provider access before any project connection exists. It does not authorize spending.`);
+          c.view.accessReview = this.review(c, "provider_authorization", `Authorize ${policy.appLabel}${provider === "linkedin" ? ` (OAuth client ${this.options.custody!.apps.linkedin!.clientId}${needsPublishingIdentity(operations(c)) ? `; Advertising API app ${this.options.custody!.apps.linkedin!.linkedinAdvertising!.appId}, ${this.options.custody!.apps.linkedin!.linkedinAdvertising!.tier} tier` : ""})` : ""} to discover ${provider} advertising accounts using exactly ${c.scopes.join(", ")}. ${provider === "google" ? "Google adwords is a broad advertising-management scope even for reporting-only project access." : provider === "linkedin" ? (c.scopes.includes("rw_ads") ? "rw_ads reads and manages advertising accounts and campaigns. r_organization_admin verifies approved Page roles; w_organization_social creates sponsored posts; r_organization_social reads them back. These permissions cover eligible accounts and Pages of the signed-in member, not only the later selected account. r_ads_reporting is included only when reporting is requested. This SDK supports only the account-associated organization as campaign associated entity and post author." : "r_ads reads advertising accounts and roles; r_ads_reporting reads reports when requested. No organization API access or publishing permission is requested.") : c.scopes.includes("ads_management") ? "This provider authorization includes advertising management access." : "Only advertising read access is requested."} ${c.offline ? "Refresh/offline access is requested." : "No offline refresh access is requested."} Local discovery use ends ${c.retainUntil}. This may grant persistent provider access before any project connection exists. It does not authorize spending.`, policy.appLabel);
           await this.guard(p, c);
           return this.save(c, "reviewing_provider_access", "Review provider authorization. Authentication alone does not authorize discovery.");
         }
@@ -387,6 +458,8 @@ export class MarketingConnectionsService {
           requireThat(c.view.phase === "waiting_human" && c.providerDecision && Date.parse(c.providerDecision.expiresAt) > Date.now(), "provider_access_decision_required");
           requireThat(!c.callbackId, "original_handoff_required");
           c.view.handoffPath = `/api/projects/${routePart(project)}/connections/${routePart(c.id)}/handoff`;
+          c.view.handoff = { version: 1, correlator: c.id, browserStartUrl: this.options.custody!.origin + c.view.handoffPath,
+            expiresAt: c.providerDecision.expiresAt, returnRouteId: "marketing" };
           return this.save(c, "waiting_human", "Use the secure same-origin route. Provider login, consent and challenges stay on the provider's origin.");
         }
         if (command === "selectConnectionAccount") {
@@ -419,6 +492,7 @@ export class MarketingConnectionsService {
         }
         requireThat(["discoverConnectionAccounts", "connectionIdentities", "resumeConnection"].includes(command), "unknown_command", 404);
         requireThat(c.view.providerAuthorized.status === "verified", "provider_consent_required");
+        if (command === "resumeConnection" && !c.view.grantId) requireThat((await this.auth(p, project)).session === c.session, "original_session_resume_required", 401);
         if (command === "resumeConnection") requireThat(c.account && c.bindingDecision && (c.view.grantId || Date.parse(c.bindingDecision.expiresAt) > Date.now()), "project_access_decision_required");
         if (command === "connectionIdentities") requireThat(c.account && !c.view.grantId && (provider !== "linkedin" || needsPublishingIdentity(operations(c))), "account_choice_required");
         if (command === "discoverConnectionAccounts") requireThat(!c.view.grantId && !["outcome_unknown", "cancelling", "cancelled"].includes(c.view.phase), "connection_transition_denied");
@@ -426,13 +500,14 @@ export class MarketingConnectionsService {
         c.effect = { id: id(), kind: command === "resumeConnection" ? "verify" : command === "connectionIdentities" ? "identities" : "accounts", startedAt: new Date().toISOString() };
         return this.save(c, c.effect.kind === "verify" ? "verifying" : "discovering", "Checking current provider access. Choices are not readiness evidence.");
       });
-    });
+    }, ownOnly ? undefined : previous);
     if (outcome.replay) return this.view(p, outcome.c);
     if (outcome.c.effect && ["discoverConnectionAccounts", "connectionIdentities", "resumeConnection"].includes(command)) return this.effect(p, outcome.c, input);
     return this.view(p, outcome.c);
   }
   private async effect(p: Principal, c: PrivateConnection, input: Record<string, any>): Promise<ConnectionView> {
     const kind = c.effect!.kind, provider = isAd(c), guard = () => this.guard(p, c, kind === "verify" && !c.view.grantId);
+    const creatingGrant = kind === "verify" && !c.view.grantId;
     try {
       const result = await this.options.custody!.useConnection(c.projectId, c.secretRef, c.scopes, guard, async credentials => {
         if (provider === "linkedin") {
@@ -444,7 +519,7 @@ export class MarketingConnectionsService {
         return this.discovery.verify(provider, credentials, c.account!, c.identities, operations(c), guard);
       });
       await guard();
-      await this.store.transaction(async () => {
+      await this.transition(p, c.projectId, async () => {
         await guard(); c.effect = null;
         if (kind === "verify") {
           if (!c.view.grantId) {
@@ -457,7 +532,7 @@ export class MarketingConnectionsService {
               ...(c.identities.find(i => i.kind === "linkedin_organization") ? { organizationId: c.identities.find(i => i.kind === "linkedin_organization")!.id } : {}),
               selectionOptions: c.identities.filter(i => i.kind !== "google_manager").map(i => ({ id: i.id, label: i.label, kind: i.kind === "meta_page" ? "page" : i.kind === "instagram" ? "instagram" : "organization" })) };
             // Serialized transaction + connection CAS establish one deterministic grant.
-            requireThat(!(await this.store.list<Grant>(c.projectId, "grant")).some(x => x.id === g.id), "connection_grant_already_exists");
+            requireThat(!await this.store.db.prepare("SELECT id FROM records WHERE project_id=? AND kind='grant' AND id=?").get(c.projectId, g.id), "connection_grant_already_exists");
             await this.store.put(c.projectId, "grant", g.id, g); c.view.grantId = g.id; c.grantRevision = g.revision;
             const setup: Setup = { id: `connection:${c.id}`, projectId: c.projectId, revision: 1, grantId: g.id, state: "ready", reason: "campaign_specific_verification_required", checkpoint: "account_verified", verifiedAt: new Date().toISOString(), capabilities: ["setup", "report"].filter(p => g.permissions.includes(p as Permission)) as Permission[], accountId: g.accountId, handoffUrl: null };
             await this.store.put(c.projectId, "setup", setup.id, setup);
@@ -485,7 +560,9 @@ export class MarketingConnectionsService {
           c.view.discovery = { ...c.view.discovery, cursor: c.cursor?.ref ?? null, complete: !page.next, expiresAt };
           await this.save(c, kind === "accounts" ? "choosing_account" : "choosing_identity", page.rows.length ? "Choose explicitly from the authenticated provider results." : page.next ? "No choices on this page; more pages remain." : "No eligible choices returned. Check provider account or publishing access, then refresh.");
         }
-      });
+        await guard();
+        if (creatingGrant) requireThat(c.bindingDecision && Date.parse(c.bindingDecision.expiresAt) > Date.now(), "project_access_decision_stale");
+      }, c);
       return this.view(p, c);
     } catch (error) {
       // Never retain transport messages, URLs, credentials or response bodies.
@@ -499,13 +576,20 @@ export class MarketingConnectionsService {
     }
   }
   private async acceptCallback(c: PrivateConnection, cb: Callback) {
+    requireThat(Date.parse(cb.expiresAt) > Date.now(), "oauth_state_invalid");
     requireThat(cb.status === "received" && cb.actorId === c.actorId && cb.session === c.session && cb.configuration === c.configuration && cb.tokenExpiresAt && Date.parse(cb.tokenExpiresAt) > Date.now(), "callback_outcome_unavailable");
-    c.view.providerAuthorized = stamp(this.evidence, cb.tokenExpiresAt, cb.receiptRef); c.view.handoffPath = null;
+    c.view.providerAuthorized = stamp(this.evidence, cb.tokenExpiresAt, cb.receiptRef); c.view.handoffPath = null; c.view.handoff = null;
     return this.save(c, "choosing_account", "Provider consent received. Discover accounts; no project Grant exists yet.");
   }
-  private async handoff(p: Principal, project: string, connectionId: string) {
-    return this.store.transaction(async () => {
-      const c = await this.store.get<PrivateConnection>(project, "connection", connectionId); await this.guard(p, c, true);
+  private async handoff(p: Principal, project: string, connectionId: string, expectedRevision: number) {
+    const previous = await this.store.get<PrivateConnection>(project, "connection", connectionId);
+    const browser = await this.inspection(p, project);
+    requireThat(previous.authority && browser.binding.issuer === previous.authority.binding.issuer && browser.binding.subject === previous.authority.binding.subject && p.userId === previous.actorId, "connection_session_changed", 401);
+    return this.transition(p, project, async () => {
+      const c = await this.store.get<PrivateConnection>(project, "connection", connectionId);
+      requireThat(c.revision === expectedRevision, "revision_conflict");
+      requireThat(!c.browser || digest(c.browser) === digest(browser), "connection_session_changed", 401);
+      c.browser = browser; await this.guard(p, c, true);
       requireThat(c.view.phase === "waiting_human" && c.view.handoffPath && c.providerDecision && Date.parse(c.providerDecision.expiresAt) > Date.now(), "provider_access_decision_required");
       if (c.callbackId) {
         const old = await this.store.get<Callback>(project, "connectionCallback", c.callbackId);
@@ -514,28 +598,44 @@ export class MarketingConnectionsService {
       }
       const auth = this.options.custody!.connectionAuthorization(isAd(c), project, c.scopes, c.offline);
       const cb: Callback = { id: auth.stateHash, connectionId, actorId: c.actorId, session: c.session, configuration: c.configuration, revision: 1,
-        expiresAt: c.providerDecision.expiresAt, status: "prepared", receiptRef: id(), stateHash: auth.stateHash, sealed: auth.encrypted };
+        expiresAt: c.providerDecision.expiresAt, status: "prepared", receiptRef: id(), stateHash: auth.stateHash, sealed: auth.encrypted, callbackUri: auth.callbackUri, appBinding: auth.appBinding, browser, authority: c.authority, connectionRevision: c.revision + 1, decisionDigest: c.providerDecision.digest };
       await this.store.put(project, "connectionCallback", cb.id, cb); c.callbackId = cb.id;
       await this.save(c, "waiting_human", "Waiting for provider consent. Reload returns to this saved handoff.");
       return this.options.custody!.connectionAuthorizationUrl(cb.sealed);
-    });
+    }, previous);
   }
-  private async callback(p: Principal, project: string, provider: Provider, state: string, code: string | null) {
+  private async callback(p: Principal, project: string, provider: Provider, state: string, code: string | null, callbackUri: string) {
     requireThat(/^[A-Za-z0-9_-]{43}$/.test(state), "oauth_state_invalid");
     const key = byteDigest(Buffer.from(state));
-    const reserved = await this.store.transaction(async () => {
+    const initial = await this.store.get<Callback>(project, "connectionCallback", key);
+    const previous = await this.store.get<PrivateConnection>(project, "connection", initial.connectionId);
+    const reserved = await this.transition(p, project, async () => {
       const cb = await this.store.get<Callback>(project, "connectionCallback", key);
       const c = await this.store.get<PrivateConnection>(project, "connection", cb.connectionId);
+      // Historical records without an authority snapshot cannot establish what
+      // was approved by the old session. Preserve them; require fresh consent.
+      requireThat(c.authority && cb.authority && cb.browser && cb.connectionRevision !== undefined && cb.decisionDigest, "legacy_connection_restart_required");
       await this.guard(p, c, true);
+      const issued = new URL(this.options.custody!.connectionAuthorizationUrl(cb.sealed));
+      requireThat(cb.id === key && cb.stateHash === key && issued.searchParams.get("state") === state &&
+        issued.searchParams.get("client_id") === this.options.custody!.apps[provider]?.clientId &&
+        issued.searchParams.get("redirect_uri") === callbackUri &&
+        (callbackUri === this.options.custody!.connectionCallbackUri(provider) || callbackUri === `${this.options.custody!.origin}/api/oauth/${encodeURIComponent(project)}/${provider}/callback`) &&
+        callbackUri === (cb.callbackUri ?? issued.searchParams.get("redirect_uri")) &&
+        (!cb.appBinding || cb.appBinding === digest([provider, this.options.custody!.apps[provider]?.clientId, this.options.custody!.apps[provider]?.clientSecret])) &&
+        (!cb.browser || digest(cb.browser) === digest(c.browser) && cb.browser.binding.sessionRef === sessionBinding(p).sessionRef) &&
+        (!cb.authority || digest(cb.authority) === digest(c.authority)), "oauth_state_invalid");
       requireThat(isAd(c) === provider && cb.actorId === p.userId && cb.session === c.session && cb.configuration === c.configuration && c.callbackId === cb.id, "oauth_state_invalid");
       if (cb.status !== "prepared") return { c, cb, run: false };
+      requireThat((cb.connectionRevision === undefined || cb.connectionRevision === c.revision) &&
+        (!cb.decisionDigest || cb.decisionDigest === c.providerDecision?.digest), "oauth_state_invalid");
       requireThat(Date.parse(cb.expiresAt) > Date.now() && c.view.phase === "waiting_human", "oauth_state_invalid");
       cb.status = code ? "exchanging" : "denied"; cb.revision++;
       await this.store.put(project, "connectionCallback", key, cb, cb.revision - 1);
       c.causationRef = `callback:${cb.receiptRef}`;
       await this.save(c, code ? "reconciling" : "cancelled", code ? "Receiving provider authorization. Repeated callbacks never exchange again." : "Provider consent declined. No project Grant created.");
       return { c, cb, run: !!code };
-    });
+    }, previous);
     if (!reserved.run) return;
     const { c, cb } = reserved;
     try {
@@ -549,7 +649,7 @@ export class MarketingConnectionsService {
         await this.store.put(project, "connectionCallback", key, original, original.revision - 1);
       });
       await this.guard(p, c, true);
-      await this.store.transaction(async () => { await this.guard(p, c, true); await this.acceptCallback(c, await this.store.get<Callback>(project, "connectionCallback", key)); });
+      await this.transition(p, project, async () => { await this.guard(p, c, true); await this.acceptCallback(c, await this.store.get<Callback>(project, "connectionCallback", key)); }, c);
     } catch {
       // Unknown is a durable effect outcome, not proof that OAuth had no effect.
       await this.store.transaction(async () => {
@@ -560,43 +660,92 @@ export class MarketingConnectionsService {
       });
     }
   }
-  /** Fetch-compatible SDK routes. Host adapts Request/Response and existing authentication only.
-   * Call before legacy OAuth routes. Redact callback query strings in upstream access logs. */
-  routes(config: { authenticate(request: Request): Promise<Principal>; origin: string; returnPath?: string }) {
+  /** Mount only callback_landing GET before cross-site guards. All private routes
+   * keep host guards. Exclude these paths from upstream URL/body capture and SWs. */
+  routes(config: { authenticate?(request: Request): Promise<Principal>; origin: string; returnPath?: string; loginPath?: string; mutationHeaders?: PrivateMutationHeaders }) {
     requireThat(!this.options.custody || config.origin === this.options.custody.origin, "callback_origin_mismatch");
-    requireThat(config.returnPath === undefined || /^\/[a-zA-Z0-9/_-]*$/.test(config.returnPath) && !config.returnPath.startsWith("//"), "invalid_connection_return_path");
-    const creativeRoutes = this.options.creative?.routes(config);
+    const origin = new URL(config.origin);
+    requireThat(origin.origin === config.origin && (!this.options.custody || origin.protocol === "https:" || this.evidence === "fixture" && origin.protocol === "http:" && origin.hostname === "127.0.0.1"), "callback_origin_mismatch");
+    const returnPath = safeLocalPath(config.returnPath ?? "/"), loginPath = safeLocalPath(config.loginPath ?? "/");
+    const authenticate = config.authenticate ?? ((r: Request) => this.sessionAuthority.authenticateRequest(r));
+    const creativeRoutes = this.options.creative?.routes({ ...config, authenticate });
     return async (request: Request): Promise<Response | null> => {
       const creative = await creativeRoutes?.(request); if (creative) return creative;
-      const url = new URL(request.url);
+      if (!this.options.custody) return null;
+      const url = new URL(request.url), classification = classifyConnectionRoute(url.pathname, request.method);
+      if (!classification) return null;
+      const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'", "x-content-type-options": "nosniff" };
       const handoff = /^\/api\/projects\/([^/]+)\/connections\/([^/]+)\/handoff$/.exec(url.pathname);
-      const callback = /^\/api\/oauth\/([^/]+)\/(meta|google|linkedin)\/callback$/.exec(url.pathname);
-      if (!handoff && !callback) return null;
-      const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; frame-ancestors 'none'", "x-content-type-options": "nosniff" };
-      // Always scrub callback code/state, including denied, expired and foreign-session returns.
-      const safeReturn = config.origin + (config.returnPath ?? "/");
+      const stable = /^\/api\/marketing\/oauth\/(meta|google|linkedin)\/(callback|complete)$/.exec(url.pathname);
+      const legacy = /^\/api\/oauth\/([^/]+)\/(meta|google|linkedin)\/(callback|complete)$/.exec(url.pathname);
+      let recovery: { title: string; message: string } | null = null;
       try {
-        requireThat(request.method === "GET" && url.origin === config.origin, "invalid_connection_route", 403);
-        const p = await config.authenticate(request);
-        if (handoff) {
-          requireThat([null, "same-origin", "none"].includes(request.headers.get("sec-fetch-site")), "cross_origin_handoff_denied", 403);
-          const location = await this.handoff(p, decodeURIComponent(handoff[1]!), decodeURIComponent(handoff[2]!));
-          return new Response(null, { status: 303, headers: { ...headers, location } });
+        requireThat(url.origin === config.origin, "invalid_connection_route", 403);
+        if (classification === "callback_landing") {
+          // No authentication, lookup or effects here, including when Strict omits cookies.
+          return callbackLanding(loginPath, returnPath);
         }
-        if (!this.options.custody) return null;
-        const project = decodeURIComponent(callback![1]!);
-        await this.store.authorize(p, project);
-        const state = url.searchParams.get("state") ?? "";
-        // Compatibility: an original grant-only state belongs to the legacy handler.
-        const stateHash = byteDigest(Buffer.from(state));
-        try { await this.store.get(project, "connectionCallback", stateHash); }
-        catch (e) { if (e instanceof DomainError && e.code === "not_found") {
-          try { await this.store.get(project, "oauth", stateHash); return null; } catch { /* unknown callback is scrubbed below */ }
-        } }
-        await this.callback(p, project, callback![2] as Provider, state, url.searchParams.get("code"));
-        return new Response(null, { status: 303, headers: { ...headers, location: safeReturn } });
-      } catch {
-        return callback ? new Response(null, { status: 303, headers: { ...headers, location: safeReturn } }) : new Response("Secure continuation unavailable. Return to Connections and check the saved outcome.", { status: 409, headers });
+        requireThat(!url.search && !url.hash, "invalid_connection_route", 400);
+        requireThat([null, "same-origin", "none"].includes(request.headers.get("sec-fetch-site")), "cross_origin_handoff_denied", 403);
+        if (request.method === "POST") requireThat(request.headers.get("origin") === config.origin, "origin_denied", 403);
+        const p = await authenticate(request);
+        if (!handoff && request.method === "GET" && (stable?.[2] === "complete" || legacy?.[3] === "complete")) {
+          // Same-origin authenticated bootstrap for the host's existing CSRF
+          // header policy. No state, code, project or private account is read.
+          const values = await privateMutationHeaders(config.mutationHeaders, request);
+          const current = await authenticate(request);
+          requireThat(digest(sessionBinding(current)) === digest(sessionBinding(p)), "connection_session_changed", 401);
+          return Response.json({ headers: values }, { headers });
+        }
+        if (handoff) {
+          const project = decodeURIComponent(handoff[1]!), cid = decodeURIComponent(handoff[2]!);
+          if (request.method === "POST") {
+            requireThat(request.headers.get("content-type")?.split(";")[0] === "application/x-www-form-urlencoded", "form_required", 415);
+            // Use the same bounded streaming parser; form has one numeric revision only.
+            const reader = request.body?.getReader(); let body = "", size = 0;
+            if (reader) { const decoder = new TextDecoder(); try { for (;;) { const part = await reader.read(); if (part.done) break; size += part.value.byteLength; requireThat(size <= 128, "body_too_large", 413); body += decoder.decode(part.value, { stream: true }); } body += decoder.decode(); } finally { await reader.cancel(); } }
+            requireThat(/^revision=[1-9][0-9]{0,9}$/.test(body), "invalid_claim", 400);
+            const location = await this.handoff(p, project, cid, Number(body.slice(9)));
+            return Response.json({ browserLocation: location }, { headers });
+          }
+          requireThat(request.method === "GET", "method_not_allowed", 405);
+          const c = await this.store.get<PrivateConnection>(project, "connection", cid), browser = await this.inspection(p, project);
+          requireThat(c.authority && c.actorId === p.userId && browser.kind === "human" && ["admin", "editor"].includes(browser.role) &&
+            browser.binding.issuer === c.authority.binding.issuer && browser.binding.subject === c.authority.binding.subject, "connection_session_changed", 401);
+          await inspectLiveSessions(this.sessionAuthority, this.expected(c));
+          if (c.view.phase === "cancelled") recovery = { title: "This setup was cancelled", message: "Return to Connections to review the saved setup or start a new one. Existing provider authorization may remain; no new project access is created here." };
+          else if (Date.parse(c.expiresAt) <= Date.now() || !c.providerDecision || Date.parse(c.providerDecision.expiresAt) <= Date.now()) recovery = { title: "This approval has expired", message: "Return to Connections and review fresh provider access. Expired approval cannot be continued from this browser." };
+          requireThat(!recovery, "provider_access_decision_required");
+          requireThat(!c.browser || digest(browser) === digest(c.browser), "connection_session_changed", 401);
+          requireThat(c.providerDecision && Date.parse(c.providerDecision.expiresAt) > Date.now() && c.view.phase === "waiting_human", "provider_access_decision_required");
+          const policy = await this.policy(p, project, isAd(c));
+          requireThat(c.configuration === this.configuration(isAd(c), policy, operations(c)), "connection_configuration_changed");
+          const projectRow = await this.store.db.prepare("SELECT name FROM projects WHERE id=?").get(project);
+          await inspectLiveSessions(this.sessionAuthority, [...this.expected(c), browser]);
+          const hostHeaders = await privateMutationHeaders(config.mutationHeaders, request);
+          // Host CSRF suppliers may await local session/configuration reads too.
+          // Do not render retained private approval after either session changed.
+          requireThat(c.configuration === this.configuration(isAd(c), await this.policy(p, project, isAd(c)), operations(c)), "connection_configuration_changed");
+          requireThat((await this.store.get<PrivateConnection>(project, "connection", cid)).revision === c.revision, "revision_conflict");
+          await inspectLiveSessions(this.sessionAuthority, [...this.expected(c), browser]);
+          const operationLabels: Record<Permission, string> = { setup: "Connect the account", report: "Read reports", prepare: "Prepare campaigns", activate: "Publish campaigns", pause: "Pause campaigns" };
+          return privatePage("Continue this connection", `<p>Continue the setup you approved in your original app. Keep that app signed in; you will return there to finish.</p><p><strong>Project:</strong> ${escapeHtml(String(projectRow?.name ?? project))}<br><small>Project ID: ${escapeHtml(project)}</small></p><p><strong>Provider:</strong> ${escapeHtml(isAd(c) === "meta" ? "Meta" : isAd(c) === "google" ? "Google Ads" : "LinkedIn")}</p><p><strong>Approved operations:</strong> ${escapeHtml(operations(c).map(o => operationLabels[o]).join(", "))}</p><p>Project access ends ${escapeHtml(new Date(c.expiresAt).toUTCString())}. No spending is authorized by this step.</p><p>The provider may keep its authorization after local setup ends. Choose the intended provider login on the next screen.</p><details><summary>Review the exact provider access you approved</summary><p>${escapeHtml(c.providerDecision.summary)}</p><p>Permissions: ${escapeHtml(c.scopes.join(", "))}</p><p>Consent decision valid until ${escapeHtml(new Date(c.providerDecision.expiresAt).toUTCString())}.</p></details><p>Setup reference: ${escapeHtml(c.id)}</p><form id="claim" method="post" action="${escapeHtml(url.pathname)}"><input type="hidden" name="revision" value="${c.revision}"><button type="submit">Claim and continue with provider</button></form><p id="claim-status" role="status"></p><p><a href="${escapeHtml(returnPath)}">Back to Connections</a></p>`, `addEventListener('DOMContentLoaded',()=>{document.getElementById('claim').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,button=form.querySelector('button');button.disabled=true;try{const response=await fetch(location.pathname,{method:'POST',credentials:'same-origin',redirect:'error',cache:'no-store',headers:{...${scriptJson(hostHeaders)},'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(form)).toString()});if(!response.ok)throw 0;const result=await response.json();const target=new URL(result.browserLocation);if(target.protocol!=='https:'||!['www.facebook.com','accounts.google.com','www.linkedin.com'].includes(target.hostname))throw 0;location.assign(target.href);}catch{document.getElementById('claim-status').textContent='This setup may have changed. Reload this page to check saved progress before continuing.';button.textContent='Reload saved setup';button.disabled=false;button.type='button';button.onclick=()=>location.reload();}});});`);
+        }
+        requireThat(request.method === "POST" && (stable?.[2] === "complete" || legacy?.[3] === "complete"), "method_not_allowed", 405);
+        const body = await readPrivateJson(request); keys(body, ["state", "code"]);
+        requireThat(typeof body.state === "string" && /^[A-Za-z0-9_-]{43}$/.test(body.state) && (body.code === null || typeof body.code === "string" && body.code.length > 0 && body.code.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(body.code)), "oauth_state_invalid", 400);
+        const located = await this.store.locateOAuthState(byteDigest(Buffer.from(body.state)));
+        requireThat(!legacy || decodeURIComponent(legacy[1]!) === located.projectId, "oauth_state_invalid");
+        // The legacy grant-only kind has no original-session/app/issued-URI
+        // snapshot. Locator compatibility is not authority to adopt or exchange it.
+        requireThat(located.kind === "connectionCallback", "legacy_oauth_restart_required");
+        const cb = await this.store.get<Callback>(located.projectId, "connectionCallback", located.id);
+        const provider = (stable?.[1] ?? legacy?.[2]) as Provider;
+        await this.callback(p, located.projectId, provider, body.state, body.code as string | null, config.origin + url.pathname.replace(/complete$/, "callback"));
+        return Response.json({ correlator: cb.connectionId }, { headers });
+      } catch (error) {
+        if (request.method === "POST" && !handoff) return Response.json({ error: "secure_completion_unavailable" }, { status: error instanceof DomainError ? error.status : 503, headers });
+        return privatePage(recovery?.title ?? "Sign in or recover setup", `${recovery ? `<p>${escapeHtml(recovery.message)}</p>` : `<p>Use an independent host sign-in with the same account that started this connection. If your session or setup changed, return to Connections and check its saved outcome. No provider response is retained on this page.</p>`}${recovery ? `<p><a class="action" href="${escapeHtml(returnPath)}">Back to Connections</a></p>` : `<p><a class="action" href="${escapeHtml(loginPath)}">Sign in to this host</a></p><p><a href="${escapeHtml(returnPath)}">Back to Connections</a></p>`}`, "", 409);
       }
     };
   }

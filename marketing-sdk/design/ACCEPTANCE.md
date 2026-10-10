@@ -1,6 +1,10 @@
 # Review gates, source evidence and remaining dependencies
 
-**Latest implementation review:** [Connections product and security review](CONNECTIONS-REVIEW.md)
+Independent native prerequisite review · 2026-10-08: [findings and limits](NATIVE-PREFLIGHT.md#independent-review--2026-10-08), with final machine-readable custody and qualification in `artifacts/native-preflight-review-6c1025bc/receipt.json`. This review repairs observation-age, captured-custody and asynchronous readback guards and corrects predecessor request-count labels. It does not clear actual provider/host, public Git installation, native/device/accessibility/dot, migrations or publication gates. P1–P10 and all dated evidence below remain requirements and historical records.
+
+**Current shared review:** [Shared Connections and next Studio](SHARED-CONNECTIONS-REVIEW.md), work request `f9f74c36-9e16-468f-84cd-8c95bc9c8068`. Its exact bounded verdict supersedes earlier candidate gaps below; dated receipts remain historical. [Studio blueprint](STUDIO-BLUEPRINT.md) is the retained design baseline. The subsequent [Studio implementation candidate](STUDIO-IMPLEMENTATION.md) implements local/synthetic portions of L01/S01/S02/T01/A01/I01; see the candidate evidence below. It does not inherit the earlier review verdict.
+
+**Earlier implementation review:** [Connections product and security review](CONNECTIONS-REVIEW.md)
 under work request `49a95031-e3a1-4bc4-a321-1b3ec00048fd`. The original matrices and
 dated predecessor receipts below remain unchanged evidence. Full Connections is
 blocked: LinkedIn publishing discovery and native handoff need the exact contracts
@@ -539,3 +543,234 @@ public-consumer pixels, preserved artifacts and remaining gates are recorded in
 `artifacts/linkedin-e2e-review/verification.json` and `custody-final.json`.
 This is bounded source/fixture evidence only; N01/Q01, live account entitlement,
 host qualification and complete Marketing acceptance remain open.
+
+## Portable handoff implementation candidate · 2026-10-07
+
+Work request `a8ed410f-d987-410a-981e-d02db5aef1da`. The maintained
+[portable protocol](PORTABLE-HANDOFF.md) now has a workspace server/web reference
+implementation: public SessionAuthority authentication/inspection/revocation guard,
+non-authorizing descriptor, independent same-actor browser claim, stable callbacks,
+private Strict-cookie completion and original-session final grant resume. The
+external-host public example compiles and uses real SQL fixture authentication with
+no SDK passwords/session duplication. No production Preview adapter was supplied.
+
+The bounded regression selection passed real SQLite (370 pass, three dialect skips)
+and isolated socket-only PostgreSQL (371 pass, two MariaDB-only skips). It includes
+both sessions at every observed Meta/Google/LinkedIn read headers/body boundary,
+logout/disablement serialization, actual grant-commit vs logout in both orderings,
+config/role/expiry/actor/project/state denials, stable two-project URLs, encrypted
+unknown-exchange retention, lost acknowledgement and SIGKILL recovery. A final exact
+record-key lookup refinement and legacy correlator compatibility receive additional
+focused checks. Exact snapshots, final checks and honest exclusions are in
+`artifacts/portable-handoff/verification.json`, not inferred from this summary.
+
+Both public packed consumers passed at 1440/390/320 behind the existing loopback
+proxy and local negative controls: the new external-session login/claim/completion/
+recovery path, and the existing three-provider selection/review/verification path.
+The last claim-label refinement is rerun and pixel-inspected in the final receipt.
+Provider authorize responses are fulfilled locally before any socket opens; all
+other external browser traffic is denied. No real provider consent, request, access,
+ads/spend/events or credentials. No live/device/production readiness is claimed.
+
+All 6,213 input-manifest entries and later review receipts matched at entry. The
+new inventory covers 6,268 existing artifacts; all are preserved. Historical two
+unauthenticated Facebook navigation failures remain **FAILED**. This work retains
+its failed compile/test/browser attempts too: a browser executable-path error, a
+fixture assertion that incorrectly applied cross-site cookie rules to same-origin
+reload, and a synthetic provider Back-history handler that expected already-scrubbed
+parameters. The failed fixture assertion printed a disposable synthetic host cookie;
+that failed receipt is retained and the fixture logging was corrected. SDK code never
+logs authorization response bodies. There was no new live-provider network request.
+
+Whole-suite/native-media aggregates expected to exceed five minutes and MariaDB are
+not run; bounded SQLite and PostgreSQL selections are run sequentially with one test
+worker. Public HTTPS Git/full-SHA installation remains a publication-dependent gate;
+the pack projection declares no forbidden SDK dependency and is not that proof.
+No package/lock/version changes, migrations to application databases, commits/pushes,
+deployments, host/queue state changes or edits to other repositories occurred.
+
+Independent security/product review, actual host revocation-lock/ingress/service-worker
+qualification, native widgets/byte-range media/device return and process lifecycle,
+live app/account/Page scope qualification, full Studio/tracking/Results/lifecycle
+and personal target-platform validation remain. **Not Ready for Clinton.**
+
+## Independent portable protocol review · 2026-10-07
+
+See [review and precise deployment gates](PORTABLE-SECURITY-REVIEW.md) and
+`artifacts/portable-security-review/verification.json` for the exact verdict,
+source coverage, SQL/browser/consumer checks, failures and omissions. Host CSRF
+headers, idle/hidden polling, independent-connection lock evidence, nonce validation
+and claim/recovery presentation receive bounded corrections. Historical records
+without trustworthy retained authority safely restart; no actual historical durable
+record proof is claimed. All predecessor artifacts and both Facebook failures remain.
+No publication, native/Preview/full-product or Agent 0.2.16 pair acceptance is implied.
+
+## Shared external creative setup candidate · 2026-10-07
+
+See [the shared session and historical compatibility contract](EXTERNAL-CREATIVE-SESSIONS.md)
+and `artifacts/external-creative/verification.json` for exact source, SQL/process,
+installed consumer and historical-source evidence. Earlier script-free creative
+form/weak external-session limitations are addressed in this candidate, subject to
+independent review. The new private page owns header-bearing submission; uncertain
+custody is retained and fenced. All earlier failed receipts remain failed.
+Production host lock-writer/ingress/service-worker, full mounted-app budget, native
+and live/full-product gates remain open. No isolated publication or Ready for Clinton.
+
+
+## Studio candidate · 2026-10-07 · independent review pending
+
+Work request `9e9d6471-0b1a-4e3d-8c00-29b3cb924d23`, implementation run
+`3baf00fd-cd08-4ea9-91c3-a37695289557`. Canonical main was authorized for
+source work after retaining the exact reviewed `f82d2cc7…` source under
+`artifacts/studio-source-snapshots/`. No commit, publication, host edit or deployment.
+All earlier raw review results, failed screenshots and isolation failures remain
+historical evidence; none has been relabelled as a completed Studio review.
+
+| Case | Candidate behavior and proof | Boundary |
+| --- | --- | --- |
+| L01 | SQL revisions, immutable request receipts, searchable paged library, copy/archive/trash/restore, reference preservation, permissions and stale writes; actual UI lifecycle | Permanent deletion explicitly unavailable; read-only impact/policy receipt explains retention and restore. Archive is not a provider pause |
+| S01 manual | Brief, editable options/copy, explicit selection, actual raster byte validation/retention and rights attestation; no Agent, AI credential or advertising account required | No invented claims, image-reference edit or remote import |
+| S01 planning | Public separate PlanningPort, SDK strict schema/prompt, validated options, exact synthetic authority, one attempt, retained response identity and usage/unknown cost; real executor-process crash recovery | Real text custody/billing and persistent execution remain BLOCKED. Provider/model metadata or telemetry is not spending authority |
+| S01 media | Additive draft owner/job/asset v2, native image/video transport reuse, exact quote reservation, explicit selection, immutable retained bytes; fixture generation and duplicate fences | Real paid execution unrun; draft v2 host cost/custody binding requires independent qualification. Video advertising remains unsupported |
+| S02 | Shared provider choices and constraints, selected-byte approximation, reproducible safe input snapshot/check digest, repair navigation | Local checks are not provider approval; Meta daily gate, LinkedIn roles/UTC/budget and Google Search constraints remain |
+| T01 seam | Typed current-material/outcome/destination handoff and staged TrackingReceipt contract; Missing integration / Not tested | Actual collector/test event, matching, attribution and Results product remain unfinished |
+| A01 seam | Local promotion to new campaign creative-set lineage and asset aliases, changed-account/revision fences, no provider effects | Existing exact packet/decision/executor pipeline remains required. Live preparation/activation unrun |
+| I01 local | Clean installed candidate projection, strict NodeNext/Bundler types, browser/server separation, MarketingWorkspace with external SQL host sessions and Agent absent | Public HTTPS full-SHA installation of this uncommitted candidate requires separately authorized publication; real host/native reuse unverified |
+| Q01 | Loopback guard negative controls before each browser run, desktop/390/320 screenshots, lost-save/reload, navigation and bounded request measurements | Target-platform/native/device and dot review remain open |
+
+Logs, per-run source manifests, negative controls, failed screenshots, final results
+and hashes live under `artifacts/studio-3baf00fd/`. Full aggregates remain skipped
+under the existing >5-minute rule; focused SQL/provider/media/lifecycle checks are
+used. An initial PostgreSQL fixture run failed for missing executor acquisition and
+a count type assertion; an initial UI run exposed label/navigation styling, later
+runs exposed stale library/step updates. Those failed results are retained, with
+corrections tested separately. This is implementation evidence, not independent
+acceptance. Persistent credential and campaign automation acceptance stays **BLOCKED**.
+
+## Independent Studio journey review · 2026-10-07
+
+Work request `457f6826-cb49-4554-8340-a8ef49532766`, run `1a8c3ad5-f349-40a0-8916-4d65034feb9e`.
+The supplied `827d4f1b…` source, receipt, all artifact/runtime/PostgreSQL manifest
+entries and retained `f82d2cc7…` archive/patch verified before editing. The canonical
+checkout, index and every unowned source/artifact remain under custody; no release
+or publication action was attempted. The final machine-readable verdict and exact
+hash index are `artifacts/studio-review-1a8c3ad5/receipt.json`.
+
+Repairs address editor data loss/cancellation and readable saved handoff recovery,
+current external-host role/configuration authority, bounded unlocked quote/decode
+work, exact-revision finalization and immutable concurrent planning readback. Added
+proof includes independent SQL revocation during quotes, expiry during normalization,
+exact 10 MiB and one-over raster boundaries, two-option selection/editing, real native
+OpenAI transport with synthetic HTTP, and public Connections-to-Studio promotion
+racing independent processes without ad writes. Tracking/results measurement remains
+a factual source fixture, not an installed collector or successful website test.
+
+Browser evidence is the installed candidate's default MarketingWorkspace at
+1440/390/320 CSS pixels, with external host sessions and a zero-grant manual start.
+It is not Preview, a public Git-SHA install, native device/range qualification or
+personal target-platform acceptance. Cold/active/hidden request counts belong only
+to this consumer; full Preview budget and long-running host lifecycle remain gates.
+All failed checks are retained, including browser startup, denied browser-background
+request assertions, a snapshot-envelope PostgreSQL failure and intermediate compile
+failures. Historical Facebook isolation failures and interrupted prior runs remain
+unchanged failures. Successful reruns do not relabel them.
+
+Manual Studio and synthetic workflow verdicts are bounded independently in the final
+receipt. Real text planning and persistent use remain blocked by the exact contract
+gap in STUDIO-IMPLEMENTATION. Full Marketing remains incomplete pending SDK Tracking/
+Results, qualified live/host/native integration, authorized exact Git consumption
+and actual target/dot validation. Permanent erasure remains unavailable without the
+exact retention/impact/owner authority; reversible lifecycle needs no such grant.
+# Tracking/Results candidate · 2026-10-07
+
+The additive [Tracking/Results contract](TRACKING-RESULTS.md) implements the reusable
+manual first-party journey and narrows Results completeness to authenticated retained
+checkpoints. Evidence lives in `artifacts/tracking-41429fed/`; its final receipt binds
+source, owned delta, SQL runs, installed consumer and screenshots. Earlier dated
+receipts remain unchanged. Initial focused SQLite/PostgreSQL HTTP cases and public
+consumer pass; final verification and precise limitations are in that receipt.
+
+Verdicts remain separate: first-party Tracking and Results are candidates with bounded
+fixture evidence; provider pixel/event delivery is unavailable; real AI and persistent
+authority remain blocked/unqualified; full Marketing is incomplete. An independent
+product/security/source review must qualify this combined journey. Published-Git,
+target-host/native/media/accessibility and dot review are separate gates. No release,
+commit, deployment, persistent grant, provider transmission or spending is authorized.
+
+## Independent Tracking/Results review · 2026-10-07
+
+The retained review at `artifacts/tracking-review-b37ad76f/receipt.json` binds exact
+source/runtime/consumer hashes, SQL checks, combined browser request measurements,
+failures and remaining gates. [Tracking contract](TRACKING-RESULTS.md#independent-review-repairs--2026-10-07)
+records the repairs and required host source/producer permission adapters. Historical
+receipts above remain evidence of their original source revisions.
+
+T01–T03/R01 have bounded package-consumer and disposable SQL evidence. This does not
+qualify a production collector, provider firing/delivery/matching, committed public
+Git installation, mounted Preview/native/device/media-range/full accessibility, or
+dot acceptance. The real-AI/persistent-authority gap remains blocked and the full
+Marketing product remains incomplete. The denied publication action remains stopped.
+
+## Interactive planning candidate — 2026-10-07
+
+The [contract and mapping](INTERACTIVE-PLANNING.md) extends S01/I01 with SDK-owned text setup and review, a native foreground adapter and existing Store/executor/billing composition. Source and synthetic SQL/public-consumer evidence are recorded under `artifacts/planning-5d996985/`. This candidate is pending independent final-source/product/security review. It does not accept real host grants/spend, persistent access, public Git installation, native adoption, whole Marketing or Ready. The denied publication remains stopped.
+
+## Independent interactive planning review — 2026-10-07
+
+The [planning review contract](INTERACTIVE-PLANNING.md#independent-review--2026-10-07)
+and `artifacts/planning-review-5a6d17fe/receipt.json` retain exact source/runtime/
+consumer/custody hashes, fixes, actual checks and failed attempts. Strict stream
+lifecycle/identity, bounded cancellation, retained billing observations and SQLite's
+native-provider lease denial correct the candidate. Connection reads clear stale
+state, and Results explains the unpromoted-draft dependency. The browser no longer
+inserts a separate reporting campaign to imply continuity. Populated Results and
+real target-host atomic billing remain distinct qualification gates; synthetic
+success is not actual provider authority, persistent capability or Ready.
+
+## Joined journey candidate · 2026-10-07
+
+[Complete journey contract](COMPLETE-JOURNEY.md) documents promotion/Tracking continuity,
+campaign navigation and the explicit public synthetic provider boundary. The final
+source-bound evidence, failures and unresolved requirements are indexed by
+`artifacts/journey-97c78087/receipt.json`. This candidate requires a separate
+independent final product review. Earlier disconnected Results fixtures remain
+historical evidence; no target-host, native, live-provider or readiness gate is cleared.
+
+## Independent joined review · 2026-10-07
+
+The [joined review findings](COMPLETE-JOURNEY.md#independent-joined-review--2026-10-07)
+and `artifacts/journey-review-51cb26ab/receipt.json` supersede no historical result.
+Local synthetic same-campaign completion is qualified with explicit 120/minute
+read recovery; rapid and continuous journeys still encounter throttling. Native
+adapter HTTP fixture checks pass separately, while joined NativeProvider preparation
+is blocked by the missing public exact-material capability producer. No actual
+eligibility is fabricated. The final source repairs redundant reads, visible
+Retry-After recovery, campaign media ranges, equivalent UTC report-window lookup
+and misleading default UI details. Precise checks, failures, pixels, identity chain
+and source/runtime/consumer hashes remain in the receipt. Whole Marketing is not
+accepted; original public install, host/financial/persistent authority, mounted
+Preview/native/device/accessibility/dot and publication gates remain open.
+
+## Native campaign prerequisite candidate · 2026-10-07
+
+The [public campaign check contract](NATIVE-PREFLIGHT.md) extends S02/A01 with
+read-only exact-campaign proof and current status, consumed by NativeProvider before
+preparation and each write. `artifacts/native-preflight-7ed6998b/receipt.json` records
+actual checks, failures, custody and separate verdicts. The installed public-export
+consumer uses SDK Connections/Studio/Tracking, native advertising HTTP fixtures and
+the same campaign's public native sync/authenticated collector Results. It inserts
+no capability evidence to obtain a green status. This candidate still needs
+independent review. Actual provider/host spending authority, public Git installation,
+persistent access, Preview/native/device/accessibility/dot, migrations and publication
+remain open. No historical result or failure is rewritten.
+
+## Country Audience candidate · 2026-10-08
+
+[AUDIENCE.md](AUDIENCE.md) traces this bounded addition to provider-option selection
+and easy reuse (P5/S02, P9/I01). The same public client owns country search, selected
+resolution and status; no host catalogue or ready receipt supplies native proof.
+F9 separates legacy setup effects and campaign media decoding from short guards.
+`artifacts/audience-db51378d/receipt.json` records exact checks, failures, manifests
+and remaining work. Independent final-source review is required. Broader provider
+targeting, actual eligibility, public Git installation, Preview/native/device and
+whole-product acceptance remain unqualified. No release or publication is implied.

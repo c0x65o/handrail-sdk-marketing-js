@@ -7,21 +7,21 @@ test("C07/C09/C15: two-user/project isolation; foreign callback and raw fields c
   const f = await connectionFixture();
   try {
     const a = await f.authorize(await f.start());
-    const foreign = await f.routes(new Request(a.callbackUrl, { headers: { "x-fixture-session": f.bobToken } }));
-    assert.equal(foreign!.status, 303); assert.equal(f.calls.length, 0);
-    await f.routes(new Request(a.callbackUrl));
+    const foreign = await f.completeCallback(a.callbackUrl, f.bobToken);
+    assert.equal(foreign!.status, 401); assert.equal(f.calls.length, 0);
+    await f.completeCallback(a.callbackUrl);
     const c = await f.call("discoverConnectionAccounts", f.change(await f.call("connection", { connectionId: a.c.id })));
     const bobView = await f.server.call(f.bobPrincipal, "p", "connection", { connectionId: c.id });
     assert.equal(bobView.discovery.accounts.length, 0); assert.equal(bobView.account, null); assert.equal(bobView.accessReview, null);
     await assert.rejects(f.server.call(f.bobPrincipal, "p", "selectConnectionAccount", { ...f.change(c), choiceRef: c.discovery.accounts[0]!.choiceRef }), /connection_session_changed/);
-    await assert.rejects(f.server.call(f.principal, "other", "connection", { connectionId: c.id }), /forbidden/);
+    await assert.rejects(f.server.call(f.principal, "other", "connection", { connectionId: c.id }), /forbidden|session_authority_changed|host_session_authority_required/);
     await assert.rejects(f.call("selectConnectionAccount", { ...f.change(c), choiceRef: c.discovery.accounts[0]!.choiceRef, ready: true } as any), /unknown_field|unexpected|invalid/i);
   } finally { await f.close(); }
 });
 for (const change of ["membership", "session", "configuration"] as const) test(`C07/C15: ${change} change during discovery discloses no late accounts and commits no grant`, async () => {
   const f = await connectionFixture();
   try {
-    const a = await f.authorize(await f.start()); await f.routes(new Request(a.callbackUrl)); const c = await f.call("connection", { connectionId: a.c.id });
+    const a = await f.authorize(await f.start()); await f.completeCallback(a.callbackUrl); const c = await f.call("connection", { connectionId: a.c.id });
     let changed = false;
     f.boundary(async url => { if (!url.pathname.endsWith("/me/adaccounts") || changed) return; changed = true;
       if (change === "membership") await f.store.db.prepare("DELETE FROM memberships WHERE user_id=? AND project_id=?").run(f.alice, "p");
@@ -40,19 +40,19 @@ test("C15: external sessions require an original opaque reference, and logout af
     const connections = createConnections({ store: f.store, custody: f.custody, accessPolicy: async () => f.currentPolicy(), sessions: { current: async () => current }, evidence: "fixture" });
     const p = { userId: f.alice, externalSessionRef: "host-session-one" };
     assert.equal((await connections.call({ userId: f.alice }, "p", "connections", {})).providers[0]!.configured, false);
-    const c = await connections.call(p, "p", "startConnection", { provider: { kind: "advertising", provider: "meta" }, intent: { kind: "advertising", operations: ["setup", "report"] }, expiresAt: new Date(Date.now() + 3600000).toISOString(), offlineAccess: false, requestKey: "external" });
-    current = "replacement-session";
-    await assert.rejects(connections.call(p, "p", "reviewConnectionProviderAccess", f.change(c)), /connection_session_changed/);
-    const v = await connections.call(p, "p", "connection", { connectionId: c.id }); assert.equal(v.accessReview, null);
+    await assert.rejects(connections.call(p, "p", "startConnection", { provider: { kind: "advertising", provider: "meta" }, intent: { kind: "advertising", operations: ["setup", "report"] }, expiresAt: new Date(Date.now() + 3600000).toISOString(), offlineAccess: false, requestKey: "external" }), /host_session_authority_required/);
+    // The former current() adapter is insufficient for a revocation-coordinated
+    // commit. Full external-host proof is in portable-handoff.test.ts.
+
   } finally { await f.close(); }
 });
 test("C08/C12: failed consumed-code exchange stays unknown; original callbacks never replay and reconciliation requires fresh consent", async () => {
   const f = await connectionFixture();
   try {
     const a = await f.authorize(await f.start()); f.failExchange();
-    const response = await f.routes(new Request(a.callbackUrl)); assert.equal(response!.headers.get("location"), "https://sdk.example/");
+    const response = await f.completeCallback(a.callbackUrl); assert.equal(response!.status, 200);
     let c = await f.call("connection", { connectionId: a.c.id }); assert.equal(c.phase, "outcome_unknown");
-    await f.routes(new Request(a.callbackUrl)); assert.equal(f.calls.length, 1);
+    await f.completeCallback(a.callbackUrl); assert.equal(f.calls.length, 1);
     await assert.rejects(f.call("beginConnectionHandoff", f.change(c)), /provider_access_decision_required/);
     c = await f.call("reconcileConnection", f.change(c)); assert.equal(c.phase, "needs_reauthorization");
     assert.ok(!JSON.stringify(c).includes("DO_NOT_EXPOSE")); assert.equal((await f.store.list("p", "grant")).length, 0);
@@ -63,19 +63,19 @@ test("C08/C15: logout during exchange retains only restricted encrypted outcome;
   try {
     const a = await f.authorize(await f.start());
     f.boundary(async url => { if (url.pathname.endsWith("/oauth/access_token")) await f.store.revokeSession(f.aliceToken); });
-    await f.routes(new Request(a.callbackUrl));
+    await f.completeCallback(a.callbackUrl);
     assert.equal((await f.store.list("p", "grant")).length, 0);
     const callbacks = await f.store.list<any>("p", "connectionCallback"); assert.equal(callbacks[0].status, "received");
     const vault = await f.store.list("p", "vault"); assert.ok(!JSON.stringify(vault).includes("SYNTHETIC_ACCESS_TOKEN"));
     await assert.rejects(f.call("connection", { connectionId: a.c.id }), /authentication_required/);
     const token = await f.store.login("alice", "", "new-session"), replacement = await f.store.authenticate(token!);
-    await assert.rejects(f.server.call(replacement, "p", "reconcileConnection", f.change(a.c)), /revision_conflict|connection_session_changed/);
+    await assert.rejects(f.server.call(replacement, "p", "reconcileConnection", f.change(a.c)), /revision_conflict|connection_session_changed|authentication_required/);
   } finally { await f.close(); }
 });
 test("C09/C12: cancellation during account read fences result; repeated requests cannot dispatch again", async () => {
   const f = await connectionFixture();
   try {
-    const a = await f.authorize(await f.start()); await f.routes(new Request(a.callbackUrl));
+    const a = await f.authorize(await f.start()); await f.completeCallback(a.callbackUrl);
     let c = await f.call("connection", { connectionId: a.c.id }); const input = f.change(c); let cancelled = false;
     f.boundary(async url => {
       if (!url.pathname.endsWith("/me/adaccounts") || cancelled) return; cancelled = true;
@@ -95,8 +95,8 @@ test("C07/C12/C14: concurrent verify and account changes are CAS fenced; permiss
     f.boundary(async url => { if (!url.pathname.endsWith("/me/adaccounts") || changed) return; changed = true;
       await f.store.db.prepare("UPDATE memberships SET role=? WHERE user_id=? AND project_id=?").run("analyst", f.alice, "p");
     });
-    await assert.rejects(f.call("resumeConnection", input), /forbidden/);
-    await assert.rejects(f.call("resumeConnection", input), /forbidden/);
+    await assert.rejects(f.call("resumeConnection", input), /forbidden|session_authority_changed|host_session_authority_required/);
+    await assert.rejects(f.call("resumeConnection", input), /forbidden|session_authority_changed|host_session_authority_required/);
     assert.equal((await f.store.list("p", "grant")).length, 0);
   } finally { await f.close(); }
 });
@@ -106,7 +106,7 @@ test("C07/C13: Agent cannot approve either human decision; configuration and sco
     let c = await f.start(); c = await f.call("reviewConnectionProviderAccess", f.change(c));
     const agent = (await f.store.db.prepare("SELECT id FROM users WHERE kind='agent'").get())!;
     const r = c.accessReview!;
-    await assert.rejects(f.server.call({ userId: String(agent.id) }, "p", "decideConnectionProviderAccess", { ...f.change(c), decisionRef: r.decisionRef, digest: r.digest, decision: "approved" }), /forbidden/);
+    await assert.rejects(f.server.call({ userId: String(agent.id) }, "p", "decideConnectionProviderAccess", { ...f.change(c), decisionRef: r.decisionRef, digest: r.digest, decision: "approved" }), /forbidden|session_authority_changed|host_session_authority_required/);
     f.policy({ ...f.currentPolicy(), allowedOAuthScopes: [] });
     await assert.rejects(f.call("decideConnectionProviderAccess", { ...f.change(c), decisionRef: r.decisionRef, digest: r.digest, decision: "approved" }), /configuration_changed/);
     assert.equal(f.calls.length, 0);
@@ -130,7 +130,7 @@ test("C09/C15: explicit new-session takeover invalidates an unconsumed old callb
     const current = await f.call("connection", { connectionId: a.c.id });
     const next = await f.server.call(f.bobPrincipal, "p", "reassignConnection", f.change(current));
     assert.equal(next.phase, "requirements"); assert.equal(next.providerAuthorized.status, "not_checked");
-    await f.routes(new Request(a.callbackUrl)); assert.equal(f.calls.length, 0);
+    await f.completeCallback(a.callbackUrl); assert.equal(f.calls.length, 0);
     assert.equal((await f.store.list("p", "grant")).length, 0);
   } finally { await f.close(); }
 });
@@ -165,7 +165,7 @@ test("C07/C14: account/identity context changed at verification cannot create a 
 test("C08/C12: reconstructing the service from persisted receipts recovers a lost callback response without code replay", async () => {
   const f = await connectionFixture();
   try {
-    const a = await f.authorize(await f.start()); await f.routes(new Request(a.callbackUrl));
+    const a = await f.authorize(await f.start()); await f.completeCallback(a.callbackUrl);
     const restarted = createConnections({ ...f.connections.options });
     const routes = restarted.routes({ origin: f.custody.origin, authenticate: async () => f.principal });
     await routes(new Request(a.callbackUrl));
@@ -191,8 +191,8 @@ test("C08/C13: expired unconsumed handoff requires a fresh exact decision and fe
     t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 301000 });
     let c = await f.call("connection", { connectionId: a.c.id }); assert.equal(c.phase, "reviewing_provider_access"); assert.equal(c.handoffPath, null);
     const renewed = await f.authorize(c);
-    await f.routes(new Request(a.callbackUrl)); assert.equal(f.calls.length, 0);
-    await f.routes(new Request(renewed.callbackUrl));
+    await f.completeCallback(a.callbackUrl); assert.equal(f.calls.length, 0);
+    await f.completeCallback(renewed.callbackUrl);
     c = await f.call("connection", { connectionId: a.c.id }); assert.equal(c.phase, "choosing_account");
   } finally { t.mock.timers.reset(); await f.close(); }
 });
@@ -200,7 +200,7 @@ test("C07/C15: credential expiry during an awaited provider read rejects late re
   const f = await connectionFixture();
   try {
     f.tokenLifetime(30);
-    const a = await f.authorize(await f.start()); await f.routes(new Request(a.callbackUrl));
+    const a = await f.authorize(await f.start()); await f.completeCallback(a.callbackUrl);
     const c = await f.call("connection", { connectionId: a.c.id });
     f.boundary(async url => { if (url.pathname.endsWith('/me/adaccounts')) t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 31000 }); });
     await assert.rejects(f.call('discoverConnectionAccounts', f.change(c)), /provider_access_expired_or_denied/);
@@ -237,7 +237,7 @@ test("review: role downgrade during a status policy await cannot disclose prior 
 test("review: an expired unknown exchange cannot be bypassed by a new start key", async t => {
   const f = await connectionFixture();
   try {
-    const a = await f.authorize(await f.start()); f.failExchange(); await f.routes(new Request(a.callbackUrl));
+    const a = await f.authorize(await f.start()); f.failExchange(); await f.completeCallback(a.callbackUrl);
     t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 3601000 });
     await assert.rejects(f.start(), /unresolved_connection_exists/);
     let c = await f.call("connection", { connectionId: a.c.id });

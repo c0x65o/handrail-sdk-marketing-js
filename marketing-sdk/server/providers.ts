@@ -1,3 +1,7 @@
+import { countryPage, countryCode } from "./countries.js";
+import { currentPrerequisite } from "./preflight.js";
+import { providerBudgetBlockers } from "../core/index.js";
+import type { DiscoveredAccount, DiscoveredIdentity } from "./connection-discovery.js";
 import { selectedOptions } from "../core/index.js";
 import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, exactTargeting } from "./capabilities.js";
 import type {
@@ -26,6 +30,7 @@ export interface Credentials {
   loginCustomerId?: string;
 }
 export interface VaultPort {
+  useReadOnly?<T>(grant: Grant, guard: () => Promise<void>, action: (credentials: Credentials & { expiresAt: number; scopes: string[] }) => Promise<T>): Promise<T>;
   use<T>(
     grant: Grant,
     action: (credentials: Credentials) => Promise<T>,
@@ -319,12 +324,31 @@ export class NativeProvider implements ProviderPort {
   private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
     try {
-      return await this.vault.use(g, (credentials) =>
-        fn(
+      // A newer check cannot authorize a client that captured older credentials.
+      // Keep the envelope fingerprint private and fixed for this entire use.
+      const sealed = this.name === "meta" && g.id.startsWith("connection:")
+        ? digest(await this.store.get(g.projectId, "vault", g.secretRef)) : null;
+      const assertCustody = async () => {
+        if (!sealed) return;
+        requireThat(digest(await this.store.get(g.projectId, "vault", g.secretRef)) === sealed &&
+          digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g) &&
+          !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "provider_custody_changed");
+      };
+      const fetcher: typeof fetch = async (input, init) => {
+        await assertCustody();
+        const response = await this.fetcher(input, init);
+        // A write may have succeeded: let its caller retain returned object IDs
+        // before fencing the next request or final readback.
+        if (!init?.method || init.method === "GET") await assertCustody();
+        return response;
+      };
+      return await this.vault.use(g, async (credentials) => {
+        await assertCustody();
+        const result = await fn(
           this.name === "meta"
             ? new MetaMarketingClient({
                 ...credentials,
-                fetchImpl: this.fetcher,
+                fetchImpl: fetcher,
               })
             : this.name === "linkedin"
               ? new LinkedInMarketingClient({
@@ -337,14 +361,105 @@ export class NativeProvider implements ProviderPort {
                   credentials.loginCustomerId,
                   this.fetcher,
                 ),
-        ),
-      );
+        );
+        await assertCustody();
+        return result;
+      });
     } catch (error) {
       // Never expose provider bodies, request configuration or credential resolver errors.
       // Partial object IDs have already been retained inside prepare's write boundary.
       if (error instanceof DomainError) throw error;
       throw new DomainError("provider_request_failed", 502);
     }
+  }
+  async searchCountries(g: Grant, query: string, after: string | undefined, guard: () => Promise<void>) {
+    requireThat(this.name === "meta" && g.provider === "meta" && this.vault.useReadOnly, "country_search_unsupported");
+    const sealed = digest(await this.store.get(g.projectId, "vault", g.secretRef));
+    const current = async () => {
+      await guard();
+      requireThat(digest(await this.store.get(g.projectId, "vault", g.secretRef)) === sealed &&
+        digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g), "provider_custody_changed");
+    };
+    try {
+      return await this.vault.useReadOnly(g, current, async credentials => {
+        requireThat(connectionScopes("meta", ["prepare"]).every(x => credentials.scopes.includes(x)), "provider_scope_missing");
+        const fetcher: typeof fetch = async (input, init) => {
+          const url = new URL(String(input));
+          requireThat(url.origin === "https://graph.facebook.com" && url.pathname === "/v26.0/search" &&
+            init?.method === "GET" && init.redirect === "error", "country_search_read_only_boundary");
+          await current(); const response = await this.fetcher(input, init); await current(); return response;
+        };
+        const result = countryPage(await new MetaMarketingClient({ ...credentials, fetchImpl: fetcher }).searchCountries(query, after));
+        await current(); return result;
+      });
+    } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("country_search_unavailable", 502); }
+  }
+  /** Search observations cannot substitute for this fresh exact selected-key proof. */
+  async resolveCountries(g: Grant, codes: string[], guard: () => Promise<void>) {
+    requireThat(codes.length > 0 && codes.length <= 20 && new Set(codes).size === codes.length && codes.every(countryCode), "selected_country_unresolved");
+    const result: { code: string; label: string }[] = [];
+    const began = Date.now();
+    for (const code of codes) {
+      requireThat(Date.now() - began < 30000, "country_resolution_deadline");
+      const page = await this.searchCountries(g, code, undefined, guard);
+      requireThat(Date.now() - began < 30000, "country_resolution_deadline");
+      const exact = page.countries.find(c => c.code === code);
+      // Absence in even a partial result is unresolved, never permission to delete.
+      requireThat(exact, "selected_country_unresolved"); result.push(exact);
+    }
+    return result;
+  }
+  /** SDK-owned read-only producer. It intentionally does not call verify(), which
+   * consumes existing proof. Only the qualified ordinary Meta tuple is produced. */
+  async inspectPrerequisites(c: Campaign, g: Grant, assets: Asset[], account: DiscoveredAccount,
+    identities: DiscoveredIdentity[], guard: () => Promise<void>) {
+    this.plan(c, g, assets);
+    const blockers = providerBudgetBlockers(c.material);
+    requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified", 422);
+    const s = c.material.settings;
+    requireThat(s?.provider === "meta" && s.delivery === "ordinary" && s.objective === "OUTCOME_TRAFFIC" && s.optimization === "LINK_CLICKS",
+      "campaign_prerequisite_tuple_unqualified", 422);
+    requireThat(!s.targeting.languages.length, "targeting_catalogue_required", 422);
+    requireThat(this.vault.useReadOnly, "read_only_credential_custody_required");
+    const guardedFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      requireThat(url.origin === "https://graph.facebook.com" && url.pathname.startsWith("/v26.0/") &&
+        (!init?.method || init.method === "GET") && init?.redirect === "error", "prerequisite_read_only_boundary");
+      await guard(); const response = await this.fetcher(input, init); await guard(); return response;
+    };
+    const countries = await this.resolveCountries(g, c.material.audience.locations, guard);
+    try {
+      return await this.vault.useReadOnly(g, guard, async credentials => {
+        requireThat(connectionScopes("meta", ["prepare"]).every(x => credentials.scopes.includes(x)), "provider_scope_missing");
+        const discovered = await new ConnectionDiscovery(guardedFetch).verify("meta", credentials, account, identities, ["prepare"], guard);
+        const client = new MetaMarketingClient({ ...credentials, fetchImpl: guardedFetch });
+        await this.verifySettings(client, c, g);
+        const v = await client.verifyConnection({ adAccountId: g.accountId, pageId: g.pageId, pixelId: undefined });
+        requireThat(v.account.id === accountPath(g.accountId) && v.account.currency === g.currency && v.account.timezoneName === g.timezone,
+          "provider_account_context_changed");
+        requireThat(v.account.accountStatus === 1 && v.account.disableReason === 0 && v.paymentReady && v.fundingSourceObserved,
+          "provider_account_status_or_billing_unverified");
+        requireThat(v.permissions.adsManagement && v.assets.page.accessible && v.assets.page.id === g.pageId,
+          "provider_page_or_scope_unverified");
+        await guard();
+        return { expiresAt: credentials.expiresAt, facts: ["Current account membership and advertising role checked", "Current required scopes checked",
+          "Active account and billing signal observed", "Exact account currency and timezone checked", "Selected Page and Instagram relationship checked",
+          "Exact material, destination, media bytes and lifetime budget checked", `Selected countries freshly resolved: ${countries.map(c => c.label).join(", ")}`],
+          checkedFacts: { provider: "meta", apiVersion: "v26.0", countries, accountId: discovered.id, currency: discovered.currency,
+            timezone: discovered.timezone, role: discovered.roleSummary, permissions: discovered.permissions,
+            requiredScopes: connectionScopes("meta", ["prepare"]), accountStatus: v.account.accountStatus, disableReason: v.account.disableReason,
+            fundingSourceObserved: v.fundingSourceObserved, pageId: v.assets.page.id, instagramUserId: s.identity.instagramUserId ?? null,
+            acceptance: "prerequisites_only", uploads: 0, advertisingWrites: 0 }, account: discovered };
+      });
+    } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("provider_prerequisite_read_unavailable", 502); }
+  }
+  private async prerequisite(c: Campaign, g: Grant) {
+    if (!g.id.startsWith("connection:")) { validateAccountCapability(c, g, true); return; }
+    validateAccountCapability(c, g);
+    const blockers = providerBudgetBlockers(c.material);
+    requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified", 422);
+    const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(c.projectId, "asset", id)));
+    await currentPrerequisite(this.store, c, g, this.plan(c, g, assets));
   }
   async verify(
     g: Grant,
@@ -353,7 +468,7 @@ export class NativeProvider implements ProviderPort {
     intent?: Permission,
   ): ReturnType<ProviderPort["verify"]> {
     requireThat(intent === "pause" || this.name !== "linkedin" || g.timezone === "UTC", "linkedin_utc_required", 422);
-    if (campaign && intent !== "pause") validateAccountCapability(campaign, g, true);
+    if (campaign && intent !== "pause") await this.prerequisite(campaign, g);
     return await this.use(g, async (client) => {
       if (campaign?.material.settings && intent !== "pause") await this.verifySettings(client, campaign, g);
       if (this.name === "google") {
@@ -512,13 +627,13 @@ export class NativeProvider implements ProviderPort {
   ) {
     if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     const plan: any = this.plan(c, g, assets);
-    validateAccountCapability(c, g, true);
+    await this.prerequisite(c, g);
     const hostBeforeWrite = beforeWrite;
     const scopeDigest = digest({ c, g });
     beforeWrite = async () => {
       await hostBeforeWrite();
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
-      validateAccountCapability(c, g, true);
+      await this.prerequisite(c, g);
     };
     const ids: Record<string, string> = { readbackVersion: plan.readbackVersion ?? (c.material.settings ? "3" : "2") };
     const create = async (
@@ -1051,9 +1166,9 @@ export class NativeProvider implements ProviderPort {
     beforeWrite = async () => {
       await hostBeforeWrite();
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
-      if (activate) validateAccountCapability(c, g, true);
+      if (activate) await this.prerequisite(c, g);
     };
-    if (activate) validateAccountCapability(c, g, true);
+    if (activate) await this.prerequisite(c, g);
     return await this.use(g, async (client) => {
       if (this.name === "linkedin") client.beforeWrite = async () => {
         const guard = async () => { await beforeWrite(); };

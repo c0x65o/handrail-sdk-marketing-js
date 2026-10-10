@@ -1,5 +1,30 @@
 # From idea to accountable outcome
 
+Audience implementation candidate · 2026-10-08: [country Audience contract](design/AUDIENCE.md) extends P5/S02 and P9/I01 with SDK-owned ordinary Meta country search, retained selection and independent native selected-key proof. The F9 legacy async guard repair is included. Qualification and remaining gates are recorded in `artifacts/audience-db51378d/receipt.json`; broader targeting and real provider eligibility remain incomplete.
+
+Independent native-preflight review · 2026-10-08: [review findings](design/NATIVE-PREFLIGHT.md#independent-review--2026-10-08) repair proof freshness, captured-credential replacement and locked reconciliation. Exact synthetic verification, request-count corrections and custody are indexed by `artifacts/native-preflight-review-6c1025bc/receipt.json`. The next SDK product step is the permissioned provider targeting catalogue and Audience selection. Actual host/provider authority, public Git installation, platform acceptance and publication remain open; whole Marketing is incomplete.
+
+Native prerequisite candidate · 2026-10-07: [campaign check contract](design/NATIVE-PREFLIGHT.md) adds SDK-owned exact-campaign prerequisite production and status before NativeProvider preparation. Source/SQL and public-consumer HTTP-fixture evidence is indexed by `artifacts/native-preflight-7ed6998b/receipt.json`. This closes a bounded source workflow gap, not actual provider eligibility or whole-product acceptance; independent review and publication gates remain open.
+
+Independent joined review · 2026-10-07: [review findings](design/COMPLETE-JOURNEY.md#independent-joined-review--2026-10-07) and `artifacts/journey-review-51cb26ab/receipt.json` retain the repaired source and failed attempts. The local synthetic journey completes with explicit rate-limit recovery. Public NativeProvider composition stops before preparation because exact material capability evidence has no public producer. Native HTTP fixture checks are separate adapter evidence. Whole Marketing, actual host/provider authority and publication remain open.
+
+Joined journey candidate · 2026-10-07: [implementation and qualification boundaries](design/COMPLETE-JOURNEY.md) retain exact promotion/Tracking lineage and campaign navigation. See `artifacts/journey-97c78087/receipt.json` for actual evidence and unresolved checks. Separate independent final product review is required; no readiness or publication claim.
+
+Interactive planning candidate · 2026-10-07: the [text planning contract](design/INTERACTIVE-PLANNING.md) adds SDK-owned private text setup, current model/permission selection, exact request/cost review, native foreground dispatch, reservation/settlement and explicit validated-option selection. Synthetic qualification only; actual provider/host authority, persistent use and whole-product acceptance remain open. Publication remains stopped.
+
+Tracking/Results candidate update · 2026-10-07: the [Tracking contract](design/TRACKING-RESULTS.md)
+adds SDK-owned source setup, expiring authenticated QA tests, retained diagnostics,
+Studio/Launch navigation and validated completeness for Results. Required provider
+conversion delivery remains unavailable; real AI/persistent authority and full-product
+qualification remain open. This is unpublished candidate work awaiting independent
+product/security/source review, not acceptance or Ready for Clinton.
+
+Independent Tracking/Results review · 2026-10-07: repaired current source/collector
+completeness, exact Studio handoff guards, unqualified Meta conversion display and
+Tracking edit recovery. The [review contract](design/TRACKING-RESULTS.md#independent-review-repairs--2026-10-07)
+and `artifacts/tracking-review-b37ad76f/receipt.json` state the precise package-consumer
+scope. Provider delivery, real AI/persistent readiness and full Marketing remain open.
+
 Maintained product specification · implementation candidate update · 2026-10-06
 
 A person opens Marketing in a new project, connects an account, develops a campaign,
@@ -30,11 +55,26 @@ frozen prior qualification baselines. Candidate package version is unchanged.
 Later lifecycle, studio, tracking, launch and Results product work below remains
 proposed unless explicitly identified as existing source.
 
+The [shared Connections review](design/SHARED-CONNECTIONS-REVIEW.md) remains historical bounded proof. The [Studio implementation candidate](design/STUDIO-IMPLEMENTATION.md) now adds the SDK-owned library, business brief, manual and synthetic structured options, draft media, local preview/checks and typed Tracking/Launch handoff on canonical main. The [reviewed blueprint](design/STUDIO-BLUEPRINT.md) remains its design baseline. This evolving combined source has not received independent final-source/product acceptance or publication qualification.
+
+Interactive creative setup is session-limited. Retained ciphertext and billing
+facts do not authorize persistent or unattended use. Persistent setup/campaign
+automation remains **BLOCKED** until a separately approved owner grant through the
+existing host permission model and its synthetic/host qualification exist. That
+product gate does not authorize new grants or weakening the current session guards.
+
 This is the single maintained product specification. Its normative appendices are
+[portable handoff v1](design/PORTABLE-HANDOFF.md),
 [Connections interaction](design/CONNECTIONS.md), [public contract design and consumer](design/CONNECTIONS-CONTRACT.md),
 and [acceptance and evidence register](design/ACCEPTANCE.md). Update this requirement
 matrix with later implementation/evidence; preserve dated historical receipts.
 Engineering source and focused tests remain obligations in addition to product QA.
+
+The portable handoff candidate adds the shared SessionAuthority port, independent
+browser claim, Strict-cookie completion, stable provider callbacks and original-session
+grant resume. Its reference/external-host proofs use disposable SQL and synthetic
+HTTP. A production host session guard, native presentation/device return and live
+provider qualification are still required; this is not adoption or release acceptance.
 
 ## Original vision and source authority
 
@@ -289,3 +329,34 @@ authorized Preview adoption of the same UI → native exact-version QA and dot r
 Run bounded native platform qualification before selecting Preview's native mount.
 The full product gate includes remaining tranches. See the acceptance appendix for
 all dependencies and genuine deferred decisions. No isolated cosmetic release.
+
+Portable handoff review update (2026-10-07): the [independent review](design/PORTABLE-SECURITY-REVIEW.md)
+adds private-page host CSRF headers and explicit React visibility/disposal with bounded
+async refresh, corrects legacy authority handling and clarifies actual consumer and
+host deployment gates. Supplied Agent 0.2.16 `e699cf960082d55a444dd8275f1b85f3cb682c65`
+supersedes the historical .15 dependency baseline for future pair qualification.
+No earlier publication or source-only pass establishes full product acceptance.
+
+The [shared creative session candidate](design/EXTERNAL-CREATIVE-SESSIONS.md) unifies
+manual OpenAI/xAI setup with the advertising SessionAuthority and private host-header
+submission contract. It retains fenced uncertain custody and qualifies source-issued
+historical callbacks separately. Exact verification and remaining host/native/product
+gates are recorded with the candidate; this is not adoption or release acceptance.
+
+Independent Studio review (2026-10-07): the combined candidate's bounded manual and
+synthetic journey has received source/product repairs and separate SQL/installed
+consumer review. See the final verdict/hash index at
+`artifacts/studio-review-1a8c3ad5/receipt.json` and the acceptance appendix. This does
+not complete Marketing: actual Tracking collection/diagnostics and Results delivery,
+real text custody/billing authority, persistent execution, exact authorized public
+Git consumption, host/native/device and personal target validation remain distinct
+gates. No publication or deployment was attempted by this review.
+
+Independent interactive planning review (2026-10-07): the
+[review contract](design/INTERACTIVE-PLANNING.md#independent-review--2026-10-07)
+records stream/accounting/lifecycle repairs and explicit native-provider rejection
+on SQLite. The no-grant draft journey reaches honest Results unavailability;
+populated reporting cannot be proved by inserting a separate fixture campaign.
+Target-host authority/atomic billing and an SDK-owned promotion-to-Results journey
+are the next product gate. Actual provider, persistent, public-install, native,
+accessibility and dot acceptance remain open; publication remains stopped.

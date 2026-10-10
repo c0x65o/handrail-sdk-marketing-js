@@ -1,0 +1,30 @@
+import { readFileSync } from "node:fs";
+import { emptyBrief, type Grant, type Commands } from "../core/index.js";
+import { MarketingServer, NativeProvider } from "../server/index.js";
+import { connectionFixture } from "./connection-fixture.js";
+import { fixtureSettings } from "./capability-fixtures.js";
+import { trackingFixture } from "./tracking-fixture.js";
+import { metaPreflightHttp } from "./meta-preflight-http.js";
+export async function nativePreflightFixture(external = false) {
+  const f=await connectionFixture('meta',true,external);
+  const connection=await f.call('resumeConnection',f.change(await f.approved()));
+  const g=await f.store.get<Grant>('p','grant',connection.grantId!);
+  const source=await trackingFixture(f.store,'http://127.0.0.1:12345');
+  const http=metaPreflightHttp(f.connections.discovery.fetcher);
+  const provider=new NativeProvider("meta",f.custody,f.store,http.fetch);
+  const server=new MarketingServer(f.store,{meta:provider,google:provider,linkedin:provider},f.server.generation,f.server.agent,'fixture',undefined,undefined,{connections:f.connections,studio:{sessions:f.connections.sessionAuthority},tracking:source.options});
+  const call=<K extends keyof Commands>(command:K,input:Commands[K]['input'])=>server.call(f.principal,'p',command,input);
+  const destination=source.source.destinations[0]!.url;
+  let d=await call('saveBrief',{requestKey:'brief',brief:{...emptyBrief(),name:'Same campaign journey',offer:'Tour',destination}});
+  d=await call('saveCampaignOption',{draftId:d.id,expectedRevision:d.revision,requestKey:'option',value:{title:'Tour',audienceHypothesis:'Visitors',offer:'Tour',rationale:'Invitation',unknowns:[],provider:'meta',format:'single_image',destination,variants:[{headline:'Visit',body:'Tour the workshop',cta:'Learn more'}]}});
+  d=await call('selectCampaignOption',{draftId:d.id,expectedRevision:d.revision,requestKey:'select',optionId:d.studio.options[0]!.id,optionRevision:1,variant:0});
+  const asset=await server.studio.importRaster(f.principal,'p',{draftId:d.id,expectedRevision:d.revision,requestKey:'import',rights:'Owned synthetic artwork'},readFileSync('marketing-sdk/tests/fixtures/test-pattern.png'));
+  d=await call('selectStudioMedia',{draftId:d.id,expectedRevision:d.revision,requestKey:'media',assetIds:[asset.id]});
+  const captured=await call('captureDestination',{url:destination});
+  d=await call('saveStudioMaterial',{draftId:d.id,expectedRevision:d.revision,requestKey:'material',step:'tracking',material:{...d.material,destinationDigest:captured.digest,settings:fixtureSettings('meta',g.accountId,g.pageId!),audience:{provider:'meta',locations:['US'],ageMin:25,ageMax:54,expansion:false},budget:{currency:g.currency,minor:1000},timezone:g.timezone,startAt:'2026-11-01T05:00:00Z',endAt:'2026-11-08T06:00:00Z'}});
+  const owner={kind:'draft' as const,id:d.id};
+  const binding=await call('bindTracking',{owner,expectedRevision:d.revision,expectedBindingRevision:0,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry',refundTreatment:null,requestKey:'bind'});
+  const input={draftId:d.id,expectedRevision:d.revision,grantId:g.id,expectedGrantRevision:g.revision,requestKey:'promote'};
+  const c=await call("promoteStudio",input);
+  return {...f,server,call,d,asset,source,binding,owner,input,c,http,check:{campaignId:c.id,expectedRevision:c.revision,expectedGrantRevision:g.revision,requestKey:"check"}};
+}

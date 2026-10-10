@@ -1,0 +1,19 @@
+import { createMarketingClient, type CampaignCheck } from '@handrail/marketing';
+import type { AudienceContext, AudienceSearch, AudienceSelection } from '@handrail/marketing';
+const client = createMarketingClient('https://consumer.invalid/api', 'project');
+export async function check(): Promise<CampaignCheck | null> {
+  const result: CampaignCheck = await client.call('checkCampaign', { campaignId: 'campaign', expectedRevision: 1, expectedGrantRevision: 1, requestKey: 'one-attempt' });
+  // @ts-expect-error Browser callers cannot supply prerequisite proof or ready flags.
+  await client.call('checkCampaign', { campaignId: 'campaign', expectedRevision: 1, expectedGrantRevision: 1, requestKey: 'forged', ready: true });
+  return client.call('campaignCheck', { campaignId: result.campaignId, requestKey: 'one-attempt' });
+}
+export async function countries(context: AudienceContext): Promise<AudienceSelection[]> {
+  const found: AudienceSearch = await client.call('searchAudience', { ...context, query: 'Canada' });
+  const selected = await client.call('resolveAudience', { ...context, choiceRefs: found.choices.map(c => c.choiceRef), selected: [] });
+  await client.call('audienceStatus', { ...context, selected: selected.selections.map(c => c.code) });
+  // @ts-expect-error Provider cursors/URLs are not browser search inputs.
+  await client.call('searchAudience', { ...context, query: 'Canada', providerUrl: 'https://untrusted.invalid' });
+  // @ts-expect-error This qualification only supports the country facet.
+  await client.call('searchAudience', { ...context, query: 'Canada', facet: 'city' });
+  return selected.selections;
+}

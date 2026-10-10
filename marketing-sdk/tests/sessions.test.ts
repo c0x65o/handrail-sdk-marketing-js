@@ -95,7 +95,7 @@ test("two independent HTTP users cannot cross projects; logout, expiry, revoke-a
       const r = await fetch(`${base}/api/login`, { method: "POST", headers: { "content-type": "application/json", origin: "https://marketing.example" }, body: JSON.stringify({ username, password }) });
       assert.equal(r.status, 200);
       const cookie = r.headers.get("set-cookie")!;
-      assert.match(cookie, /HttpOnly/); assert.match(cookie, /Secure/); assert.match(cookie, /SameSite=Lax/);
+      assert.match(cookie, /HttpOnly/); assert.match(cookie, /Secure/); assert.match(cookie, /SameSite=Strict/);
       assert.equal(JSON.stringify(await r.json()).includes("session"), false);
       return cookie.split(";")[0]!;
     };

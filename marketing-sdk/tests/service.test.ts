@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { digest } from "../server/store.js";
 import { MarketingServer } from "../server/service.js";
+import type { TrackingOptions } from "../server/tracking.js";
+import type { TrackingSource } from "../core/index.js";
 import {
   FixtureAgent,
   FixtureGeneration,
@@ -94,19 +96,8 @@ export async function setupTest() {
     password: "test-only-randomized-in-browser",
     analystPassword: "a",
   });
-  const admin = {
-    userId: String(
-      (await store.db.prepare("SELECT id FROM users WHERE login=?").get("qa"))!
-        .id,
-    ),
-  };
-  const analyst = {
-    userId: String(
-      (await store.db
-        .prepare("SELECT id FROM users WHERE login=?")
-        .get("qa.analyst"))!.id,
-    ),
-  };
+  const admin = await store.authenticate((await store.login("qa", "test-only-randomized-in-browser", "service-admin"))!);
+  const analyst = await store.authenticate((await store.login("qa.analyst", "a", "service-analyst"))!);
   const agent = {
     userId: await store.createUser("agent", "unused", "agent"),
   };
@@ -126,7 +117,7 @@ export async function setupTest() {
     generation,
     new FixtureAgent(store),
     "fixture",
-    () => clock,
+    () => clock, undefined, {tracking: formulaTracking(store)},
   );
   const reset = async () => {
     await store.close();
@@ -144,7 +135,7 @@ export async function setupTest() {
       generation,
       new FixtureAgent(store),
       "fixture",
-      () => clock,
+      () => clock, undefined, {tracking: formulaTracking(store)},
     );
     await service.recover();
   };
@@ -172,7 +163,7 @@ export async function setupTest() {
     },
     close: async () => {
       await store.close();
-      rmSync(dir, {
+      if (process.env.MARKETING_TEST_RETAIN !== "1") rmSync(dir, {
         recursive: true,
         force: true,
       });
@@ -250,7 +241,29 @@ async function campaign(
       assetIds: [complete.assetId!],
     },
   });
+  // Explicit synthetic completeness fixture for legacy formula regressions.
+  // Public authenticated checkpoint acceptance is exercised in tracking.test.ts.
+  await storeFixtureCoverage(t.store, c, "acquisition");
   return c;
+}
+async function storeFixtureCoverage(store: Awaited<ReturnType<typeof testStore>>, c: Campaign, purpose: "acquisition" | "recruitment") {
+  const source: TrackingSource = {id:"trusted-website",projectId:c.projectId,revision:"1",label:"Formula fixture",domain:"fixture.example",environment:"production",active:true,collector:"available",reason:null,outcomes:["inquiry","qualified","purchase","mou","application","applicant_qualified","hire"],destinations:[],instructions:[]};
+  await store.put(c.projectId,"formulaSource",source.id,source);
+  const grant=(await store.list<Grant>(c.projectId,"grant")).find(g=>g.accountId===c.material.settings?.accountId&&g.provider===c.material.settings?.provider&&!g.revokedAt&&Date.parse(g.expiresAt)>time);
+  await store.put(c.projectId, "trackingBinding", digest({kind:"campaign",id:c.id}), {id:digest({kind:"campaign",id:c.id}),revision:1,owner:{kind:"campaign",id:c.id},ownerRevision:c.revision,materialDigest:digest(c.material),accountDigest:grant?digest(grant):null,purpose,source});
+  await store.put(c.projectId, "validatedCoverage", `fixture-${c.id}-${purpose}`, {
+    id:`fixture-${c.id}-${purpose}`, version:1, campaignId:c.id, sourceId:"trusted-website", sourceRevision:"1",
+    bindingId:digest({kind:"campaign",id:c.id}), bindingRevision:1, materialDigest:digest(c.material), purpose,
+    from:"2020-01-01T00:00:00Z", until:"2100-01-01T00:00:00Z", checkpoint:"fixture-only",
+    sourceUniverseDigest:digest([source]), provenance:"synthetic formula test arrangement, not production completeness", collectorId:"fixture", collectorRevision:"1", receivedAt:new Date().toISOString(),
+  });
+}
+// Narrow factual host adapter for the existing synthetic formula arrangements.
+// This helper does not qualify HTTP acceptance (tracking.test.ts does that).
+function formulaTracking(store: Awaited<ReturnType<typeof testStore>>): TrackingOptions {
+  const source=()=>store.get<TrackingSource>("qa-alpha","formulaSource","trusted-website");
+  const context=async()=>({id:"fixture",revision:"1",permissions:["completion","coverage"] as const,expiresAt:Date.now()+60000,source:await source()});
+  return {sources:{inspectAccess:async()=>true,catalogue:async()=>[await source()],inspect:source,inspectUniverse:async()=>[await source()],withLiveSources:(_s,local)=>store.transaction(local)},collector:{authenticateRequest:context,inspectCollector:context,verifyCompletion:async()=>{throw new Error("not used by formula fixtures");},verifyCheckpoint:async()=>{throw new Error("not used by formula fixtures");},withLiveCollector:(_c,local)=>store.transaction(local)}};
 }
 async function prepared(t: Awaited<ReturnType<typeof setupTest>>) {
   await ready(t);
@@ -668,6 +681,7 @@ test("reporting: completed form counts once without qualification, dedupe, disti
         clickId,
         consentReceipt: "consent",
         sourceReceipt: `fixture-source-${eventId}`,
+        sourceId: "trusted-website",
         occurredAt,
         revenue:
           kind === "purchase"
@@ -1161,7 +1175,7 @@ test("trusted source retries preserve attribution; submissions, people, QA and a
     const window = { campaignId: c.id, from: new Date(time - 86400000).toISOString(), until: new Date(time + 1000).toISOString() };
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicants?.value, null);
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, null);
-    await t.store.put("qa-alpha", "firstPartyCoverage", "recruitment", { from: window.from, until: window.until, purpose: "recruitment" });
+    await storeFixtureCoverage(t.store, c, "recruitment");
     const results = await t.service.results(t.admin, "qa-alpha", window);
     assert.equal(results.completedSubmissions?.value, 2);
     assert.equal(results.uniquePeople?.value, 1);
@@ -1174,15 +1188,24 @@ test("trusted source retries preserve attribution; submissions, people, QA and a
     assert.equal(results.customers.value, 0);
     assert.equal(results.excludedTestEvents?.value, 2);
     assert.equal(results.spendMinor.value, null);
+    await t.store.put("qa-alpha", "metrics", "studio-measurement", { id:"studio-measurement",projectId:"qa-alpha",campaignId:c.id,
+      from:window.from,until:window.until,timezone:c.material.timezone,currency:c.material.budget.currency,observedAt:new Date(time).toISOString(),source:"fixture",
+      impressions:1000,clicks:25,providerConversions:7,spendMinor:100 });
+    const measured=await t.service.results(t.admin,"qa-alpha",window);
+    assert.equal(measured.ctr.value,0.025);assert.equal(measured.ctr.value!*100,2.5);
+    assert.equal(measured.completedSubmissions?.value,2);assert.equal(measured.uniquePeople?.value,1);
+    assert.equal(measured.providerConversions.value,null);assert.equal(measured.applicantRequests?.value,1);
+    await t.store.put("qa-alpha", "metrics", "studio-measurement", { id:"studio-measurement",projectId:"qa-alpha",campaignId:c.id,
+      from:"2020-01-01T00:00:00Z",until:"2020-01-02T00:00:00Z",timezone:c.material.timezone,currency:c.material.budget.currency,observedAt:new Date(time).toISOString(),source:"fixture",impressions:1000,clicks:25,providerConversions:7,spendMinor:100 });
     // An aggregate LinkedIn conversion number (or jobApplications) cannot become
     // a trusted completed MOU request, even when provider metrics are present.
     const aggregate = (await import("../server/providers.js")).summarizeMetrics([{ externalWebsiteConversions: "99", jobApplications: "500" }],
       { spend: "spend", impressions: "impressions", clicks: "clicks", conversions: "externalWebsiteConversions" }, 100);
     await t.store.put("qa-alpha", "metrics", "aggregate-only", { id: "aggregate-only", projectId: "qa-alpha", campaignId: c.id,
       from: window.from, until: window.until, timezone: c.material.timezone, currency: c.material.budget.currency, observedAt: new Date(time).toISOString(), source: "fixture", ...aggregate });
-    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).providerConversions.value, 99);
+    assert.equal((await t.service.results(t.admin, "qa-alpha", window)).providerConversions.value, null);
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, 1);
-    await t.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind=?").run("qa-alpha", "firstPartyCoverage");
+    await t.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind=?").run("qa-alpha", "validatedCoverage");
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, null);
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).completedSubmissions?.value, null);
     await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { grantId: "meta-qa", material: { ...sampleMaterial(), settings: undefined, purpose: "recruitment" } }), /recruitment_provider_unsupported/);
@@ -1357,4 +1380,19 @@ test("review: campaign save retry returns immutable SQL receipt without duplicat
       await assert.rejects(t.service.saveCampaign(t.admin, "qa-alpha", { ...input, requestKey: "forged-settings", material: { ...input.material, settings: settings as any } }));
     }
   } finally { await t.close(); }
+});
+
+for (const action of ["role", "session"] as const) test(`report HTTP read releases SQL locks and rechecks independent ${action} revocation`, async () => {
+  const t = await setupTest(), side = await testStore(t.path);
+  try {
+    const c = await campaign(t), read = t.provider.metrics.bind(t.provider);
+    t.provider.metrics = async (...args) => {
+      const value = await read(...args);
+      if (action === "role") await side.db.prepare("UPDATE memberships SET role='analyst' WHERE user_id=? AND project_id=?").run(t.admin.userId, "qa-alpha");
+      else await side.db.prepare("UPDATE sessions SET revoked_at=? WHERE token_hash=?").run(new Date().toISOString(), t.admin.sessionTokenHash!);
+      return value;
+    };
+    await assert.rejects(t.service.call(t.admin, "qa-alpha", "syncMetrics", {campaignId:c.id,from:c.material.startAt,until:c.material.endAt}), /session_authority_changed|authentication_required/);
+    assert.equal((await t.store.list("qa-alpha", "metrics")).length, 0);
+  } finally { await side.close(); await t.close(); }
 });

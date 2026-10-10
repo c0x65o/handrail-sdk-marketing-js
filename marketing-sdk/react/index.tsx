@@ -1,7 +1,14 @@
+import { AudienceClientContext } from "./audience.js";
+import { CampaignPrerequisites } from "./preflight.js";
+import { MarketingTracking, TrackingReadiness } from "./tracking.js";
+export { MarketingTracking } from "./tracking.js";
+import { CampaignStudio } from "./studio.js";
+export { CampaignStudio } from "./studio.js";
+import { useVisibleRefresh } from "./lifecycle.js";
 import { MarketingConnections } from "./connections.js";
 export { MarketingConnections } from "./connections.js";
 import { AudienceFields, GuidedFields, GuidedMaterialEditor, DraftCard, initialMaterial, DraftPromotion } from "./guided.js";
-import { capabilityBlockers, capabilityStatus, dailyExposureMinor, providerBudgetBlockers } from "../core/index.js";
+import { TRACKING_OUTCOMES, capabilityBlockers, dailyExposureMinor, providerBudgetBlockers } from "../core/index.js";
 import React, { useEffect, useRef, useState } from "react";
 import { planningWrite } from "./planning.js";
 import { completedCampaignWindow, dateAtInstant, selectedCompletedWindow } from "./schedule.js";
@@ -11,6 +18,7 @@ import type {
   MarketingClient,
   Material,
   Packet,
+  PublicGrant,
   Results,
   Workspace,
 } from "../core/index.js";
@@ -24,11 +32,16 @@ export function MaterialReview({
   material,
   assets,
   client,
+  grant,
 }: {
   material: Material;
   assets: Asset[];
   client: MarketingClient;
+  grant?: PublicGrant;
 }) {
+  const selectedGrant = grant?.provider === material.settings?.provider && grant?.accountId === material.settings?.accountId ? grant : undefined;
+  const identityLabel = (kind: NonNullable<PublicGrant["selectionOptions"]>[number]["kind"], id: string | undefined, fallback: string) =>
+    selectedGrant?.selectionOptions?.find(option => option.kind === kind && option.id === id)?.label || fallback;
   return (
     <div className="material-review">
       <div className="creative-preview">
@@ -43,8 +56,6 @@ export function MaterialReview({
             )}
             <figcaption>
               {a.source} · {a.kind} · v{a.version}
-              <br />
-              <code>{a.digest}</code>
             </figcaption>
           </figure>
         ))}
@@ -57,16 +68,16 @@ export function MaterialReview({
       <dl>
         <dt>Purpose / goal</dt><dd>{material.purpose || "acquisition"}{material.applicantGoal && ` · ${material.applicantGoal.event} · completed MOU request`}</dd>
         <dt>Provider settings</dt><dd>{material.settings ? `${material.settings.provider} · ${material.settings.objective} · ${material.settings.optimization} · ${material.settings.format}` : "Legacy material — review the retained plan"}</dd>
-        {material.settings && <><dt>Provider contract</dt><dd>API {material.settings.apiVersion} · {material.settings.accountId} · {material.settings.version}</dd>
+        {material.settings && <><dt>Advertising account</dt><dd>{selectedGrant?.label || "Selected account (name not supplied)"}</dd><dt>Provider contract</dt><dd>API {material.settings.apiVersion} · {material.settings.version}</dd>
           {material.settings.provider === "meta" && <><dt>Delivery and bidding</dt><dd>{material.settings.delivery} · billed on impressions · lowest cost without cap</dd>
             <dt>Special ad category</dt><dd>{material.settings.specialAdCategory || "none"}{material.settings.specialAdCategoryCountry && ` · ${material.settings.specialAdCategoryCountry}`}</dd></>}
-          {material.settings.conversion && <><dt>Exact conversion binding</dt><dd>{material.settings.provider === "meta" ? `Pixel ${material.settings.conversion!.pixelId} · custom conversion ${material.settings.conversion!.customConversionId} · ${material.settings.conversion!.event}` : `${material.settings.conversion!.id} · ${material.settings.conversion!.type} · ${material.settings.conversion!.event}`}</dd></>}
-          <dt>Identity and placements</dt><dd>{Object.entries(material.settings.identity).map(([k, v]) => `${k}: ${v}`).join(" · ")} · {material.settings.placements.join(", ")}</dd>
-          <dt>Audience</dt><dd>{material.audience.locations.join(", ")}{material.audience.ageMin !== undefined && ` · ages ${material.audience.ageMin}–${material.audience.ageMax}`} · expansion off</dd>
+          {material.settings.conversion && <><dt>Exact conversion binding</dt><dd>{material.settings.provider === "meta" ? `${identityLabel("pixel", material.settings.conversion!.pixelId, "Selected Pixel")} · ${identityLabel("conversion", material.settings.conversion!.customConversionId, "Selected custom conversion")} · ${material.settings.conversion!.event}` : `${identityLabel("conversion", material.settings.conversion!.id, "Selected conversion")} · ${material.settings.conversion!.type} · ${material.settings.conversion!.event}`}</dd></>}
+          <dt>Identity and placements</dt><dd>{material.settings.provider === "meta" ? <>{identityLabel("page", material.settings.identity.pageId, "Selected Page (name not supplied)")}{material.settings.identity.instagramUserId && ` · ${identityLabel("instagram", material.settings.identity.instagramUserId, "Selected Instagram identity (name not supplied)")}`}</> : identityLabel("organization", material.settings.identity.organizationId, "Selected organization (name not supplied)")} · {material.settings.placements.map(value => value.replaceAll("_", " ")).join(", ")}</dd>
+          <dt>Audience</dt><dd>{material.audience.provider === "meta" ? material.audience.locations.map(code => /^[A-Z]{2}$/.test(code) ? new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? "Unresolved country" : "Unresolved country").join(", ") : material.audience.locations.join(", ")}{material.audience.ageMin !== undefined && ` · ages ${material.audience.ageMin}–${material.audience.ageMax}`} · expansion off</dd>
           {material.settings.provider === "linkedin" && <><dt>Bidding</dt><dd>{material.settings.bid.mode} · {material.settings.bid.costType}{material.settings.bid.mode === "manual" && ` · ${material.budget.currency} ${material.settings.bid.amountMinor / 100}`}</dd></>}
           <dt>Targeting details</dt><dd>{material.settings.provider === "meta" ? <>
-            Languages: {material.settings.targeting.languages.map(x => `${x.label} (${x.id})`).join(", ") || "all"}. Interests: {material.settings.targeting.interestGroups.map(group => `(${group.map(x => `${x.label} (${x.id})`).join(" OR ")})`).join(" AND ") || "none"}. Excluded: {material.settings.targeting.excludedCustomAudiences.map(x => `${x.label} (${x.id})`).join(", ") || "none"}.
-          </> : (["include", "exclude"] as const).map(side => <p key={side}>{side}: {Object.entries(material.settings!.provider === "linkedin" ? material.settings!.targeting[side] : {}).map(([facet, options]) => `${facet}: (${(options as { id: string; label: string }[]).map(x => `${x.label} (${x.id})`).join(" OR ")})`).join(side === "include" ? " AND " : " OR ") || "none"}</p>)}</dd>
+            Languages: {material.settings.targeting.languages.map(x => x.label).join(", ") || "all"}. Interests: {material.settings.targeting.interestGroups.map(group => `(${group.map(x => x.label).join(" OR ")})`).join(" AND ") || "none"}. Excluded: {material.settings.targeting.excludedCustomAudiences.map(x => x.label).join(", ") || "none"}.
+          </> : (["include", "exclude"] as const).map(side => <p key={side}>{side}: {Object.entries(material.settings!.provider === "linkedin" ? material.settings!.targeting[side] : {}).map(([facet, options]) => `${facet}: (${(options as { id: string; label: string }[]).map(x => x.label).join(" OR ")})`).join(side === "include" ? " AND " : " OR ") || "none"}</p>)}</dd>
         </>}
         <dt>Lifetime media budget</dt>
         <dd>
@@ -98,12 +109,14 @@ export function MaterialReview({
 export function ApprovalPanel({
   client,
   packet,
+  grant,
   assets,
   canDecide,
   onChanged,
 }: {
   client: MarketingClient;
   packet: Packet;
+  grant?: PublicGrant;
   assets: Asset[];
   canDecide: boolean;
   onChanged: () => void;
@@ -132,14 +145,16 @@ export function ApprovalPanel({
       <div className="eyebrow">Human launch decision</div>
       <h2>Review this exact commitment</h2>
       <p>
-        Account {packet.accountId} · campaign revision {packet.campaignRevision}
+        {grant?.accountId === packet.accountId ? grant.label : "Selected advertising account"} · campaign revision {packet.campaignRevision}
         . Authorization expires {new Date(packet.expiresAt).toLocaleString()}.
       </p>
       <MaterialReview
         material={packet.material}
+        grant={grant}
         assets={assets}
         client={client}
       />
+      <section aria-label="Tracking in this launch review"><h3>Tracking configuration in this review</h3>{packet.tracking ? <><p>{TRACKING_OUTCOMES[packet.tracking.outcome].label} · {packet.tracking.source.label} · {packet.tracking.source.environment}</p><p>{packet.tracking.ownerRevision !== packet.campaignRevision && "This configuration belongs to an earlier campaign revision. Review Tracking before relying on it. "}Saved Tracking revision {packet.tracking.revision} · {packet.tracking.destination}</p><p>Changing this configuration requires a new launch review. This snapshot does not prove production coverage, provider delivery or attribution.</p></> : <p>No first-party Tracking configuration was saved for this campaign when this review was created.</p>}</section>
       <details>
         <summary>Exact packet and paused provider objects</summary>
         <pre>{JSON.stringify(packet, null, 2)}</pre>
@@ -181,10 +196,12 @@ export function ApprovalPanel({
 const tabs = [
   "Workspace",
   "Connections",
+  "Campaigns",
   "Creative",
   "Audience",
   "Launch",
   "Conversations",
+  "Tracking",
   "Results",
 ] as const;
 function ErrorNotice({ error, retry }: { error: string; retry: () => void }) {
@@ -197,21 +214,28 @@ function ErrorNotice({ error, retry }: { error: string; retry: () => void }) {
     </div>
   ) : null;
 }
+function formatResultMoney(minor: number, currency: string) {
+  const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency });
+  const digits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
+  return formatter.format(minor / 10 ** digits);
+}
 const key = () => crypto.randomUUID();
-export function MarketingWorkspace({ client }: { client: MarketingClient }) {
+export function MarketingWorkspace({ client, visible = true, sessionKey = "" }: { client: MarketingClient; visible?: boolean; sessionKey?: string }) {
   // Changing transport/project also discards drafts, errors and pending views.
-  const [scope, setScope] = useState({ client, version: 0 });
-  if (scope.client !== client)
-    setScope({ client, version: scope.version + 1 });
-  return <MarketingRoot><WorkspaceContent key={scope.version} client={client} /></MarketingRoot>;
+  const [scope, setScope] = useState({ client, sessionKey, version: 0 });
+  if (scope.client !== client || scope.sessionKey !== sessionKey)
+    setScope({ client, sessionKey, version: scope.version + 1 });
+  return visible ? <MarketingRoot><AudienceClientContext.Provider value={client}><WorkspaceContent key={scope.version} client={client} /></AudienceClientContext.Provider></MarketingRoot> : null;
 }
 function WorkspaceContent({ client }: { client: MarketingClient }) {
   const workspaceElement = useRef<HTMLDivElement>(null);
   const [data, setData] = useState<Workspace | null>(null),
-    [tab, setTab] = useState<(typeof tabs)[number]>("Workspace"),
+    [tab, setTab] = useState<(typeof tabs)[number]>("Campaigns"),
     [selected, setSelected] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
+  const [openDraftId, setOpenDraftId] = useState<string>();
+  const [trackingOwner, setTrackingOwner] = useState<import("../core/index.js").TrackingOwner>();
   const [readError, setReadError] = useState("");
   const reads = useRef({ active: false, next: 0, settled: 0 });
   const editable = useRef(false);
@@ -227,6 +251,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     [audienceDraft, setAudienceDraft] = useState<Material["audience"] | null>(null);
   const campaign =
     data?.campaigns.find((c) => c.id === selected) || data?.campaigns[0];
+  const reportingGrant = data?.grants.find(g => g.id === campaign?.grantId && !g.revokedAt && Date.parse(g.expiresAt) > Date.now() && g.permissions.includes("report"));
   const [creativeScope, setCreativeScope] = useState<string | undefined>(undefined);
   if (creativeScope !== campaign?.id) {
     setCreativeScope(campaign?.id); setPrompt(""); setRights(""); setStoryboard("");
@@ -236,7 +261,14 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
   // Reset during render so React cannot commit one frame of another campaign's edits/results.
   if (campaignScope !== campaignKey) {
     setCampaignScope(campaignKey);
-    setAudienceDraft(campaign?.material.audience || null);
+    let retained = campaign?.material.audience || null;
+    if (retained) {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(`marketing:audience:${campaignKey}`) || "null");
+        if (saved?.provider === retained.provider && Array.isArray(saved.locations) && saved.locations.length <= 20 && saved.locations.every((v: unknown) => typeof v === "string" && v.length <= 160)) retained = saved;
+      } catch { /* A malformed local display draft cannot change saved authority. */ }
+    }
+    setAudienceDraft(retained);
     setResult(null); setConversations(null); setReportDates({ from: "", until: "" });
   }
   const currentView = useRef("");
@@ -256,18 +288,20 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
       target?.focus();
     }
   }, [promotion]);
-  async function refresh() {
+  async function readWorkspace(signal: AbortSignal) {
     const scope = reads.current;
-    if (!scope.active) return;
+    // Connections owns its catalogue while selected. Parent return/focus events
+    // must not duplicate that child's authenticated reads.
+    if (!scope.active || (tab === "Connections" || tab === "Tracking") && data) return;
     const request = ++scope.next;
     try {
-      const next = await client.call("workspace", {});
-      if (!scope.active || request < scope.settled) return;
+      const next = await client.call("workspace", {}, { signal });
+      if (!scope.active || signal.aborted || request < scope.settled) return;
       scope.settled = request;
-      setData(previous => { if (!previous && next.grants.length === 0) setTab("Connections"); return next; });
+      setData(next);
       setReadError("");
     } catch (e) {
-      if (!scope.active || request < scope.settled) return;
+      if (!scope.active || signal.aborted || request < scope.settled) return;
       scope.settled = request;
       setReadError((e as Error).message);
     }
@@ -275,23 +309,35 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
   useEffect(() => {
     const scope = { active: true, next: 0, settled: 0 };
     reads.current = scope;
-    void refresh();
-    const t = setInterval(() => void refresh(), 1500);
     return () => {
       scope.active = false;
-      clearInterval(t);
     };
   }, [client]);
-  async function act(action: () => Promise<unknown>) {
+  const pendingWork = tab === "Connections" || tab === "Tracking" ? "" : [
+    ...(data?.jobs.filter(j => ["queued", "running", "processing"].includes(j.state)).map(j => j.id) ?? []),
+    ...(data?.operations.filter(o => ["queued", "running"].includes(o.state)).map(o => o.id) ?? []),
+  ].sort().join(":");
+  const refresh = useVisibleRefresh(readWorkspace, pendingWork);
+  const previousTab = useRef(tab);
+  useEffect(() => {
+    const previous = previousTab.current; previousTab.current = tab;
+    if (previous === "Connections" && tab !== "Connections" && tab !== "Tracking" && data) void refresh();
+  }, [tab]);
+  const actionLock = useRef(false);
+  async function act(action: () => Promise<unknown>, changesWorkspace = true) {
+    if (actionLock.current) return;
+    actionLock.current = true;
     const scope = reads.current;
+    scope.settled = ++scope.next;
     setBusy(true);
     setError("");
     try {
       await action();
-      if (scope.active) await refresh();
+      if (scope.active && changesWorkspace) await refresh();
     } catch (e) {
       if (scope.active) setError((e as Error).message);
     } finally {
+      actionLock.current = false;
       if (scope.active) setBusy(false);
     }
   }
@@ -309,14 +355,18 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
       }, materialWrite.current.key, data?.planningScope, () => reads.current.active);
     }
   }
+  const [prerequisiteState, setPrerequisiteState] = useState({ scope: "", ready: false });
+  const prerequisiteScope = `${campaign?.id}:${campaign?.revision}:${data?.grants.find(g => g.id === campaign?.grantId)?.revision}`;
   const selectedGrant = data?.grants.find(g => g.id === campaign?.grantId);
+  const needsPrerequisite = !!selectedGrant?.id.startsWith("connection:") && data?.nativePrerequisiteProviders?.includes(selectedGrant.provider);
   const readiness = campaign && selectedGrant ? [
     ...capabilityBlockers(campaign.material, selectedGrant),
-    ...(data?.mode === "live" ? providerBudgetBlockers(campaign.material) : []),
+    ...(campaign.material.settings?.conversion ? ["provider_event_delivery_unqualified_use_tracking_diagnostics"] : []),
+    ...((data?.mode === "live" || needsPrerequisite) ? providerBudgetBlockers(campaign.material) : []),
     ...(selectedGrant.provider !== "google" && !campaign.material.settings ? ["explicit_provider_settings_required"] : []),
     ...(selectedGrant.provider !== "google" && campaign.material.assetIds.length !== 1 ? ["single_image_required"] : []),
     ...(!data?.setups.some(s => s.grantId === campaign.grantId && s.state === "ready") ? ["verified_setup_required"] : []),
-    ...(data?.mode === "live" && campaign.material.settings && !capabilityStatus(campaign.material, selectedGrant).accountVerified ? ["account_capability_unverified"] : []),
+    ...(needsPrerequisite && !(prerequisiteState.scope === prerequisiteScope && prerequisiteState.ready) ? ["Check this campaign before preparing paused objects."] : []),
   ] : ["account_required"];
   const providerZoneValid = campaign?.material.audience.provider !== "linkedin" || campaign.material.timezone === "UTC";
   const completedWindow = campaign && providerZoneValid ? completedCampaignWindow(campaign.material.startAt,
@@ -381,7 +431,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
           <h2>Review saved planning result</h2>
           <p>A previous save completed. Review its saved result before saving another plan, even if you have edited the form or switched accounts.</p>
           <p>{w.result.material.name} · revision {w.result.revision} · {w.result.grantId
-            ? `${data.grants.find(g => g.id === w.result.grantId)?.label || "Account"} · ${data.grants.find(g => g.id === w.result.grantId)?.accountId || w.result.grantId}`
+            ? data.grants.find(g => g.id === w.result.grantId)?.label || "Selected account"
             : "unconnected draft"}</p>
           {w.result.grantId && <button onClick={() => { setSelected(w.result.id); setTab("Audience"); }}>Open saved campaign</button>}
           <details><summary>Saved material and provenance</summary><pre>{JSON.stringify(w.result, null, 2)}</pre></details>
@@ -393,7 +443,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
             Saving and checking…
           </p>
         )}
-        {data.campaigns.length > 0 && (
+        {data.campaigns.length > 0 && tab !== "Tracking" && (
           <label className="campaign-picker">
             Campaign
             <select
@@ -409,9 +459,12 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
             </select>
           </label>
         )}
+        {campaign && ["Launch", "Results", "Audience"].includes(tab) && <section className="card" aria-label="Campaign journey"><h2>{campaign.material.name}</h2><p>Campaign revision {campaign.revision} · {campaign.state}{campaign.draftOrigin && ` · from saved draft revision ${campaign.draftOrigin.revision}`}</p><div className="actions">{campaign.draftOrigin && <button onClick={()=>{setOpenDraftId(campaign.draftOrigin!.draftId);setTab("Campaigns");}}>Open source draft and selected media</button>}<button onClick={()=>{setTrackingOwner({kind:"campaign",id:campaign.id});setTab("Tracking");}}>Open campaign Tracking</button><button onClick={()=>setTab("Launch")}>Open campaign launch review</button><button onClick={()=>setTab("Results")}>Open campaign Results</button></div></section>}
+        <CampaignStudio openDraftId={openDraftId} client={client} workspace={data} visible={tab === "Campaigns"} onChanged={async draft => { if (!draft) { await refresh(); return; } setData(current => current ? {...current, drafts: [...current.drafts.filter(d => d.id !== draft.id), draft]} : current); }} onConnections={() => setTab("Connections")} onTracking={id => {setTrackingOwner({kind:"draft",id});setTab("Tracking");}} onLaunch={id => {setSelected(id);setTrackingOwner({kind:"campaign",id});setTab("Launch");}} />
+        {tab === "Tracking" && <MarketingTracking client={client} workspace={data} initialOwner={trackingOwner} onBack={()=>setTab("Campaigns")} onResults={()=>setTab("Results")}/>}
         {tab === "Workspace" && (
           <>
-            {promotion ? <DraftPromotion key={`${data.planningScope}:${promotion.id}:${promotion.revision}`} draft={promotion} grants={data.grants} client={client} scope={data.planningScope} disabled={!canEdit || busy} renderReview={m => <MaterialReview material={m} assets={[]} client={client} />} onCancel={() => { setPromotion(null); }} onSaved={async c => { await refresh(); setSelected(c.id); setPromotion(null); }} /> : <>
+            {promotion ? <DraftPromotion key={`${data.planningScope}:${promotion.id}:${promotion.revision}`} draft={promotion} grants={data.grants} client={client} scope={data.planningScope} disabled={!canEdit || busy} renderReview={m => <MaterialReview material={m} grant={data.grants.find(g => g.provider === m.settings?.provider && g.accountId === m.settings?.accountId)} assets={[]} client={client} />} onCancel={() => { setPromotion(null); }} onSaved={async c => { await refresh(); setSelected(c.id); setPromotion(null); }} /> : <>
             <section className="hero">
               <div className="eyebrow">Your next campaign</div>
               <h2>
@@ -450,7 +503,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
             <p>Create → Launch → Results · one creative set per campaign</p>
             <div className="grid">
               <section className="card">
-                <h2>Create a campaign</h2>
+                <h2>Create a campaign</h2><button onClick={() => setTab("Campaigns")}>Open Campaign Studio</button>
                 <CampaignForm key={data.planningScope}
                   grants={data.grants}
                   disabled={!canEdit || busy}
@@ -628,7 +681,6 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                       {a.width && `${a.width} × ${a.height}`}{" "}
                       {a.seconds && `${a.seconds}s`} · v{a.version}
                     </p>
-                    <code>{a.digest}</code>
                     {a.kind === "image" && (
                       <button
                         className="secondary"
@@ -699,7 +751,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   Provider-native location identifiers and explicit supported
                   rules. No automatic expansion.
                 </p>
-                {audienceDraft && <AudienceFields grant={selectedGrant} value={audienceDraft} onChange={setAudienceDraft} />}
+                {audienceDraft && <AudienceFields material={campaign.material} grant={selectedGrant} value={audienceDraft} onChange={value => { setAudienceDraft(value); try { sessionStorage.setItem(`marketing:audience:${campaignKey}`, JSON.stringify(value)); } catch { /* Saved server material stays available. */ } }} />}
                 <button
                   disabled={busy || !canEdit}
                   onClick={() =>
@@ -731,7 +783,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 <GuidedMaterialEditor
                   key={`${data.planningScope}:${campaign.id}:${campaign.revision}:${selectedGrant?.revision}`}
                   value={campaign.material}
-                  renderReview={m => <MaterialReview material={m} assets={(assets || []).filter(a => m.assetIds.includes(a.id))} client={client} />}
+                  renderReview={m => <MaterialReview material={m} grant={data.grants.find(g => g.provider === m.settings?.provider && g.accountId === m.settings?.accountId)} assets={(assets || []).filter(a => m.assetIds.includes(a.id))} client={client} />}
                   grant={data.grants.find(g => g.id === campaign.grantId)!}
                   disabled={busy || !canEdit}
                   onSave={(m) =>
@@ -751,6 +803,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
             <Empty />
           ) : (
             <>
+              <TrackingReadiness key={`${data.planningScope}:${campaign.id}:${campaign.revision}`} client={client} owner={{kind:"campaign",id:campaign.id}} onOpen={()=>{setTrackingOwner({kind:"campaign",id:campaign.id});setTab("Tracking");}}/>
               <section className="card">
                 <div className="eyebrow">
                   Campaign v{campaign.revision} · {campaign.state}
@@ -758,11 +811,14 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 <h2>{campaign.material.name}</h2>
                 <MaterialReview
                   material={campaign.material}
+                  grant={selectedGrant}
                   assets={assets.filter((a) =>
                     campaign.material.assetIds.includes(a.id),
                   )}
                   client={client}
                 />
+                {needsPrerequisite && <CampaignPrerequisites key={prerequisiteScope} client={client} campaign={campaign} grantRevision={selectedGrant!.revision} canEdit={!!canEdit}
+                  onState={ready => setPrerequisiteState({ scope: prerequisiteScope, ready })}/>}
                 {readiness.length > 0 && <div role="status"><strong>Launch readiness blockers</strong><ul>{readiness.map(x => <li key={x}>{x.replaceAll("_", " ")}</li>)}</ul></div>}
                 <div className="actions">
                   <button
@@ -809,6 +865,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   Actual delivery: {campaign.receipt?.delivery || "unverified"}.
                 </p>
               </section>
+              <section className="card" aria-label="Campaign operation progress"><h2>Campaign operation progress</h2>{!data.operations.some(o=>o.campaignId===campaign.id) && <p>No provider operations yet. Prepare the exact campaign when its requirements are complete.</p>}{data.operations.filter(o=>o.campaignId===campaign.id).map(o=><article key={o.id}><h3>{o.kind === 'prepare' ? 'Prepare paused objects' : o.kind === 'activate' ? 'Launch' : 'Pause'} · {o.state}</h3><p>{o.reason?.replaceAll('_',' ') || `${o.receipt?.intent || 'Pending'} · delivery ${o.receipt?.delivery || 'unverified'}`}</p>{o.state==='unknown' && <><p>The original operation may have taken effect. Its identifiers and reservations remain retained. Check that outcome before another action.</p><button disabled={busy||!canEdit} onClick={()=>void act(()=>client.call('reconcile',{operationId:o.id}))}>Reconcile original campaign outcome</button></>}</article>)}</section>
               {data.packets
                 .filter((p) => p.campaignId === campaign.id)
                 .slice(-1)
@@ -821,6 +878,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                       {!decision ? (
                         <ApprovalPanel
                           client={client}
+                          grant={selectedGrant}
                           packet={p}
                           assets={assets.filter((a) =>
                             p.material.assetIds.includes(a.id),
@@ -834,9 +892,8 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                             Human decision:{" "}
                             {decision.revokedAt ? "revoked" : decision.decision}
                           </h2>
-                          <code>{decision.digest}</code>
                           <p>
-                            Decision actor {decision.actorId}. Changed material
+                            This human decision covers the exact reviewed campaign. Changed material
                             or expired authority will reject execution.
                           </p>
                           <div className="actions">
@@ -845,7 +902,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                                 busy ||
                                 decision.decision !== "approved" ||
                                 !!decision.revokedAt ||
-                                campaign.state === "enabled"
+                                campaign.state !== "paused" || data.operations.some(o => o.campaignId === campaign.id && ["queued", "running", "unknown"].includes(o.state))
                               }
                               onClick={() =>
                                 void act(() =>
@@ -938,7 +995,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
           ))}
         {tab === "Results" &&
           (!campaign ? (
-            <Empty />
+            <section className="card"><h2>Campaign results are not available yet</h2><p>Results need a saved campaign and its reporting window. A draft's no-send Tracking tests remain QA evidence and do not create production outcomes.</p><button onClick={() => setTab("Campaigns")}>Back to Campaign Studio</button><button className="secondary" onClick={() => setTab("Tracking")}>Review Tracking diagnostics</button></section>
           ) : (
             <>
               <section className="card">
@@ -962,7 +1019,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 </fieldset>}
                 {!providerZoneValid && <p role="status">LinkedIn provider reports require UTC. This historical non-UTC campaign can use first-party results only; its dates are not relabeled.</p>}
                 <p>
-                  {window ? `${window.from} → ${window.until} (exclusive)` : "No completed provider days in this campaign yet."}
+                  {window ? `${new Date(window.from).toLocaleString(undefined, { timeZone: campaign.material.timezone })} → ${new Date(window.until).toLocaleString(undefined, { timeZone: campaign.material.timezone })} (end excluded)` : "No completed provider days in this campaign yet."}
                 </p>
                 <p className="muted">
                   {reportWindow === "campaign"
@@ -978,7 +1035,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                           const scope = currentView.current;
                           const value = await client.call("results", window!);
                           if (reads.current.active && scope === currentView.current) setResult(value);
-                        },
+                        }, false,
                       )
                     }
                   >
@@ -986,7 +1043,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   </button>
                   <button
                     className="secondary"
-                    disabled={busy || !canEdit || !window || reportWindow === "campaign"}
+                    disabled={busy || !canEdit || !reportingGrant || !window || reportWindow === "campaign"}
                     onClick={() =>
                       void act(async () => {
                         const scope = currentView.current;
@@ -994,25 +1051,31 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                         if (!reads.current.active || scope !== currentView.current) return;
                         const value = await client.call("results", window!);
                         if (reads.current.active && scope === currentView.current) setResult(value);
-                      })
+                      }, false)
                     }
                   >
                     Sync provider metrics
                   </button>
                 </div>
+                {!canEdit ? <p>A project administrator or editor can refresh provider data. You can still read retained results.</p>
+                  : !reportingGrant ? <p>Connect an account with current reporting access to refresh provider data. Retained results remain available. <button className="secondary" onClick={() => setTab("Connections")}>Review reporting connection</button></p>
+                  : (!window || reportWindow === "campaign") && <p>Select a completed provider-day window above to refresh provider data.</p>}
               </section>
               {result && (
                 <>
                   <p className="muted">
                     {result.source} ·{" "}
                     {result.stale ? "stale / not observed" : "fresh"} ·{" "}
-                    {result.observedAt || "no snapshot"} · {result.attribution}
+                    {result.observedAt ? new Date(result.observedAt).toLocaleString(undefined, { timeZone: result.timezone }) : "no snapshot"} · Last eligible paid click within seven days
                     {result.reportingBasis && ` · ${result.reportingBasis.window.replaceAll("-", " ")}`}
                   </p>
                   <p>{result.purpose === "recruitment" ? "Completed MOU requests count submitted ApplicantRequestMOU events. Completed applications, qualified applicants and hires are separate outcomes." : "Completed submissions count submitted events; unique people deduplicates completed forms by person."} QA, synthetic and production-excluded events do not count toward outcomes. Excluded test-event coverage requires both purpose collectors; missing coverage stays unknown. Provider conversions are provider aggregates, not proof of a first-party outcome.</p>
+                  {result.coverage && <p>First-party coverage: {result.coverage.state}. {result.coverage.reason}</p>}
+                  <p>Purchase revenue is gross before refunds. Refund-adjusted revenue is unavailable.</p>
                   <div className="metrics">
                     {(
                       [
+                        "purchases",
                         "spendMinor",
                         "impressions",
                         "clicks",
@@ -1037,6 +1100,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                       <article className="card" key={k}>
                         <h3>
                           {{
+                            purchases: "Completed purchases",
                             leads: "Unique people (completed forms)",
                             completedSubmissions: "Completed submissions",
                             applicantRequests: "Completed MOU requests",
@@ -1044,11 +1108,11 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                             qualifiedApplicants: "Qualified applicants",
                             hires: "Hires",
                             excludedTestEvents: "Excluded test events",
-                            spendMinor: "Media spend (minor)",
-                            mediaCacMinor: "Media CAC (minor)",
+                            spendMinor: "Media spend",
+                            mediaCacMinor: "Media CAC",
                             ctr: "CTR",
                             mediaRoas: "Media ROAS",
-                            revenueMinor: "Revenue (minor)",
+                            revenueMinor: "Gross revenue",
                             providerConversions: "Provider conversions",
                           }[k as string] || k}
                         </h3>
@@ -1057,7 +1121,9 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                             ? "—"
                             : k === "ctr"
                               ? `${(result[k].value! * 100).toFixed(2)}%`
-                              : Number(result[k]?.value).toLocaleString(
+                              : ["spendMinor", "mediaCacMinor", "revenueMinor"].includes(k)
+                                ? formatResultMoney(result[k]!.value!, result.currency)
+                                : Number(result[k]?.value).toLocaleString(
                                   undefined,
                                   { maximumFractionDigits: 2 },
                                 )}
@@ -1092,8 +1158,8 @@ function CampaignForm({ grants, disabled, onCreate }: { grants: Workspace["grant
   const [grantId, setGrantId] = useState(grants[0]?.id || "");
   const g = grants.find(x => x.id === grantId);
   return <><label>Account<select aria-label="Account" value={grantId} disabled={disabled} onChange={e => setGrantId(e.target.value)}>
-    {grants.map(x => <option key={x.id} value={x.id}>{x.provider} · {x.label} · {x.accountId}</option>)}</select></label>
-    {g && <p className="selected-account">Selected account: {g.label} · {g.accountId}</p>}
+    {grants.map(x => <option key={x.id} value={x.id}>{x.provider} · {x.label}</option>)}</select></label>
+    {g && <p className="selected-account">Selected account: {g.label}</p>}
     {g ? <ConnectedForm key={`${g.id}:${g.revision}`} grant={g} disabled={disabled} onCreate={onCreate} /> : <p>Save an unconnected draft below. A verified account is required to prepare provider objects.</p>}</>;
 }
 function ConnectedForm({ grant: g, disabled, onCreate }: { grant: Workspace["grants"][number]; disabled: boolean; onCreate: (m: { grantId: string; material: Material; requestKey: string }, isCurrent: () => boolean) => Promise<void> }) {

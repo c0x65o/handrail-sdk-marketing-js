@@ -119,7 +119,7 @@ OpenAI image generation uses the installed SDK with retries disabled. xAI video 
 
 Ingest only trusted completed-form/click/order receipts with consent and stable source identities. Duplicate source receipt IDs cannot double-count an event. Current reporting distinguishes completed submissions from unique people; legacy `leads` counts people completing forms without requiring qualification. Historical imports preserve original attribution and QA exclusion evidence. Recruitment applications, qualified applicants and hires remain separate from acquisition leads, qualification and customers. Attribution for new SDK events is last paid click within seven days; tied/ambiguous clicks reject. Conversations require a matching campaign's completed-form event and separate sales permission. No private messages are sent. See the [tracking product blueprint](PRODUCT.md#tracking-and-business-outcomes): ingestion and conversion ownership do not prove a website fires events or a provider accepts them.
 
-The host collector must attest collection coverage before absent first-party rows can become zero: write project-scoped `firstPartyCoverage` records with `from`, `until` and a retained source receipt from the collector's completeness checkpoint using trusted `Store.put`. Never infer coverage from a successful API call or expose this as an agent boolean. Without coverage the results are null with a reason. The fixture seed's synthetic coverage is explicitly labelled. Live collector integration remains deployment-specific.
+The host collector must attest collection coverage before absent first-party rows become zero. Use the server-only `MarketingTracking.attestCoverage` / `handleTrackingCollector(..., "coverage")` boundary with an authenticated retained checkpoint. It binds campaign, source/configuration, purpose, window and provenance. Legacy `firstPartyCoverage` intervals remain retained but no longer establish completeness; no records are automatically upgraded. Browser commands cannot submit completeness flags. A passing QA test never creates production coverage. See [Tracking/Results contracts](design/TRACKING-RESULTS.md).
 
 Results use `[from, until)`, campaign timezone and currency, one-hour provider freshness, `ctr=clicks/impressions`, `mediaCacMinor=media spend/customers`, and `mediaRoas=attributed revenue/media spend`. These are media-only CAC/ROAS; no untracked business costs are implied. Missing data, mixed currencies and zero denominators have null reasons. Provider conversions are separate from first-party counts.
 
@@ -132,9 +132,28 @@ See [session mapping and migration](server/migrations/README.md) for host identi
 argument `{ connections }`. Use the same Store and HostAgent as existing provider
 operations. Bind a current human grant-maker policy with exact allowed operations,
 OAuth scopes, bounded duration and discovery use lifetime. SDK-authenticated
-principals carry `sessionTokenHash`. External principals must carry an opaque
-`externalSessionRef`; `sessions.current` checks that original reference afresh,
-including logout/replacement. User ID alone is insufficient.
+principals carry `sessionTokenHash`. New external-host Connections require the public
+`SessionAuthority` port plus verified `externalIdentity` issuer/subject and opaque
+`externalSessionRef`. It authenticates requests, inspects current session/user/project
+rights/configuration and fences final local commits with `withLiveSessions`.
+The older `sessions.current` check alone cannot authorize new external Connections.
+User ID, email, an app return hint or a fabricated SDK hash is insufficient.
+
+The [portable protocol](design/PORTABLE-HANDOFF.md) defines exact routing, lock order,
+failure/recovery and host ingress/service-worker obligations. The public
+[external-session adapter](examples/external-sessions.ts) maps existing host facts;
+the [SQL fixture](tests/external-session-fixture.ts) demonstrates it without SDK
+passwords or SDK session rows. Neither is a production Preview adapter.
+
+`beginConnectionHandoff` retains a versioned token-free `handoff` descriptor.
+The SDK-owned private page independently authenticates and claims the same verified
+actor; it never copies a native cookie. Callback GET is an unprivileged, no-store
+landing; fresh same-origin POST checks the claimed browser and original session.
+New callback URIs are `${configuredOrigin}/api/marketing/oauth/{provider}/callback`,
+identical for every project. Existing project-path attempts keep their issued URI.
+Register only trusted configuration, never an address from Host/forwarded headers.
+Browser return carries just a correlator; only original-session resume can finish a
+new grant. Native process death/new login does not silently restore that authority.
 
 The [complete Fetch adapter](examples/connections-server.ts) compiles using public
 exports. It receives existing authentication, custody, policy and generation ports;
@@ -218,3 +237,19 @@ installation with matching lockfile remains gated on separately authorized sourc
 publication. Native Flutter dual-session handoff, Agent pre-grant compatibility,
 real provider entitlement and full Studio/tracking/Results/lifecycle acceptance are
 not qualified here. xAI video is generation, not X Ads or supported video-ad placement.
+
+
+### Campaign Studio candidate
+
+`MarketingWorkspace` now opens its SDK-owned Campaigns library and Studio journey.
+`CampaignStudio` can also be mounted from `@handrail/marketing/react` using the same
+client and authenticated Workspace. Manual brief/options/import/selection/checks
+work without Agent or AI credentials. See [the public contract and host prerequisites](design/STUDIO-IMPLEMENTATION.md).
+
+Use the existing host SessionAuthority in `MarketingServer`'s `options.studio.sessions`
+(or the updated Connections mount). Mount `handleStudioMedia` behind the existing
+authentication, Origin/CSRF and shared 120/minute rate gate for bounded binary import
+and project-owned byte reads. Optional text planning is synthetic-only. Existing
+host executors own explicit planning/draft-generation dispatch; the SDK starts no
+scheduler. Tracking is Missing integration / Not tested until a real collector
+contract is qualified. This candidate is uncommitted and requires independent review.

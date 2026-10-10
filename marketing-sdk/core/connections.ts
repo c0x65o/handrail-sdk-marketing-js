@@ -36,6 +36,7 @@ export interface IdentityChoice {
 export interface ConnectionAccessReview {
   decisionRef: string; digest: string; expiresAt: string;
   purpose: "provider_authorization" | "project_binding" | "revoke_project_access";
+  providerAppLabel?: string; discoveryExpiresAt?: string;
   summary: string; oauthScopes: string[]; providerAccountRange: string; offlineAccess: boolean;
   providerLifetime: string; projectAccessExpiresAt: string | null;
 }
@@ -51,6 +52,11 @@ export interface ConnectionView {
   discovery: { accounts: AccountChoice[]; identities: IdentityChoice[]; cursor: string | null;
     complete: boolean; expiresAt: string | null };
   handoffPath: string | null;
+  handoff?: ConnectionHandoffDescriptor | null;
+}
+/** Non-authorizing navigation/wake hint. Resume requires the original current session. */
+export interface ConnectionHandoffDescriptor {
+  version: 1; correlator: string; browserStartUrl: string; expiresAt: string; returnRouteId: "marketing";
 }
 export interface ConnectionRequirement { code: string; explanation: string; actor: "human" | "host_admin"; }
 export interface ConnectionCatalogue {

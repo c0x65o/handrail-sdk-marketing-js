@@ -30,7 +30,8 @@ if (process.argv[2] === 'vault-write') {
   custody.retain = async (...args) => { await retain(...args); await stop(); };
 } else {
   const transaction = store.transaction.bind(store);
-  store.transaction = async fn => { const value = await transaction(fn); await stop(); return value; };
+  let depth = 0;
+  store.transaction = async fn => { depth++; let value; try { value = await transaction(fn); } finally { depth--; } if (depth === 0 && (await store.get<any>("p", "creativeConnection", location.split("/").at(-1)!)).state === "configured") await stop(); return value; };
 }
 await post(location, input);
 throw Error('Crash boundary was not reached');

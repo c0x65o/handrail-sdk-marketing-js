@@ -34,5 +34,6 @@ try {
   process.exitCode = 1;
 } finally {
   if (started) execFileSync(join(bin, "pg_ctl"), ["-D", join(root, "data"), "-m", "immediate", "-w", "stop"], { stdio: "ignore" });
-  await rm(root, { recursive: true, force: true });
+  if (process.env.MARKETING_TEST_RETAIN === "1") console.log(`Retained disposable PostgreSQL evidence: ${root}`);
+  else await rm(root, { recursive: true, force: true });
 }

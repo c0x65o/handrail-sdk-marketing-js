@@ -1,16 +1,28 @@
+import { TextPlanningConnections } from './text-planning.js';
+import { useVisibleRefresh } from "./lifecycle.js";
 import React, { useEffect, useRef, useState } from "react";
 import type { ConnectionCatalogue, ConnectionCommands, ConnectionProvider, ConnectionView, MarketingClient, Permission } from "../core/index.js";
 
 /** SDK-owned manual journey. Replace client/sessionKey on project, login or logout changes. */
-export function MarketingConnections({ client, sessionKey = "", embedded = false, onContinue }: {
-  client: MarketingClient; sessionKey?: string; embedded?: boolean; onContinue?: (grantId: string | null) => void;
+export function MarketingConnections({ client, sessionKey = "", embedded = false, visible = true, onContinue }: {
+  client: MarketingClient; sessionKey?: string; embedded?: boolean; visible?: boolean; onContinue?: (grantId: string | null) => void;
 }) {
   const [scope, setScope] = useState({ client, sessionKey, revision: 0 });
   if (scope.client !== client || scope.sessionKey !== sessionKey) setScope({ client, sessionKey, revision: scope.revision + 1 });
-  return <div className={embedded ? "connections" : "marketing-root connections"}><ConnectionsContent key={scope.revision} client={client} embedded={embedded} onContinue={onContinue} /></div>;
+  return visible ? <div className={embedded ? "connections" : "marketing-root connections"}><ConnectionsContent key={scope.revision} client={client} embedded={embedded} onContinue={onContinue} /></div> : null;
 }
 const names = { meta: "Meta", google: "Google Ads", linkedin: "LinkedIn", openai: "OpenAI · Images", xai: "xAI · Video" };
+const operationLabels: Record<Permission, string> = { setup: "Connect account", report: "Read reports", prepare: "Prepare campaigns", activate: "Publish campaigns", pause: "Pause campaigns" };
+const scopeLabels: Record<string, string> = {
+  ads_read: "Read advertising accounts and reports", ads_management: "Manage advertising accounts and campaigns",
+  pages_read_engagement: "Read Page engagement and connected publishing identities",
+  r_ads: "Read advertising accounts and roles", r_ads_reporting: "Read advertising reports",
+  rw_ads: "Read and manage advertising accounts and campaigns", r_organization_admin: "Check your Page roles",
+  w_organization_social: "Create sponsored posts for eligible Pages", r_organization_social: "Read sponsored posts for eligible Pages",
+  "https://www.googleapis.com/auth/adwords": "Read and manage advertising accounts and campaigns. Google bundles this broad access even for reporting-only setup.",
+};
 const failureCopy: Record<string, string> = {
+  original_session_resume_required: "Return to the original app or tab that started this setup and resume verification there. This browser's consent does not create project access by itself.",
   provider_read_unavailable: "The provider check could not finish. Your choices are saved. Retry verification or refresh accounts.",
   provider_access_expired_or_denied: "Provider access expired or was denied. Review fresh access or check your provider account permissions.",
   provider_account_context_changed: "The provider account, currency or timezone changed. Choose the account again and review its access.",
@@ -58,22 +70,21 @@ function ConnectionsContent({ client, embedded, onContinue }: { client: Marketin
   const readSequence = useRef(0);
   const remember = (id: string | null) => { try { if (storageKey.current) { if (id) sessionStorage.setItem(storageKey.current, id); else sessionStorage.removeItem(storageKey.current); } } catch { /* server checkpoints still work without browser storage */ } };
   useEffect(() => {
-    active.current = true; abort.current = new AbortController(); void refresh();
-    const reread = () => { if (!document.hidden) void refresh(); };
-    window.addEventListener("focus", reread);
-    return () => { active.current = false; abort.current.abort(); window.removeEventListener("focus", reread); };
+    active.current = true; abort.current = new AbortController();
+    return () => { active.current = false; ++readSequence.current; abort.current.abort(); };
   }, []);
   useEffect(() => { setAccount(""); setIdentities([]); setApproved(false); setConfirmCancel(false); }, [current?.id, current?.revision]);
   useEffect(() => { if (confirmCancel) cancelKeep.current?.focus(); }, [confirmCancel]);
-  async function refresh() {
+  async function readCatalogue(signal: AbortSignal) {
     const sequence = ++readSequence.current;
     try {
-      const v = await client.call("connections", {}, { signal: abort.current.signal }); if (!active.current || sequence !== readSequence.current) return;
+      const v = await client.call("connections", {}, { signal }); if (!active.current || signal.aborted || sequence !== readSequence.current) return;
       setCatalogue(v); setError(""); storageKey.current = `marketing.connections.active:${v.project.id}`;
       let retained: string | null = null; try { retained = sessionStorage.getItem(storageKey.current); } catch { /* optional */ }
       setCurrent(old => v.connections.find(c => c.id === (old?.id ?? retained)) ?? null);
-    } catch (e) { if (sequence === readSequence.current) fail(e); }
+    } catch (e) { if (!signal.aborted && sequence === readSequence.current) fail(e); }
   }
+  const refresh = useVisibleRefresh(readCatalogue, current && ["discovering", "reconciling", "cancelling"].includes(current.phase) ? current.id + current.phase : "");
   function fail(e: unknown) {
     if (!active.current) return;
     const message = e instanceof Error ? e.message : "connection_read_unavailable";
@@ -88,8 +99,12 @@ function ConnectionsContent({ client, embedded, onContinue }: { client: Marketin
     if (!repeat) pending.current = { command, input };
     try {
       const result = await client.call(command, input, { signal: abort.current.signal }); if (!active.current) return;
-      if ("phase" in result) { remember(result.id); setCurrent(result); setProvider(null); }
-      pending.current = null; setUnresolved(false); await refresh();
+      if ("phase" in result) {
+        remember(result.id); setCurrent(result); setProvider(null);
+        // The command returns the current, authorized checkpoint. Read the
+        // catalogue on Back/return, not again after every step of this record.
+      } else await refresh();
+      pending.current = null; setUnresolved(false);
       if (active.current) setTimeout(() => heading.current?.focus(), 0);
     } catch (e) { if (active.current) setUnresolved(true); fail(e); }
     finally { latch.current = false; if (active.current) setBusy(false); }
@@ -119,7 +134,7 @@ function ConnectionsContent({ client, embedded, onContinue }: { client: Marketin
     {!catalogue && <p role="status">Loading authenticated Connections…</p>}
     {(provider || current) && <div className="actions"><button className="secondary" onClick={back} disabled={busy}>Back to Connections · save and close</button>{current && <button className="secondary" onClick={() => void readProgress()} disabled={busy}>Check progress</button>}</div>}
     {catalogue && !provider && !current && <>
-      <p className="intro">Connect an advertising account, choose its context, and review exact access. You can save campaign ideas while setup is in progress.</p>
+      <TextPlanningConnections client={client}/><p className="intro">Connect an advertising account, choose its context, and review exact access. You can save campaign ideas while setup is in progress.</p>
       {!catalogue.canStart && <p>An editor or administrator can start setup. You can inspect requirements and safe progress.</p>}
       {(["advertising", "creative"] as const).map(group => <section key={group} aria-label={group === "advertising" ? "Advertising" : "Creative AI"}>
         <h2>{group === "advertising" ? "Advertising" : "Creative AI"}</h2><div className="connection-cards">{catalogue.providers.filter(c => c.provider.kind === group).map(c => <article className="card" key={c.provider.provider}>
@@ -128,12 +143,12 @@ function ConnectionsContent({ client, embedded, onContinue }: { client: Marketin
           <ul>{c.limitations.map(l => <li key={l}>{l}</li>)}</ul>
           <p>Next: {group === "creative" ? c.configured ? "you, in private secure setup" : "project administrator" : c.configured && catalogue.canStart ? "you" : "project administrator"}</p>
           <button onClick={() => { setOffline(false); setMode("report"); setProvider(c.provider); setTimeout(() => heading.current?.focus(), 0); }}>{c.configured && catalogue.canStart ? `Connect ${c.label}` : `View ${c.label} setup requirements`}</button>
-          {catalogue.connections.filter(v => v.provider.provider === c.provider.provider).map(v => <div className="connection-saved" key={v.id}><strong>{v.account?.label || "Saved setup"}</strong><p>{phaseCopy[v.phase]} · {new Date(v.updatedAt).toLocaleString()}</p><button className="secondary" onClick={() => { remember(v.id); setCurrent(v); setTimeout(() => heading.current?.focus(), 0); }}>{v.phase === "verified" ? "View connection" : v.phase === "cancelled" ? "View cancelled setup" : "Resume setup"}</button></div>)}
+          {catalogue.connections.filter(v => v.provider.provider === c.provider.provider).map(v => <div className="connection-saved" key={v.id}><strong>{v.account?.label || "Saved setup"}</strong>{v.account && <p>{v.account.currency} · {v.account.timezone}</p>}<p>{v.intent.kind === "advertising" ? v.intent.operations.map(o => operationLabels[o]).join(", ") : v.intent.operation}</p><details><summary>Technical connection reference</summary><p>Setup: {v.id}</p>{v.account && <p>Account: {v.account.displayId ?? `…${v.account.accountSuffix}`}</p>}</details><p>{phaseCopy[v.phase]} · {new Date(v.updatedAt).toLocaleString()}</p><button className="secondary" onClick={() => { remember(v.id); setCurrent(v); setTimeout(() => heading.current?.focus(), 0); }}>{v.phase === "verified" ? "View connection" : v.phase === "cancelled" ? "View cancelled setup" : "Resume setup"}</button></div>)}
         </article>)}</div>
       </section>)}
       <p>{catalogue.assistance.reason}</p>
       {onContinue && <button className="secondary" onClick={() => onContinue(null)}>Create a draft</button>}
-      {catalogue.historical.length > 0 && <section aria-label="Historical account connections"><h2>Existing account connections</h2><p>Historical grants keep their original setup and resume path.</p>{catalogue.historical.map(({ grant, setup }) => <article className="card" key={grant.id}><h3>{grant.label}</h3><p>{names[grant.provider]} · …{grant.accountId.slice(-4)} · {grant.currency} · {grant.timezone}</p><p>{grant.revokedAt ? "Access revoked" : Date.parse(grant.expiresAt) <= Date.now() ? "Access expired" : setup?.state || "Not verified"}</p><p>{setup?.reason?.replaceAll("_", " ")}</p><button disabled={busy || !catalogue.canStart} onClick={async () => {
+      {catalogue.historical.length > 0 && <section aria-label="Historical account connections"><h2>Existing account connections</h2><p>Historical grants keep their original setup and resume path.</p>{catalogue.historical.map(({ grant, setup }) => <article className="card" key={grant.id}><h3>{grant.label}</h3><p>{names[grant.provider]} · {grant.currency} · {grant.timezone}</p><p>{grant.revokedAt ? "Access revoked" : Date.parse(grant.expiresAt) <= Date.now() ? "Access expired" : setup?.state || "Not verified"}</p><p>{setup?.reason?.replaceAll("_", " ")}</p><button disabled={busy || !catalogue.canStart} onClick={async () => {
         try { if (setup) await client.call("resumeSetup", { setupId: setup.id, expectedRevision: setup.revision }); else await client.call("setup", { grantId: grant.id, requestKey: crypto.randomUUID() }); await refresh(); } catch (e) { fail(e); }
       }}>Resume and verify existing access</button>{setup?.handoffUrl && (catalogue.evidence === "fixture" ? <button className="secondary" disabled={busy || !catalogue.canApprove} onClick={async () => {
         try { const r = await fetch(setup.handoffUrl!, { method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal: abort.current.signal }); if (!r.ok) throw new Error("fixture_takeover_denied"); await refresh(); } catch (e) { fail(e); }
@@ -156,31 +171,40 @@ function ConnectionsContent({ client, embedded, onContinue }: { client: Marketin
       </>}
       {card.secureSetupPath && <a className="button" href={card.secureSetupPath}>Open private creative setup</a>}
       {card.creativeBindings?.map(b => <section key={b.id}><h3>{b.model} · {b.credential}</h3><p>{b.environment} · Expires {b.expiresAt}</p><p>Provider unverified · Billing {b.billing.state} · Paid operation blocked</p><a href={b.path}>Manage creative binding</a></section>)}
-      {card.provider.kind === "creative" && <p>Existing configured generation access remains separate. Use the SDK private secure setup to review persistent access and enter an existing key. Credentials stay outside this workspace. Configuration does not prove model entitlement or paid readiness.</p>}
+      {card.provider.kind === "creative" && <p>Existing configured generation access remains separate. Use the SDK private secure setup to review session-limited access and enter an existing key. Credentials stay outside this workspace. Configuration does not prove model entitlement or paid readiness.</p>}
     </article>}
     {current && <>
       <ol className="connection-steps" aria-label="Connection progress">{steps.map((s, i) => <li key={s} aria-current={step(current) === i ? "step" : undefined}><strong>{i + 1}. {s}</strong><span>{step(current) === i ? "Current" : completedSteps[i] ? "Complete" : current.phase === "cancelled" ? "Not completed" : "Waiting"}</span></li>)}</ol>
       <div className="connection-layout"><article className="card connection-main">
         <h2>{phaseCopy[current.phase]}</h2><p role="status">{failureCopy[current.checkpoint] ?? (/^[a-z][a-z0-9_]*$/.test(current.checkpoint) ? "This setup needs a fresh check. Reload saved progress, then retry or cancel and review access again." : current.checkpoint)}</p><p><strong>Next: {current.currentActor === "sdk" ? "automatic provider check" : current.currentActor === "host_admin" ? "project administrator" : "you"}</strong></p>
         <p className="muted">Saved {new Date(current.updatedAt).toLocaleString()} · revision {current.revision}</p>
-        {current.account && <section><h3>{current.account.label}</h3><p>{current.account.businessLabel} · {current.account.displayId ?? `…${current.account.accountSuffix}`} · {current.account.currency} · {current.account.timezone}</p><p>{current.account.roleSummary}</p>{current.account.limitations.map(l => <p key={l}>{l}</p>)}{current.identities.map(i => <p key={i.choiceRef}>{i.label} · {i.kind.replaceAll("_", " ")} · {i.displayId ?? `…${i.accountSuffix}`}</p>)}</section>}
+        {current.account && <section><h3>{current.account.label}</h3><p>{current.account.businessLabel && `${current.account.businessLabel} · `} {current.account.currency} · {current.account.timezone}</p><p>{current.account.roleSummary}</p>{current.account.limitations.map(l => <p key={l}>{l}</p>)}{current.identities.map(i => <p key={i.choiceRef}>{i.label} · {i.kind.replaceAll("_", " ")}</p>)}</section>}
         {catalogue?.canApprove && !current.grantId && current.actions.some(a => !a.available) && <button disabled={busy} onClick={() => transition("reassignConnection")}>Take over setup with this session</button>}
         {current.account && !current.grantId && !["discovering", "outcome_unknown", "cancelling", "cancelled"].includes(current.phase) && <button className="secondary" disabled={busy} onClick={() => transition("discoverConnectionAccounts")}>Choose another account · review access again</button>}
-        {review && <section className="connection-review" aria-label="Exact access review"><h3>{review.purpose === "provider_authorization" ? "Review provider authorization" : review.purpose === "project_binding" ? "Review project access" : "Review local revocation"}</h3><p>{review.summary}</p>
-          {review.oauthScopes.length > 0 && <><h4>Exact OAuth scopes</h4><ul>{review.oauthScopes.map(s => <li key={s}><code>{s}</code></li>)}</ul><p>{review.providerAccountRange}</p><p>{review.offlineAccess ? "Offline refresh access requested" : "No offline refresh requested"}</p></>}
-          <p>{review.providerLifetime}</p><p>Project access expiry: {review.projectAccessExpiresAt}. Decision expires: {review.expiresAt}.</p>
+        {review && <section className="connection-review" aria-label="Exact access review"><h3>{review.purpose === "provider_authorization" ? "Review provider authorization" : review.purpose === "project_binding" ? "Review project access" : "Review local revocation"}</h3>
+          {review.purpose === "provider_authorization" && review.providerAppLabel ? <>
+            <p>Allow <strong>{review.providerAppLabel}</strong> to find eligible accounts at {names[current.provider.provider]}. You will choose the exact account next. No spending is approved here.</p>
+            <ul>{review.oauthScopes.map(s => <li key={s}>{scopeLabels[s] ?? s}</li>)}</ul>
+            <p>This access can cover other eligible accounts or Pages at the provider, beyond the account you later select for this project.</p>
+            <p>{review.offlineAccess ? "Offline refresh access is requested." : "No offline refresh access is requested."} Provider access may persist after setup ends; revoke it separately at the provider.</p>
+            {review.discoveryExpiresAt && <p>Local discovery ends {new Date(review.discoveryExpiresAt).toUTCString()}.</p>}
+            <details><summary>Exact provider approval and OAuth scopes</summary><p>{review.summary}</p><h4>Exact OAuth scopes</h4><ul>{review.oauthScopes.map(s => <li key={s}><code>{s}</code></li>)}</ul><p>{review.providerAccountRange}</p></details>
+          </> : <><p>{review.summary}</p>{review.oauthScopes.length > 0 && <><h4>Exact OAuth scopes</h4><ul>{review.oauthScopes.map(s => <li key={s}><code>{s}</code></li>)}</ul><p>{review.providerAccountRange}</p></>}<p>{review.providerLifetime}</p></>}
+          <p>Project access expiry: {review.projectAccessExpiresAt ? new Date(review.projectAccessExpiresAt).toUTCString() : "Not requested"}. Decision expires: {new Date(review.expiresAt).toUTCString()}.</p>
           <label className="check"><input type="checkbox" checked={approved} onChange={e => setApproved(e.target.checked)} /> I reviewed this exact action, scope and duration.</label>
           {!canApprove && <p>A current human editor or administrator must make this decision. Agent approval is not permitted.</p>}
           <div className="actions"><button disabled={busy || !approved || !canApprove} onClick={() => transition(review.purpose === "provider_authorization" ? "decideConnectionProviderAccess" : review.purpose === "project_binding" ? "decideConnectionAccess" : "decideConnectionRevocation", { decisionRef: review.decisionRef, digest: review.digest, decision: "approved" })}>{review.purpose === "provider_authorization" ? "Approve provider access for discovery" : review.purpose === "project_binding" ? "Approve this connection's access" : "Revoke this local access"}</button>
           <button className="secondary" disabled={busy || !canApprove} onClick={() => transition(review.purpose === "provider_authorization" ? "decideConnectionProviderAccess" : review.purpose === "project_binding" ? "decideConnectionAccess" : "decideConnectionRevocation", { decisionRef: review.decisionRef, digest: review.digest, decision: "rejected" })}>Decline</button></div></section>}
         {current.phase === "choosing_account" && <fieldset><legend>Choose an advertising account</legend>
-          {current.discovery.accounts.map(a => <label className="connection-choice" key={a.choiceRef}><input type="radio" name="account" checked={account === a.choiceRef} onChange={() => setAccount(a.choiceRef)} /><span><strong>{a.label}</strong><br />{a.businessLabel} · {a.displayId ?? `…${a.accountSuffix}`}<br />{a.currency} · {a.timezone}<br />Timezone source: {a.timezoneSource.replaceAll("_", " ")}<br />{a.roleSummary}</span></label>)}
+          {current.discovery.accounts.map(a => <label className="connection-choice" key={a.choiceRef}><input type="radio" name="account" checked={account === a.choiceRef} onChange={() => setAccount(a.choiceRef)} /><span><strong>{a.label}</strong><br />{a.businessLabel && <>{a.businessLabel}<br /></>}{a.currency} · {a.timezone}<br />Timezone source: {a.timezoneSource.replaceAll("_", " ")}<br />{a.roleSummary}</span></label>)}
+          <details><summary>Exact account references</summary><ol>{current.discovery.accounts.map(a => <li key={a.choiceRef}>{a.label}: {a.displayId ?? `…${a.accountSuffix}`}</li>)}</ol></details>
           <p role="status">{current.discovery.accounts.length} account choices. {current.discovery.complete ? "All pages received." : "More pages remain; this is a partial list."}</p>
           <button disabled={busy || !account} onClick={() => transition("selectConnectionAccount", { choiceRef: account })}>Use selected account</button>
           {current.discovery.cursor && <button className="secondary" disabled={busy} onClick={() => transition("discoverConnectionAccounts", { cursor: current.discovery.cursor })}>Load more accounts</button>}
         </fieldset>}
         {current.phase === "choosing_identity" && <fieldset><legend>Choose publishing or manager context</legend>
-          {current.discovery.identities.map(i => <label className="connection-choice" key={i.choiceRef}><input type={i.kind === "instagram" || current.provider.provider === "meta" ? "checkbox" : "radio"} name="identity" checked={identities.includes(i.choiceRef)} onChange={e => setIdentities(old => current.provider.provider === "meta" ? e.target.checked ? [...old, i.choiceRef] : old.filter(x => x !== i.choiceRef) : [i.choiceRef])} /><span><strong>{i.label}</strong><br />{i.kind.replaceAll("_", " ")} · {i.displayId ?? `…${i.accountSuffix}`}</span></label>)}
+          {current.discovery.identities.map(i => <label className="connection-choice" key={i.choiceRef}><input type={i.kind === "instagram" || current.provider.provider === "meta" ? "checkbox" : "radio"} name="identity" checked={identities.includes(i.choiceRef)} onChange={e => setIdentities(old => current.provider.provider === "meta" ? e.target.checked ? [...old, i.choiceRef] : old.filter(x => x !== i.choiceRef) : [i.choiceRef])} /><span><strong>{i.label}</strong><br />{i.kind.replaceAll("_", " ")}</span></label>)}
+          <details><summary>Exact publishing references</summary><ol>{current.discovery.identities.map(i => <li key={i.choiceRef}>{i.label}: {i.displayId ?? `…${i.accountSuffix}`}</li>)}</ol></details>
           <button disabled={busy || !identities.length} onClick={() => transition("selectConnectionIdentity", { choiceRefs: identities })}>Use selected identity</button>
           <p>{current.discovery.complete ? "All identity pages received." : "More identity pages may remain."}</p>
           {current.discovery.cursor && <button className="secondary" disabled={busy} onClick={() => transition("connectionIdentities", { cursor: current.discovery.cursor })}>Load more identities</button>}
@@ -193,9 +217,9 @@ function ConnectionsContent({ client, embedded, onContinue }: { client: Marketin
         }}>{a.label}</button>{a.reason && <p>{a.reason}</p>}</React.Fragment>)}</div>
         {current.phase === "verified" && <><p>Account verification does not approve launch or generation spend.</p>{onContinue && <button onClick={() => onContinue(current.grantId)}>Continue to campaign</button>}<button className="secondary" onClick={() => { remember(null); setProvider(current.provider); setCurrent(null); }}>Connect another account</button></>}
         {current.actions.some(a => a.action === "cancel" && a.available) && <section>{!confirmCancel ? <button className="secondary" disabled={busy} onClick={() => setConfirmCancel(true)}>Cancel setup</button> : <div role="group" aria-label="Confirm cancellation"><p>Cancel local setup? Existing provider authorization may remain. In-flight outcomes will be retained for recovery.</p><button ref={cancelKeep} className="secondary" onClick={() => { setConfirmCancel(false); setTimeout(() => heading.current?.focus(), 0); }}>Keep setup</button><button disabled={busy} onClick={() => transition("cancelConnection")}>Confirm cancel setup</button></div>}</section>}
-      </article><aside className="card connection-evidence"><h2>Access and evidence</h2><p>These are separate facts; sign-in never means ready to launch.</p><dl>{([
+      </article><aside className="card connection-evidence"><h2>Access and evidence</h2><p>Sign-in and account verification do not approve a campaign launch or spending.</p><details><summary>View access checks, expiry and action limits</summary><p>Project: {current.projectId} · Setup: {current.id}</p>{current.account && <p>Account: {current.account.displayId ?? `…${current.account.accountSuffix}`}</p>}{current.identities.map(i => <p key={i.choiceRef}>{i.label}: {i.displayId ?? `…${i.accountSuffix}`}</p>)}<dl>{([
         ["Host configuration", current.configured], ["Provider authorization", current.providerAuthorized], ["Project access decision", current.consented], ["Account verification", current.accountVerified], ["Campaign capability", current.capabilityVerified],
-      ] as const).map(([label, e]) => <React.Fragment key={label}><dt>{label}</dt><dd>{e.status.replaceAll("_", " ")} · {e.basis.replaceAll("_", " ")}{e.observedAt && <><br />Observed {new Date(e.observedAt).toLocaleString()}</>}{e.expiresAt && <><br />Expires {new Date(e.expiresAt).toLocaleString()}</>}{e.reason && <p>{e.reason}</p>}</dd></React.Fragment>)}</dl>{current.readiness.map(r => <p key={r.action}><strong>{r.action}:</strong> {r.ready ? "Verified for this action" : r.blockers.join(". ")}</p>)}</aside></div>
+      ] as const).map(([label, e]) => <React.Fragment key={label}><dt>{label}</dt><dd>{e.status.replaceAll("_", " ")} · {e.basis.replaceAll("_", " ")}{e.observedAt && <><br />Observed {new Date(e.observedAt).toLocaleString()}</>}{e.expiresAt && <><br />Expires {new Date(e.expiresAt).toLocaleString()}</>}{e.reason && <p>{e.reason}</p>}</dd></React.Fragment>)}</dl>{current.readiness.map(r => <p key={r.action}><strong>{r.action}:</strong> {r.ready ? "Verified for this action" : r.blockers.join(". ")}</p>)}</details></aside></div>
     </>}
   </section>;
 }

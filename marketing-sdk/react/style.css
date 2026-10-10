@@ -636,3 +636,22 @@
   .marketing-root .connection-review { padding: 12px; }
 }
 .marketing-root .connection-project { display: block; font-weight: 700; font-size: 14px; }
+
+/* SDK-owned Studio: ordinary document flow stays readable at 320px. */
+.marketing-root .studio { min-width: 0; }
+.marketing-root .studio-actions, .marketing-root .studio-steps { display: flex; flex-wrap: wrap; gap: .6rem; align-items: end; margin: 1rem 0; }
+.marketing-root .studio-steps button { text-transform: capitalize; flex: 1 1 7rem; }
+.marketing-root .studio-steps [aria-current="step"] { outline: 2px solid currentColor; outline-offset: 2px; }
+.marketing-root .studio-options, .marketing-root .studio-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: 1rem; }
+.marketing-root .studio article, .marketing-root .studio fieldset { min-width: 0; }
+.marketing-root .studio fieldset { border: 0; padding: 0; margin: 1rem 0; }
+.marketing-root .studio pre, .marketing-root .studio code, .marketing-root .studio p { overflow-wrap: anywhere; white-space: pre-wrap; }
+.marketing-root .studio img, .marketing-root .studio video { max-width: 100%; max-height: 320px; object-fit: contain; }
+.marketing-root .studio-records > article { padding: 1rem 0; border-bottom: 1px solid #bbc4ce; }
+.marketing-root .studio h2:focus { outline: 2px solid currentColor; outline-offset: 4px; }
+
+.marketing-root nav.studio-steps { flex-direction: row; width: auto; position: static; padding: 0; }
+
+.marketing-root .tracking { min-width: 0; }
+.marketing-root .tracking p, .marketing-root .tracking dd, .marketing-root .tracking a, .marketing-root .tracking code { overflow-wrap: anywhere; }
+.marketing-root .tracking-destination { display: inline-block; padding: 12px; border: 2px solid currentColor; border-radius: 8px; }

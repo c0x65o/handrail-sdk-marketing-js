@@ -62,8 +62,8 @@ test("C12/C13: stable start receipts and exact least-scope decisions precede any
     await assert.rejects(f.call("startConnection", { ...input, offlineAccess: true }), /request_key_payload_conflict|offline_provider_flow_unqualified/);
     const a = await f.authorize(c); assert.equal(a.location.searchParams.get("scope"), "ads_read");
     assert.equal(a.location.searchParams.has("access_type"), false); assert.equal(f.calls.length, 0);
-    assert.equal((await f.routes(new Request(a.callbackUrl)))!.headers.get("location"), "https://sdk.example/");
-    await f.routes(new Request(a.callbackUrl)); assert.equal(f.calls.filter(p => p.endsWith("/oauth/access_token")).length, 1);
+    assert.equal((await f.completeCallback(a.callbackUrl))!.status, 200);
+    await f.completeCallback(a.callbackUrl); assert.equal(f.calls.filter(p => p.endsWith("/oauth/access_token")).length, 1);
     assert.equal((await f.store.list("p", "grant")).length, 0);
   } finally { await f.close(); }
 });

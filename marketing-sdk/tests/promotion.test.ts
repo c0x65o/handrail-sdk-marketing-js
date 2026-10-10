@@ -238,7 +238,7 @@ test("planning saves recheck role, session and grant after awaited material vali
         }
         return result;
       };
-      await assert.rejects(f.server.call(f.principal, "p", "planningWrite", { command: "promoteDraft", scope: f.scope, input: f.input, requestKey: "delayed" }), /forbidden|authentication_required|grant_changed|revision_conflict/);
+      await assert.rejects(f.server.call(f.principal, "p", "planningWrite", { command: "promoteDraft", scope: f.scope, input: f.input, requestKey: "delayed" }), /forbidden|authentication_required|session_authority_changed|grant_changed|revision_conflict/);
       assert.ok(changed);
       for (const kind of ["campaign", "campaignVersion", "planningWrite", "draftPromotion"]) assert.deepEqual(await f.store.list("p", kind), []);
     } finally { await f.store.close(); rmSync(f.dir, { recursive: true, force: true }); }

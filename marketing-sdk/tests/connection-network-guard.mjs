@@ -4,18 +4,21 @@ import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
 
-export async function loopbackGuard(origin) {
-  const allowed = new URL(origin);
-  assert.equal(allowed.hostname, '127.0.0.1'); assert.equal(allowed.protocol, 'http:');
+export async function loopbackGuard(origin, additionalOrigins = []) {
+  const allowed = new Map([origin, ...additionalOrigins].map(value => {
+    const url = new URL(value);
+    assert.equal(url.hostname, '127.0.0.1'); assert.equal(url.protocol, 'http:');
+    return [url.origin, url];
+  }));
   const blocked = [];
   const proxy = createServer((req, res) => {
     let target;
     try { target = new URL(req.url); } catch { res.writeHead(403); return res.end(); }
-    if (target.origin !== origin || target.username || target.password) {
+    if (!allowed.has(target.origin) || target.username || target.password) {
       blocked.push(target.origin + target.pathname); res.writeHead(403); return res.end('Blocked by local qualification guard');
     }
-    const upstream = request({ hostname: '127.0.0.1', port: allowed.port, path: target.pathname + target.search, method: req.method,
-      headers: { ...req.headers, host: allowed.host } }, response => {
+    const upstream = request({ hostname: '127.0.0.1', port: target.port, path: target.pathname + target.search, method: req.method,
+      headers: { ...req.headers, host: target.host } }, response => {
       res.writeHead(response.statusCode, response.headers); response.pipe(res);
     });
     upstream.on('error', () => { res.writeHead(502); res.end(); }); req.pipe(upstream);
@@ -23,8 +26,9 @@ export async function loopbackGuard(origin) {
   proxy.on('connect', (req, socket, head) => {
     // Playwright APIRequestContext tunnels even its HTTP fixture requests.
     // Only this single loopback socket is allowed; no supplied DNS name resolves.
-    if (req.url !== allowed.host) { blocked.push('CONNECT ' + req.url); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
-    const upstream = connect({ host: '127.0.0.1', port: Number(allowed.port) }, () => {
+    const target = [...allowed.values()].find(url => req.url === url.host);
+    if (!target) { blocked.push('CONNECT ' + req.url); socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    const upstream = connect({ host: '127.0.0.1', port: Number(target.port) }, () => {
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) upstream.write(head); socket.pipe(upstream); upstream.pipe(socket);
     });
     upstream.on('error', () => socket.destroy()); socket.on('error', () => upstream.destroy()); socket.on('close', () => upstream.destroy());
@@ -53,7 +57,8 @@ export async function qualifyGuard(context, origin, guard) {
     await context.route(origin + '/guard-redirect', route => route.fulfill({ status: 303, headers: { location: target + '/redirect' } }));
     await page.goto(origin + '/guard-redirect');
     await page.waitForLoadState('load');
-    await page.goto(origin + '/');
+    await context.route(origin + '/guard-page', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Local isolation probe</title><body>Guard controls only</body>' }));
+    await page.goto(origin + '/guard-page');
     await page.evaluate(async target => {
       const popup = window.open(target + '/popup');
       const img = new Image(); img.src = target + '/image'; document.body.append(img);
@@ -71,7 +76,7 @@ export async function qualifyGuard(context, origin, guard) {
     assert.equal(context.serviceWorkers().length, 0);
     return { result: 'passed', sentinelHits: hits, controls: ['redirect', 'popup', 'image', 'iframe', 'fetch', 'HTTPS CONNECT', 'WebSocket', 'service workers disabled'], blocked: [...guard.blocked] };
   } finally {
-    await page.close(); await context.unroute(origin + '/guard-redirect');
+    await page.close(); await context.unroute(origin + '/guard-redirect'); await context.unroute(origin + '/guard-page');
     await new Promise(r => { sentinel.close(r); sentinel.closeAllConnections(); });
   }
 }

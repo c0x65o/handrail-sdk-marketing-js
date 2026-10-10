@@ -45,6 +45,13 @@ export class ConnectionDiscovery {
       return redact(data);
     } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("provider_read_unavailable", 502); }
   }
+  private async metaScopes(credentials: Credentials, required: string[], guard: () => Promise<void>) {
+    const result = await this.read("meta", credentials, "me/permissions", {}, guard);
+    const rows = list(result.data);
+    requireThat(!result.paging?.next && rows.every(p => typeof p.permission === "string" && ["granted", "declined", "expired"].includes(p.status)) &&
+      new Set(rows.map(p => p.permission)).size === rows.length, "provider_scope_conflict");
+    requireThat(required.every(scope => rows.some(p => p.permission === scope && p.status === "granted")), "provider_access_expired_or_denied");
+  }
   private metaAccount(a: any): DiscoveredAccount {
     requireThat(typeof a.id === "string" && /^act_\d+$/.test(a.id) && a.account_status === 1, "provider_account_unavailable");
     const tasks = list(a.user_tasks);
@@ -118,14 +125,16 @@ export class ConnectionDiscovery {
     requireThat(required.every(s => scopes.includes(s)), "provider_scope_missing");
     return scopes;
   }
-  async accounts(provider: Provider, credentials: Credentials, cursor: string | undefined, guard: () => Promise<void>): Promise<NativePage<DiscoveredAccount>> {
+  async accounts(provider: Provider, credentials: Credentials, cursor: string | undefined, guard: () => Promise<void>, observed?: Set<string>): Promise<NativePage<DiscoveredAccount>> {
     if (provider === "meta") {
-      const granted = await this.read(provider, credentials, "me/permissions", {}, guard);
-      requireThat(list(granted.data).some(p => p.permission === "ads_read" && p.status === "granted"), "provider_access_expired_or_denied");
+      await this.metaScopes(credentials, ["ads_read"], guard);
     }
     if (provider === "meta") {
       const v = await this.read(provider, credentials, "me/adaccounts", { fields: "id,name,currency,timezone_name,account_status,business{name},user_tasks", limit: "25", ...(cursor ? { after: cursor } : {}) }, guard);
-      return { rows: list(v.data).filter(a => a.account_status === 1).map(a => this.metaAccount(a)), next: this.nextMeta(v) };
+      const rows = list(v.data);
+      requireThat(rows.every(a => Number.isInteger(a.account_status)) && new Set(rows.map(a => a.id)).size === rows.length, "provider_discovery_conflict");
+      for (const row of rows) { requireThat(typeof row.id === "string" && !observed?.has(row.id), "provider_discovery_conflict"); observed?.add(row.id); }
+      return { rows: rows.filter(a => a.account_status === 1).map(a => this.metaAccount(a)), next: this.nextMeta(v) };
     }
     if (provider === "linkedin") {
       requireThat(!cursor, "invalid_discovery_cursor");
@@ -210,8 +219,7 @@ export class ConnectionDiscovery {
   }
   async verify(provider: Provider, credentials: Credentials, account: DiscoveredAccount, identities: DiscoveredIdentity[], operations: Permission[], guard: () => Promise<void>) {
     if (provider === "meta") {
-      const granted = await this.read(provider, credentials, "me/permissions", {}, guard);
-      requireThat(connectionScopes(provider, operations).every(scope => list(granted.data).some(p => p.permission === scope && p.status === "granted")), "provider_access_expired_or_denied");
+      await this.metaScopes(credentials, connectionScopes(provider, operations), guard);
     }
     if (provider === "linkedin") {
       await this.linkedinScopes(credentials, connectionScopes(provider, operations), guard);
@@ -219,18 +227,25 @@ export class ConnectionDiscovery {
     }
     // Re-enumerate under the same credential and current actor. No fabricated Grant.
     let cursor: string | undefined, found: DiscoveredAccount | undefined;
+    const accounts: DiscoveredAccount[] = [], seenCursors = new Set<string>(), observed = new Set<string>();
     for (let n = 0; n < 40; n++) {
-      const page = await this.accounts(provider, credentials, cursor, guard);
-      found = page.rows.find(a => a.id === account.id && a.managerId === account.managerId);
-      if (found || !page.next) break; cursor = page.next;
+      const page = await this.accounts(provider, credentials, cursor, guard, observed);
+      accounts.push(...page.rows);
+      if (!page.next) { cursor = undefined; break; }
+      requireThat(!seenCursors.has(page.next), "provider_discovery_incomplete");
+      seenCursors.add(page.next); cursor = page.next;
     }
+    requireThat(!cursor, "provider_discovery_incomplete");
+    requireThat(new Set(accounts.map(a => `${a.id}:${a.managerId ?? ""}`)).size === accounts.length, "provider_discovery_conflict");
+    found = accounts.find(a => a.id === account.id && a.managerId === account.managerId);
     requireThat(found && found.currency === account.currency && found.timezone === account.timezone && found.organizationId === account.organizationId, "provider_account_context_changed");
     if (provider === "linkedin") requireThat(found.memberUrn === account.memberUrn && found.accountUrn === account.accountUrn && found.accountRole === account.accountRole, "provider_member_or_role_changed");
     requireThat(operations.every(p => found!.permissions.includes(p) || provider === "google"), "provider_account_role_missing");
     if (identities.length) {
-      const actual: DiscoveredIdentity[] = []; cursor = undefined;
-      for (let n = 0; n < 40; n++) { const page = await this.identities(provider, credentials, found, cursor, guard); actual.push(...page.rows); if (!page.next) { cursor = undefined; break; } cursor = page.next; }
+      const actual: DiscoveredIdentity[] = []; cursor = undefined; const identityCursors = new Set<string>();
+      for (let n = 0; n < 40; n++) { const page = await this.identities(provider, credentials, found, cursor, guard); actual.push(...page.rows); if (!page.next) { cursor = undefined; break; } requireThat(!identityCursors.has(page.next), "provider_discovery_incomplete"); identityCursors.add(page.next); cursor = page.next; }
       requireThat(!cursor, "provider_discovery_incomplete");
+      requireThat(new Set(actual.map(i => `${i.kind}:${i.id}`)).size === actual.length, "provider_discovery_conflict");
       requireThat(identities.every(i => actual.some(a => a.id === i.id && a.kind === i.kind && a.pageId === i.pageId)), "provider_identity_mismatch");
     }
     if (provider === "linkedin") await this.linkedinScopes(credentials, connectionScopes(provider, operations), guard);

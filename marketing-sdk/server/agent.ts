@@ -3,7 +3,7 @@ import { randomBytes, createHash } from "node:crypto";
 import type { Grant, Setup } from "../core/index.js";
 import type { AgentPort } from "./ports.js";
 import type { Credentials, VaultPort } from "./providers.js";
-import { Store, type Principal, byteDigest, requireThat } from "./store.js";
+import { Store, type Principal, byteDigest, digest, requireThat } from "./store.js";
 import type { CredentialCipher } from "../support/vault-crypto.js";
 export interface ConnectionCredentials extends Credentials { expiresAt: number; scopes: string[]; }
 export interface OAuthApp {
@@ -48,17 +48,20 @@ export class HostAgent implements AgentPort, VaultPort {
   /** Server-only pre-grant custody. Uses the same cipher and vault records as Grants.
    * Callers must journal the effect and supply a fresh authority guard; no refresh
    * or OAuth retry is implicit on this path. */
-  connectionAuthorization(provider: Grant["provider"], project: string, scopes: string[], offline: boolean) {
+  connectionCallbackUri(provider: Grant["provider"]) {
+    return `${this.origin}/api/marketing/oauth/${provider}/callback`;
+  }
+  connectionAuthorization(provider: Grant["provider"], _project: string, scopes: string[], offline: boolean) {
     const app = this.apps[provider]; requireThat(app, "oauth_application_not_configured");
     const state = randomBytes(32).toString("base64url"), verifier = randomBytes(32).toString("base64url");
     const url = new URL(endpoints[provider].authorize);
     url.search = new URLSearchParams({ client_id: app.clientId,
-      redirect_uri: `${this.origin}/api/oauth/${encodeURIComponent(project)}/${provider}/callback`, response_type: "code", state,
+      redirect_uri: this.connectionCallbackUri(provider), response_type: "code", state,
       scope: scopes.join(provider === "meta" ? "," : " "),
       ...(provider === "google" ? { code_challenge: createHash("sha256").update(verifier).digest("base64url"),
         code_challenge_method: "S256", access_type: offline ? "offline" : "online", prompt: "consent" } : {}),
     }).toString();
-    return { stateHash: byteDigest(Buffer.from(state)), encrypted: this.cipher.encryptPayload(JSON.stringify({ url: url.toString(), verifier })) };
+    return { stateHash: byteDigest(Buffer.from(state)), callbackUri: this.connectionCallbackUri(provider), appBinding: digest([provider, app.clientId, app.clientSecret]), encrypted: this.cipher.encryptPayload(JSON.stringify({ url: url.toString(), verifier })) };
   }
   connectionAuthorizationUrl(encrypted: { encrypted: string; keyId: string }) {
     return JSON.parse(this.cipher.decryptPayloadAsString(encrypted.encrypted, encrypted.keyId)).url as string;
@@ -66,18 +69,28 @@ export class HostAgent implements AgentPort, VaultPort {
   async exchangeConnection(provider: Grant["provider"], project: string, code: string,
     sealed: { encrypted: string; keyId: string }, scopes: string[], offline: boolean, guard: () => Promise<void>): Promise<ConnectionCredentials> {
     const app = this.apps[provider]; requireThat(app, "oauth_application_not_configured");
-    const { verifier } = JSON.parse(this.cipher.decryptPayloadAsString(sealed.encrypted, sealed.keyId));
+    const { verifier, url: issuedUrl } = JSON.parse(this.cipher.decryptPayloadAsString(sealed.encrypted, sealed.keyId));
+    const issued = new URL(issuedUrl), callbackUri = issued.searchParams.get("redirect_uri");
+    // Historical attempts carry their exact original project-path URI in the
+    // encrypted authorization URL. Never recompute it into a new callback.
+    requireThat(issued.origin + issued.pathname === endpoints[provider].authorize && issued.searchParams.get("client_id") === app.clientId &&
+      (callbackUri === this.connectionCallbackUri(provider) || callbackUri === `${this.origin}/api/oauth/${encodeURIComponent(project)}/${provider}/callback`), "oauth_application_changed");
     await guard();
     const response = await this.fetcher(endpoints[provider].token, { method: "POST", redirect: "error", signal: AbortSignal.timeout(20000),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: app.clientId, client_secret: app.clientSecret,
-        redirect_uri: `${this.origin}/api/oauth/${encodeURIComponent(project)}/${provider}/callback`,
+        redirect_uri: callbackUri!,
         ...(provider === "google" ? { code_verifier: verifier } : {}),
       }) });
+    // Reinspect after each remote boundary. Revocation does not discard a token
+    // already issued: only restricted encrypted receipt retention may follow;
+    // the manager's guarded promotion still fails closed.
+    await guard().catch(() => {});
     // Read and retain restricted encrypted outcome even if authority changed in flight.
     // The manager reauthorizes before promoting this receipt or revealing any result.
     requireThat(response.ok, "oauth_exchange_outcome_unknown");
     const token = await response.json();
+    await guard().catch(() => {});
     requireThat(typeof token.access_token === "string" && token.access_token.length > 0 && Number.isFinite(Number(token.expires_in)) && Number(token.expires_in) > 0, "oauth_exchange_outcome_unknown");
     // Missing exchange scope is only the expected consent envelope, never grant
     // proof. LinkedIn discovery requires fresh active introspection matching this
@@ -141,6 +154,11 @@ export class HostAgent implements AgentPort, VaultPort {
         ? `/api/projects/${encodeURIComponent(g.projectId)}/oauth/${encodeURIComponent(g.id)}`
         : null,
     };
+  }
+  /** Read-only credential access: never refreshes, grants or writes custody. */
+  async useReadOnly<T>(g: Grant, guard: () => Promise<void>, action: (credentials: ConnectionCredentials) => Promise<T>) {
+    requireThat(!g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "grant_expired_or_revoked");
+    return this.useConnection(g.projectId, g.secretRef, [], guard, action);
   }
   async use<T>(g: Grant, action: (credentials: Credentials) => Promise<T>) {
     requireThat(

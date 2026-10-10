@@ -153,6 +153,14 @@ and [Workspace mount](marketing-sdk/examples/embedded.tsx). The standalone
 `client` or `sessionKey` when host identity/project changes. New commands route
 through `MarketingServer.call`; the factory's Fetch-compatible `routes` owns OAuth
 handoff/callbacks. A trusted static `returnPath` may select the host Marketing route.
+New Connections use one fixed callback per provider across projects, a token-free
+handoff descriptor, independent browser claim and Strict-cookie authenticated
+completion. External hosts supply `SessionAuthority`, including a local commit
+guard coordinated with logout/user changes; `sessions.current` alone is insufficient.
+See the [portable protocol and adapter obligations](marketing-sdk/design/PORTABLE-HANDOFF.md)
+and [public external-session example](marketing-sdk/examples/external-sessions.ts).
+`classifyConnectionRoute` identifies the exact unprivileged callback GET exception;
+keep all other host API guards and exclude private routes from service workers.
 Do not log callback query strings upstream. Read the [implemented contracts and
 retention](marketing-sdk/design/CONNECTIONS-CONTRACT.md#candidate-implementation-contracts)
 before integrating. Ordinary PostgreSQL startup remains migration-free.
@@ -162,3 +170,6 @@ mount/adapter in a disposable packed consumer and exercises real HTTP and SQLite
 with synthetic provider boundaries. A local pack projection does **not** qualify
 installation from a newly published full Git SHA. See [candidate evidence and
 limits](marketing-sdk/design/ACCEPTANCE.md#connections-implementation-candidate-2026-10-06).
+`node marketing-sdk/tests/consumer.mjs --portable` additionally qualifies independent
+browser login and original-session resume using a disposable existing-host SQL
+fixture with no SDK passwords/sessions. It supplies no production host/native adapter.

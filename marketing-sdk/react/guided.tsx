@@ -1,3 +1,4 @@
+import { CountryAudience } from "./audience.js";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CAPABILITY_VERSION, capabilityBlockers, capabilityStatus, LINKEDIN_COMBINATIONS, META_COMBINATIONS,
   type Audience, type Campaign, type CampaignDraft, type DraftMaterial, type Material, type MarketingClient,
@@ -39,11 +40,14 @@ function IdentifierField({ label, kind, value, grant, onChange, allowed }: { lab
   return <><ChoicePicker label={label} options={options} selected={value ? [{ id: value, label: options.find(x => x.id === value)?.label || value }] : []} multiple={false} onChange={v => onChange(v[0]?.id || "")} />
     <details><summary>Manual {label.toLowerCase()} identifier</summary><label>{label} identifier<input value={value} onChange={e => onChange(e.target.value)} /></label><p>Use an existing account-owned identifier. Manual entry is unresolved until the server verifies ownership and the exact event binding.</p></details></>;
 }
-export function AudienceFields({ value, grant, onChange }: { value: Audience; grant?: PublicGrant; onChange: (a: Audience) => void }) {
+export function AudienceFields({ value, grant, material, onChange }: { material?: Material; value: Audience; grant?: PublicGrant; onChange: (a: Audience) => void }) {
+  const nativeCountries = grant?.provider === "meta" && grant.id.startsWith("connection:");
   return <>
+    {nativeCountries && <CountryAudience value={value} grant={grant!} material={{ ...(material ?? initialMaterial(grant!)), audience: value }} onChange={onChange} />}
+    {!nativeCountries && <>
     {grant && <ChoicePicker label={value.provider === "meta" ? "Countries" : "Locations"} options={(grant.targetingOptions || []).slice(0, 5000).filter(x => x.kind === "locations")} selected={value.locations.map(id => ({ id, label: grant.targetingOptions?.slice(0, 5000).find(x => x.kind === "locations" && x.id === id)?.label || id }))} limit={20} onChange={v => onChange({ ...value, locations: v.map(x => x.id) })} />}
     {(grant?.targetingOptions?.length || 0) > 5000 && <p>Catalog limited to the first 5,000 supplied entries. Ask your administrator for a narrower account catalog.</p>}
-    <details><summary>Manual location identifiers</summary><label>{value.provider === "meta" ? "Countries (ISO codes)" : "Location identifiers"}<input aria-label="Locations" value={value.locations.join(", ")} onChange={e => onChange({ ...value, locations: split(e.target.value) })} /></label><p>Identifiers are preserved without translation. Missing catalog entries do not establish account eligibility.</p></details>
+    <details><summary>Manual location identifiers</summary><label>{value.provider === "meta" ? "Countries (ISO codes)" : "Location identifiers"}<input aria-label="Locations" value={value.locations.join(", ")} onChange={e => onChange({ ...value, locations: split(e.target.value) })} /></label><p>Identifiers are preserved without translation. Missing catalog entries do not establish account eligibility.</p></details></>}
     {value.provider === "meta" && <div className="grid"><label>Minimum age<input type="number" min="18" max="65" value={value.ageMin ?? ""} onChange={e => onChange({ ...value, ageMin: e.target.value ? Number(e.target.value) : undefined })} /></label>
       <label>Maximum age<input type="number" min="18" max="65" value={value.ageMax ?? ""} onChange={e => onChange({ ...value, ageMax: e.target.value ? Number(e.target.value) : undefined })} /></label></div>}
     {value.provider === "google" && <label>Exact search keywords<input value={value.keywords?.join(", ") || ""} onChange={e => onChange({ ...value, keywords: split(e.target.value) })} /></label>}
@@ -64,7 +68,7 @@ function TuplePicker({ material: m, onChange }: { material: Material; onChange: 
     if (s.provider === "meta") onChange({ ...s, delivery: row[0], objective: row[1], optimization: row[2] } as ProviderSettings);
     else onChange({ ...s, objective: row[0], optimization: row[1], bid: row[2] === "manual" ? { mode: "manual", costType: "CPC", amountMinor: manual.current } : { mode: "auto", costType: "CPM" } } as ProviderSettings);
   }} /><p>Choosing a tuple changes only objective, optimization and bidding/delivery mode. Manual CPC needs your amount. Existing targeting, conversion, consent, purpose and budget stay unchanged; incompatible fields must be reviewed below.</p>
-    <p>Current objective: {s.objective} · optimization: {s.optimization}</p></>;
+    <p>Current objective: {friendly(s.objective)} · optimization: {friendly(s.optimization)}</p></>;
 }
 function ScheduleFields({ material: m, onChange }: { material: Material; onChange: (patch: Partial<Material>) => void }) {
   const [error, setError] = useState("");
@@ -96,7 +100,7 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
     {g.provider === "google" && <fieldset><legend>Search ad copy</legend>{(["searchHeadlines", "searchDescriptions"] as const).map(field => (m[field] || []).map((v, i) => <label key={`${field}:${i}`}>{field === "searchHeadlines" ? "Search headline" : "Search description"} {i + 1}<input value={v} onChange={e => update({ [field]: m[field]!.map((x, n) => n === i ? e.target.value : x) })} /></label>))}</fieldset>}
     {!s && g.provider !== "google" && <button type="button" onClick={() => settings(initialSettings(g)! as unknown as Record<string, unknown>)}>Choose explicit provider settings</button>}
     {s && <>
-      <p>{s.provider} · API {s.apiVersion} · account {s.accountId}</p>
+      <p>{s.provider} · API {s.apiVersion} · {s.accountId === g.accountId ? g.label : "Previously selected account"}</p>
       {s.accountId !== g.accountId && <p role="status">Saved settings refer to another account. Identity, conversions and targeting will still need review. <button type="button" onClick={() => settings({ accountId: g.accountId })}>Bind settings to selected account</button></p>}
       <TuplePicker material={m} onChange={settings => update({ settings })} />
       <Select label="Format" value={s.format} choices={[s.provider === "meta" ? "single_image" : "STANDARD_UPDATE"]} onChange={format => settings({ format })} />
@@ -107,10 +111,14 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
         <Select label="Feed placements" value={s.placements.join(",")} choices={["facebook_feed", "instagram_feed", "facebook_feed,instagram_feed"]} onChange={v => settings({ placements: v.split(",") })} />
         {s.placements.includes("instagram_feed") && <IdentifierField label="Instagram identity" kind="instagram" grant={g} allowed={g.instagramUserId || ""} value={s.identity.instagramUserId || ""} onChange={instagramUserId => settings({ identity: { ...s.identity, instagramUserId } })} />}
         {s.identity.instagramUserId && !s.placements.includes("instagram_feed") && <button type="button" onClick={() => settings({ identity: { pageId: s.identity.pageId } })}>Remove unused Instagram identity</button>}
+        {s.delivery === "ordinary" && g.id.startsWith("connection:") ? <p>Languages, interests and exclusions are unavailable in this country-only journey.
+          {(s.targeting.languages.length > 0 || s.targeting.interestGroups.length > 0 || s.targeting.excludedCustomAudiences.length > 0) && <><br />Retained targeting needs review. <button type="button" onClick={() => settings({ targeting: { languages: [], interestGroups: [], excludedCustomAudiences: [] } })}>Remove unsupported targeting</button></>}
+        </p> : <>
         <ResolvedSelect label="Languages" kind="languages" selected={s.targeting.languages} grant={g} onChange={languages => settings({ targeting: { ...s.targeting, languages } })} />
         {s.targeting.interestGroups.map((group, i) => <div key={i}><ResolvedSelect label={`Interest group ${i + 1} (OR)`} kind="interests" selected={group} grant={g} onChange={v => settings({ targeting: { ...s.targeting, interestGroups: s.targeting.interestGroups.map((x, n) => n === i ? v : x) } })} /><button type="button" onClick={() => settings({ targeting: { ...s.targeting, interestGroups: s.targeting.interestGroups.filter((_, n) => n !== i) } })}>Remove interest group {i + 1}</button></div>)}
         <button type="button" disabled={s.targeting.interestGroups.length >= 5} onClick={() => settings({ targeting: { ...s.targeting, interestGroups: [...s.targeting.interestGroups, []] } })}>Add AND interest group</button>
         <ResolvedSelect label="Exclude existing custom audiences" kind="customAudiences" selected={s.targeting.excludedCustomAudiences} grant={g} onChange={excludedCustomAudiences => settings({ targeting: { ...s.targeting, excludedCustomAudiences } })} />
+        </>}
         {s.delivery === "employment" && <>
           <Select label="Special ad category" value={s.specialAdCategory || ""} choices={["EMPLOYMENT"]} onChange={specialAdCategory => settings({ specialAdCategory })} />
           <Select label="Special category country" value={s.specialAdCategoryCountry || ""} choices={["US"]} onChange={specialAdCategoryCountry => settings({ specialAdCategoryCountry })} />
@@ -134,7 +142,7 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
       <p>LinkedIn tools may not be used to discriminate based on personal characteristics such as gender, age, race, or ethnicity. Employment ads must provide equal access to opportunities on every provider. <a href="https://www.linkedin.com/legal/ads-policy" target="_blank" rel="noreferrer">LinkedIn advertising policies</a></p>
       <label className="check"><input type="checkbox" checked={s.nondiscriminationAccepted} onChange={e => settings({ nondiscriminationAccepted: e.target.checked })} />I acknowledge the nondiscrimination requirements.</label>
     </>}
-    {(g.provider !== "linkedin" || !s) && <AudienceFields grant={g} value={m.audience} onChange={audience => update({ audience })} />}
+    {(g.provider !== "linkedin" || !s) && <AudienceFields material={m} grant={g} value={m.audience} onChange={audience => update({ audience })} />}
     {!["USD", "EUR", "GBP", "CAD", "AUD"].includes(g.currency) && <p role="status">This account currency is not supported by the SDK money contract. Existing amounts are retained; choose a supported account.</p>}
     <fieldset disabled={!["USD", "EUR", "GBP", "CAD", "AUD"].includes(g.currency)}><legend>Planning media amounts · {g.currency}</legend>
     <label>Lifetime media budget ({g.currency})<input type="number" min="0.01" step="0.01" required value={m.budget.minor / 100 || ""} onChange={e => {
@@ -254,7 +262,7 @@ function PromotionForm({ draft, grant: g, client, scope, disabled, onSaved, rend
   const missing = [!m.name.trim() && "Campaign name", !m.headline.trim() && "Headline", !m.body.trim() && "Copy", !m.destination && "HTTPS destination", !m.budget.minor && "Lifetime budget", !m.purpose && "Purpose", !m.startAt && "Start date", !m.endAt && "End date", !m.audience.locations.length && "Locations", m.audience.provider === "meta" && (m.audience.ageMin === undefined || m.audience.ageMax === undefined) && "Minimum and maximum age", Date.parse(m.startAt) >= Date.parse(m.endAt) && "End must be later than start", m.settings?.provider === "linkedin" && !m.advertisingBudget?.daily && "Daily budget", m.budget.currency !== g.currency && "Account currency mismatch", m.timezone !== g.timezone && "Account timezone mismatch"].filter(Boolean);
   const blockers = [...missing, ...capabilityBlockers(m, g)];
   return <div ref={panel} tabIndex={-1}>
-    <p>Target: {g.label} · {g.accountId} · {g.currency} · {g.timezone}. Existing draft values are retained; missing fields need your review. No CPC amount, budget or consent is supplied.</p>
+    <p>Target: {g.label} · {g.currency} · {g.timezone}. Existing draft values are retained; missing fields need your review. No CPC amount, budget or consent is supplied.</p>
     <fieldset disabled={busy || disabled}>{review ? <><h3>Review planning campaign</h3>{renderReview(m)}</> : <GuidedFields value={m} grant={g} onChange={setMaterial} />}</fieldset>
     {!review && m.settings && blockers.length > 0 && <details><summary>Reconstruct retained provider settings</summary>
       <p>This explicitly clears provider identity, targeting, conversion, bidding and outcome settings in this form and resets consent. Copy, amounts, audience and schedule remain as entered; the original draft is preserved. All provider choices must be reviewed again.</p>

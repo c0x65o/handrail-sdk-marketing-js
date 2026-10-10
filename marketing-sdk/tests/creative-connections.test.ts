@@ -44,7 +44,7 @@ for (const provider of ["openai", "xai"] as const) test(`creative ${provider}: z
     const s = await f.start();
     assert.equal((await f.store.list("p", "generationGrant")).length, 0);
     const html = await (await f.req(s.path)).text();
-    assert.ok(!html.includes("<script")); assert.match(html, /Purpose: (image|video)/);
+    assert.ok(html.includes("<script nonce=")); assert.match(html, /Purpose: (image|video)/);
     const missingConsent = { ...fields(html, "approve"), apiKey: secret };
     assert.equal((await f.req(s.path, missingConsent)).status, 409);
     assert.equal((await f.store.list("p", "vault")).length, 0);
@@ -116,18 +116,18 @@ test("creative cancellation and concurrent approval retain one original intent a
     const fresh = await f.start(); const page2 = await (await f.req(fresh.path)).text();
     const input = { ...fields(page2, "approve"), consent: "approved", apiKey: secret };
     const pair = await Promise.all([f.req(fresh.path, input), f.req(fresh.path, input)]);
-    assert.deepEqual(pair.map(r => r.status), [303, 303]);
+    assert.deepEqual(pair.map(r => r.status).sort(), [303, 409]);
     assert.equal((await f.store.list<any>("p", "creativeConnection")).filter(c => c.state === "configured").length, 1);
   } finally { await f.close(); }
 });
-test("creative changes after awaited custody write roll back secret and binding", async () => {
+test("creative changes after awaited custody write retain fenced ciphertext without configuring", async () => {
   const f = await fixture();
   try {
     const s = await f.start(), input = { ...fields(await (await f.req(s.path)).text(), "approve"), consent: "approved", apiKey: secret };
     const retain = f.custody.retain.bind(f.custody);
     f.custody.retain = async (...args) => { await retain(...args); f.changePolicy({ ...f.policy(), revision: "changed" }); };
     assert.equal((await f.req(s.path, input)).status, 409);
-    assert.equal((await f.store.list("p", "vault")).length, 0);
+    assert.equal((await f.store.list("p", "vault")).length, 1);
     assert.equal((await f.store.get<any>("p", "creativeConnection", s.cid)).state, "review");
   } finally { await f.close(); }
 });
@@ -211,21 +211,13 @@ test("billing metadata can be configured independently of mounted API keys", asy
     assert.equal((await f.store.list("p", "generationCostReservation")).length, 0);
   } finally { await f.close(); }
 });
-test("creative external host session is revalidated after custody await and rolls back on logout", async () => {
+test("creative rejects the removed weak external-session adapter", async () => {
   const f = await fixture();
   try {
-    let session: string | null = "SYNTHETIC_HOST_SESSION_REF";
-    const p = { userId: f.principal.userId, externalSessionRef: session };
-    const adapter = new CreativeConnections({ ...f.creative.options, sessions: { current: async () => session } });
-    const routes = adapter.routes({ origin: f.origin, authenticate: async () => p });
-    const post = (path: string, input: Record<string, string>) => routes(new Request(f.origin + path, { method: "POST", headers: { origin: f.origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(input) }));
-    const started = await post(f.base, f.startInput()); assert.equal(started!.status, 303);
-    const path = started!.headers.get("location")!;
-    const page = await (await routes(new Request(f.origin + path)))!.text();
-    const retain = f.custody.retain.bind(f.custody);
-    f.custody.retain = async (...args) => { await retain(...args); session = null; };
-    const response = await post(path, { ...fields(page, "approve"), consent: "approved", apiKey: secret });
-    assert.equal(response!.status, 401); assert.equal((await f.store.list("p", "vault")).length, 0);
+    const p = { userId: f.principal.userId, externalSessionRef: "SYNTHETIC_HOST_SESSION_REF" };
+    const routes = f.creative.routes({ origin: f.origin, authenticate: async () => p });
+    assert.equal((await routes(new Request(f.origin + f.base)))!.status, 401);
+    assert.equal((await f.store.list("p", "vault")).length, 0);
   } finally { await f.close(); }
 });
 test("creative null policy permits exact owner disconnect but never new setup or secret use; environment is host-bound", async () => {
@@ -244,14 +236,14 @@ test("creative null policy permits exact owner disconnect but never new setup or
   } finally { await f.close(); }
 });
 
-test("review: consent expiring during custody await rolls back the encrypted write", async t => {
+test("review: consent expiring during custody await retains a fenced encrypted write", async t => {
   const f = await fixture();
   try {
     const s = await f.start(), input = { ...fields(await (await f.req(s.path)).text(), "approve"), consent: "approved", apiKey: secret };
     const retain = f.custody.retain.bind(f.custody);
     f.custody.retain = async (...args) => { await retain(...args); t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 601000 }); };
     assert.equal((await f.req(s.path, input)).status, 409);
-    assert.equal((await f.store.list("p", "vault")).length, 0);
+    assert.equal((await f.store.list("p", "vault")).length, 1);
     assert.equal((await f.store.get<any>("p", "creativeConnection", s.cid)).state, "review");
   } finally { t.mock.timers.reset(); await f.close(); }
 });

@@ -66,6 +66,7 @@ export class MetaMarketingClient {
     try {
       response = await this.fetchImpl(url, {
         method,
+        redirect: "error",
         signal: controller.signal,
         headers: { authorization: `Bearer ${this.accessToken}`, ...(body ? { "content-type": "application/json" } : {}) },
         body: form || (body ? JSON.stringify(body) : undefined),
@@ -80,6 +81,43 @@ export class MetaMarketingClient {
       throw new MetaMarketingError(message, info);
     }
     return payload;
+  }
+
+  /** Country-only bounded search. Never follows paging.next or accepts a URL.
+   * @param {string} query
+   * @param {string | undefined} after */
+  async searchCountries(query, after = undefined) {
+    if (typeof query !== "string" || !query.trim() || query.length > 80 || /[\x00-\x1f\x7f]/.test(query) ||
+      after !== undefined && (typeof after !== "string" || !/^[A-Za-z0-9_=-]{1,512}$/.test(after)))
+      throw new MetaMarketingError("Invalid country search", { code: "invalid_country_search", status: 422 });
+    const url = new URL(`${GRAPH_ROOT}/${DEFAULT_VERSION}/search`);
+    url.search = new URLSearchParams({ type: "adgeolocation", location_types: '["country"]', q: query,
+      limit: "50", locale: "en_US", ...(after ? { after } : {}) }).toString();
+    if (this.appSecret) url.searchParams.set("appsecret_proof", crypto.createHmac("sha256", this.appSecret).update(this.accessToken).digest("hex"));
+    const controller = new AbortController();
+    let timer;
+    const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+      controller.abort(); reject(new MetaMarketingError("Country search timed out", { code: "country_search_timeout", status: 503 }));
+    }, Math.min(this.timeoutMs, 10000)); });
+    const read = async () => {
+      const response = await this.fetchImpl(url, { method: "GET", redirect: "error", signal: controller.signal,
+        headers: { authorization: `Bearer ${this.accessToken}` } });
+      if (!response.ok) { await response.body?.cancel(); throw new MetaMarketingError("Country search unavailable", classifyError(response.status, {})); }
+      const length = Number(response.headers.get("content-length") || 0);
+      if (length > 65536) { await response.body?.cancel(); throw new MetaMarketingError("Country search too large", { code: "country_search_oversized" }); }
+      const reader = response.body?.getReader();
+      if (!reader) throw new MetaMarketingError("Country search unavailable");
+      const chunks = []; let bytes = 0;
+      try {
+        while (true) { const chunk = await reader.read(); if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > 65536) throw new MetaMarketingError("Country search too large", { code: "country_search_oversized" });
+          chunks.push(Buffer.from(chunk.value)); }
+      } finally { await reader.cancel().catch(() => {}); }
+      return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    };
+    try { return await Promise.race([read(), deadline]); }
+    finally { clearTimeout(timer); }
   }
 
   async verifyConnection({ adAccountId, pageId, pixelId }) {
@@ -147,6 +185,7 @@ export class MetaMarketingClient {
         },
       },
       paymentReady: Boolean(account.funding_source_details),
+      fundingSourceObserved: typeof account.funding_source_details?.id === "string" && account.funding_source_details.id.trim().length > 0,
       checkedAt: new Date().toISOString(),
     };
   }

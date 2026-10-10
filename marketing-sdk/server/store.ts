@@ -36,6 +36,8 @@ export interface Principal {
   sessionTokenHash?: string;
   /** Opaque reference from trusted host authentication, validated afresh by Connections.sessions. Never command input. */
   externalSessionRef?: string;
+  /** Verified by the host; never accepted from a command or browser field. */
+  externalIdentity?: { issuer: string; subject: string };
 }
 export class Store {
   readonly db: Database;
@@ -70,6 +72,14 @@ export class Store {
       .get(project, kind, key);
     requireThat(row, "not_found", 404);
     return JSON.parse(String(row.body)) as T;
+  }
+  /** Server-only routing hint, never authorization. One exact digest, fixed kinds,
+   * same configured Store. Ambiguity across projects/kinds fails closed. */
+  async locateOAuthState(stateHash: string): Promise<{ projectId: string; kind: "connectionCallback" | "oauth"; id: string }> {
+    requireThat(/^[a-f0-9]{64}$/.test(stateHash), "oauth_state_invalid");
+    const rows = await this.db.prepare("SELECT project_id,kind,id FROM records WHERE kind IN ('connectionCallback','oauth') AND id=? LIMIT 2").all(stateHash);
+    requireThat(rows.length === 1, "oauth_state_invalid");
+    return { projectId: String(rows[0]!.project_id), kind: rows[0]!.kind as "connectionCallback" | "oauth", id: stateHash };
   }
   async list<T>(project: string, kind: string): Promise<T[]> {
     return (

@@ -1,5 +1,18 @@
 # Connections public contracts and minimum consumer
 
+Current shared implementation: [external creative sessions](EXTERNAL-CREATIVE-SESSIONS.md)
+and [independent review](SHARED-CONNECTIONS-REVIEW.md) supersede the dated creative
+script-free/persistent-access descriptions below. Private pages now use isolated
+SDK scripts with host-required mutation headers. Creative access is session-limited;
+retained ciphertext/billing facts confer no unattended authority. Source-session
+loss requires fresh human setup. Historical excerpts remain evidence, not the
+current authorization contract.
+
+The additive [portable handoff v1 contract](PORTABLE-HANDOFF.md) governs new
+dual-session handoffs, stable callbacks and final local session guards. Historical
+project-path attempts retain their issued URI; earlier design excerpts below remain
+historical where superseded.
+
 The reviewed design excerpts below remain distinguishable from implementation.
 None of their new names is exported by the frozen published Marketing 0.1.7.
 The uncommitted advertising candidate implements the commands/factory/UI; the

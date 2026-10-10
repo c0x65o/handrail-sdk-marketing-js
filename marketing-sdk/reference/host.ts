@@ -1,3 +1,4 @@
+import { classifyConnectionRoute } from "../server/handoff-http.js";
 import { createCredentialCipher } from "../support/vault-crypto.js";
 import { openDatastore } from "./datastore.js";
 import { bootstrapFixture } from "./seed.js";
@@ -132,9 +133,18 @@ export async function createHost(options: {
     try {
       await store.db.assertExecutor();
       const url = new URL(req.url || "/", options.origin);
-      if (req.method === "GET" && (/^\/api\/oauth\//.test(url.pathname) || /\/connections\/[^/]+\/handoff$/.test(url.pathname))) {
+      const connectionRoute = classifyConnectionRoute(url.pathname, req.method ?? "GET");
+      if (connectionRoute) {
+        // Only the exact unprivileged callback GET is cross-site. The SDK private
+        // handler enforces fresh authentication, exact Origin and bounded fields.
+        if (connectionRoute === "private") {
+          requireThat([undefined, "same-origin", "none"].includes(req.headers["sec-fetch-site"] as string | undefined), "origin_denied", 403);
+          if (req.method === "POST") requireThat(req.headers.origin === options.origin, "origin_denied", 403);
+        }
         const headers = new Headers(); for (const [name, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(name, value);
-        const response = await connectionRoutes(new Request(url, { headers }));
+        const chunks: Buffer[] = []; let size = 0;
+        for await (const chunk of req) { size += chunk.length; requireThat(size <= 8192, "body_too_large", 413); chunks.push(chunk); }
+        const response = await connectionRoutes(new Request(url, { method: req.method, headers, ...(req.method === "POST" ? { body: Buffer.concat(chunks) } : {}) }));
         if (response) { res.writeHead(response.status, Object.fromEntries(response.headers)); return res.end(await response.text()); }
       }
       if (req.method === "GET" && url.pathname === "/healthz") {
@@ -186,7 +196,7 @@ export async function createHost(options: {
         requireThat(token, "invalid_credentials", 401);
         res.setHeader(
           "set-cookie",
-          `marketing_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${options.origin.startsWith("https:") ? "; Secure" : ""}`,
+          `marketing_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${options.origin.startsWith("https:") ? "; Secure" : ""}`,
         );
         return reply(res, 200, {
           ok: true,
@@ -207,7 +217,7 @@ export async function createHost(options: {
           await store.revokeSession(token);
           res.setHeader(
             "set-cookie",
-            "marketing_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+            "marketing_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
           );
           return reply(res, 200, {
             ok: true,
@@ -234,24 +244,6 @@ export async function createHost(options: {
           return reply(res, 200, {
             projects: rows,
           });
-        }
-        const callback =
-          /^\/api\/oauth\/([^/]+)\/(meta|google|linkedin)\/callback$/.exec(
-            url.pathname,
-          );
-        if (callback && req.method === "GET") {
-          requireThat(options.agent, "oauth_unavailable");
-          await options.agent.complete(
-            principal,
-            callback[1]!,
-            callback[2] as Grant["provider"],
-            (await url.searchParams.get("state")) || "",
-            (await url.searchParams.get("code")) || "",
-          );
-          res.writeHead(303, {
-            location: "/",
-          });
-          return res.end();
         }
         const takeover = /^\/fixture-takeover\/([^/]+)\/([^/]+)$/.exec(
           url.pathname,
@@ -301,6 +293,21 @@ export async function createHost(options: {
             location,
           });
           return res.end();
+        }
+        if (action === "studio-media" && req.method === "GET") {
+          const { asset, bytes } = await service.studio.media(principal, project, match[3]!);
+          res.writeHead(200, { "content-type": asset.mime, "content-length": bytes.length, "cache-control": "private, no-store", "x-content-type-options": "nosniff" });
+          return res.end(bytes);
+        }
+        if (action === "studio-media" && req.method === "POST") {
+          requireThat(req.headers["content-type"] === "application/octet-stream", "binary_required", 415);
+          const raw = req.headers["x-studio-intent"];
+          requireThat(typeof raw === "string" && raw.length < 12000, "import_intent_required", 422);
+          const intent = JSON.parse(decodeURIComponent(raw));
+          requireThat(intent.draftId === match[3], "draft_mismatch", 422);
+          const chunks: Buffer[] = []; let length = 0;
+          for await (const chunk of req) { length += chunk.length; requireThat(length <= 10 * 1024 * 1024, "raster_size_limit", 413); chunks.push(chunk); }
+          return reply(res, 200, await service.studio.importRaster(principal, project, intent, Buffer.concat(chunks)));
         }
         if (action === "assets" && req.method === "GET") {
           const a = await store.get<Asset>(project, "asset", match[3]!);

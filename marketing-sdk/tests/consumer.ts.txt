@@ -58,3 +58,40 @@ export async function guardedPlanningConsumer(client: ReturnType<typeof createMa
   const saved = await client.call('planningWrite', input);
   return client.call('acknowledgePlanningWrite', { id: saved.id });
 }
+
+import { emptyBrief, type StudioDraft, type TrackingHandoff, type DraftGenerationJob } from '@handrail/marketing';
+import { CampaignStudio as StudioController, ResponsesPlanningAdapter, handleStudioMedia, createNativeDraftGeneration, type PlanningPort } from '@handrail/marketing/server';
+import { CampaignStudio } from '@handrail/marketing/react';
+export const studioPublic = { StudioController, CampaignStudio, ResponsesPlanningAdapter, handleStudioMedia, createNativeDraftGeneration };
+export async function manualStudio(client: ReturnType<typeof createMarketingClient>): Promise<TrackingHandoff> {
+  const draft: StudioDraft = await client.call('saveBrief', { requestKey: 'brief', brief: {...emptyBrief(), name: 'Manual consumer'} });
+  await client.call('setCampaignLifecycle', { kind:'draft', id:draft.id, expectedRevision:draft.revision, lifecycle:'trash', requestKey:'trash' });
+  return (await client.call('checkStudio', { draftId:draft.id, expectedRevision:draft.revision+1 })).tracking;
+}
+export type SyntheticPlanningTransport = PlanningPort['submit'];
+// @ts-expect-error Draft jobs have an explicit owner; no dummy campaign ID.
+export type NoDummyCampaign = DraftGenerationJob['campaignId'];
+// @ts-expect-error Permanent deletion is not an authorized Studio command.
+export type NoDeletionPlaceholder = Commands['permanentlyDeleteDraft'];
+
+
+import { TRACKING_OUTCOMES, type TrackingOwner, type TrackingView } from '@handrail/marketing';
+import { MarketingTracking, handleTrackingCollector, type TrackingSources, type TrackingCollector, type CollectorInspection } from '@handrail/marketing/server';
+import { MarketingTracking as TrackingUI } from '@handrail/marketing/react';
+export const trackingExports = { TRACKING_OUTCOMES, MarketingTracking, TrackingUI, handleTrackingCollector };
+export type SourceAccess = TrackingSources['inspectAccess'];
+export type CoverageProducer = TrackingCollector['inspectCollector'];
+export type ProducerPermissions = CollectorInspection['permissions'];
+export async function publicTracking(client: ReturnType<typeof createMarketingClient>, owner: TrackingOwner): Promise<TrackingView> {
+  const view = await client.call('tracking', {owner});
+  if (view.binding) {
+    const test = await client.call('startTrackingTest', {owner,expectedBindingRevision:view.binding.revision,requestKey:'consumer-test'});
+    await client.call('observeTrackingTest', {owner,testId:test.id});
+    await client.call('cancelTrackingTest', {owner,testId:test.id});
+  }
+  return view;
+}
+// @ts-expect-error Browser commands cannot attest completeness.
+export type NoBrowserCoverage = Commands['attestCoverage'];
+// @ts-expect-error Browser commands cannot accept a collector receipt.
+export type NoBrowserReceipt = Commands['acceptReceipt'];

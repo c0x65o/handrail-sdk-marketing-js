@@ -89,16 +89,25 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
   };
   fixtureEligibility(campaign, grant);
   const objects = new Map<string, any>();
+  const requests: {path:string;method:string;body?:unknown}[]=[];
   let writes = 0,
     nextId = 100,
     loseAdRead = true;
   let retained: Record<string, string> = {};
   let checks = 0;
   const fetcher: typeof fetch = async (raw, init) => {
-    const url = new URL(String(raw)),
-      last = url.pathname.split("/").at(-1)!;
+    const url = new URL(String(raw));
+    assert.equal(url.origin,"https://graph.facebook.com");assert.ok(url.pathname.startsWith("/v26.0/"));
+    requests.push({path:url.pathname,method:init?.method??"GET"});
+    const last = url.pathname.split("/").at(-1)!;
     if (init?.method !== "POST" && last === "act_123") return Response.json({ id: "act_123", currency: "USD", timezone_name: "America/Chicago" });
     if (init?.method !== "POST" && last === "42") return Response.json({ id: "42" });
+    if (last === "insights") {
+      assert.equal(init?.method??"GET","GET");assert.equal(url.searchParams.get('level'),'campaign');
+      assert.deepEqual(JSON.parse(url.searchParams.get('time_range')!),{since:'2026-10-01',until:'2026-10-01'});
+      assert.ok(url.searchParams.get('filtering')?.includes(retained.campaign!));
+      return Response.json({data:[{impressions:'1000',clicks:'25',spend:'12.50',actions:[{action_type:'lead',value:'999'}]}]});
+    }
     if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [{ hash: "provider-image-hash", status: "ACTIVE" }] });
     if (init?.method === "POST") {
       writes++;
@@ -122,6 +131,10 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
                 }
               }),
             );
+      requests[requests.length-1]!.body=structuredClone(body);
+      if(last==='campaigns'){assert.equal(body.status,'PAUSED');assert.equal(body.objective,'OUTCOME_TRAFFIC');assert.equal(body.is_adset_budget_sharing_enabled,false);assert.equal(body.daily_budget,undefined);}
+      if(last==='adsets'){assert.equal(body.status,'PAUSED');assert.equal(body.optimization_goal,'LINK_CLICKS');assert.equal(body.lifetime_budget,42000);assert.equal(body.daily_budget,undefined);}
+      if(last==='ads')assert.equal(body.status,'PAUSED');
       if (objects.has(last)) {
         objects.set(last, {
           ...(await objects.get(last)),
@@ -228,9 +241,17 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     assert.equal(enabled.delivery, "unverified");
     assert.equal(writes, 8);
     assert.equal(checks, 8);
+    assert.deepEqual(requests.filter(r=>r.method==='POST').map(r=>r.path.split('/').at(-1)),['adimages','campaigns','adsets','adcreatives','ads',retained.ad,retained.adset,retained.campaign]);
+    const metric=await provider.metrics({...paused,receipt:enabled},grant,'2026-10-01T05:00:00Z','2026-10-02T05:00:00.000Z');
+    assert.equal(metric.impressions,1000);assert.equal(metric.clicks,25);assert.equal(metric.spendMinor,1250);assert.equal(metric.providerConversions,null);
+    const beforeRecovery=writes;
+    assert.equal((await provider.reconcile(paused,grant,{kind:'activate',payloadDigest:enabled.payloadDigest,receipt:enabled}))?.intent,'enabled');
+    assert.equal(writes,beforeRecovery);
+    assert.equal(await provider.reconcile(paused,grant,{kind:'prepare',payloadDigest:partial.payloadDigest,receipt:{...partial,ids:{image:retained.image!}}}),null);
+    assert.equal(writes,beforeRecovery);
   } finally {
     await store.close();
-    rmSync(dir, {
+    if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, {
       recursive: true,
       force: true,
     });
@@ -348,5 +369,5 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       receipt: { ...receipt, ids: { ...legacyIds, readbackDigest: digest(legacyMaterial) } } };
     assert.equal((await provider.pause(legacy, grant, () => {})).intent, "paused");
     await assert.rejects(provider.activate(legacy, grant, () => {}), /explicit_daily_budget_required/);
-  } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await store.close(); if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, { recursive: true, force: true }); }
 });

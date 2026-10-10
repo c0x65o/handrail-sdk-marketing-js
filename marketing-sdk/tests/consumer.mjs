@@ -6,16 +6,21 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 const pkg = JSON.parse(await readFile("package.json", "utf8"));
+const trackingBrowser = process.argv.includes("--tracking");
+const studioBrowser = process.argv.includes("--studio");
+const portableBrowser = process.argv.includes("--portable");
 const creativeBrowser = process.argv.includes("--creative");
-const connectionsBrowser = process.argv.includes("--connections") || creativeBrowser;
-const sha = process.argv.slice(2).find(a => a !== "--connections" && a !== "--creative");
+const connectionsBrowser = process.argv.includes("--connections") || creativeBrowser || portableBrowser || studioBrowser || trackingBrowser;
+const sha = process.argv.slice(2).find(a => a !== "--connections" && a !== "--creative" && a !== "--portable" && a !== "--studio" && a !== "--tracking");
 assert.ok(!sha || /^[a-f0-9]{40}$/.test(sha), "Supply a full public commit SHA or no argument for candidate projection");
 const root = await mkdtemp(join(tmpdir(), "marketing-consumer-"));
+const prepareOnly = process.env.MARKETING_CONSUMER_PREPARE_ONLY === "1";
 const run = (bin, args) => execFileSync(bin, args, { cwd: root, stdio: "inherit", env: { ...process.env, NODE_ENV: "development" } });
 try {
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "marketing-qualification-consumer", private: true, type: "module",
     dependencies: sha ? { "@handrail/marketing": `git+https://github.com/c0x65o/handrail-sdk-marketing-js.git#${sha}` } : pkg.dependencies,
-    devDependencies: Object.fromEntries(["typescript", "@types/node", "@types/react", "@types/react-dom", "vite", ...(connectionsBrowser ? ["playwright"] : [])].filter(k => pkg.devDependencies[k]).map(k => [k, pkg.devDependencies[k]])),
+    devDependencies: { ...Object.fromEntries(["typescript", "@types/node", "@types/react", "@types/react-dom", "vite", ...(connectionsBrowser ? ["playwright"] : [])].filter(k => pkg.devDependencies[k]).map(k => [k, pkg.devDependencies[k]])),
+      ...(process.env.MARKETING_CONSUMER_SUPPORTED_TYPES === "1" ? { typescript: "5.9.3", "@types/node": "22.20.4" } : {}) },
   }, null, 2));
   run("npm", ["install", "--include=dev", "--no-audit", "--no-fund"]);
   const installed = join(root, "node_modules/@handrail/marketing");
@@ -106,14 +111,18 @@ console.log('Core/React browser bundle excludes server modules');
     await cp(resolve("marketing-sdk/examples/connections-server.ts"), join(root, "connections-server.ts"));
     await cp(resolve("marketing-sdk/examples/embedded.tsx"), join(root, "embedded.tsx"));
     await cp(resolve("marketing-sdk/examples/creative-server.ts"), join(root, "creative-server.ts"));
-    await cp(resolve(creativeBrowser ? "marketing-sdk/tests/creative-consumer.mjs" : "marketing-sdk/tests/connections-consumer.mjs"), join(root, "connections-check.mjs"));
+    await cp(resolve(trackingBrowser ? "marketing-sdk/tests/tracking-consumer.mjs" : studioBrowser ? "marketing-sdk/tests/studio-consumer.mjs" : portableBrowser ? "marketing-sdk/tests/portable-consumer.mjs" : creativeBrowser ? "marketing-sdk/tests/creative-consumer.mjs" : "marketing-sdk/tests/connections-consumer.mjs"), join(root, "connections-check.mjs"));
     await cp(resolve("marketing-sdk/tests/connection-network-guard.mjs"), join(root, "connection-network-guard.mjs"));
-    await writeFile(join(root, "tsconfig.connections.json"), JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { noEmit: false, outDir: "compiled", jsx: "react-jsx" }, files: ["connections-server.ts", "creative-server.ts", "embedded.tsx"] }));
+    await cp(resolve("marketing-sdk/examples/external-sessions.ts"), join(root, "external-sessions.ts"));
+    await writeFile(join(root, "external-session-fixture.ts"), (await readFile("marketing-sdk/tests/external-session-fixture.ts", "utf8")).replace('../examples/external-sessions.js', './external-sessions.js'));
+    if(trackingBrowser) await cp(resolve("marketing-sdk/tests/tracking-fixture.ts"), join(root,"tracking-fixture.ts"));
+    await writeFile(join(root, "tsconfig.connections.json"), JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { noEmit: false, outDir: "compiled", jsx: "react-jsx" }, files: ["connections-server.ts", "creative-server.ts", "embedded.tsx", "external-sessions.ts", "external-session-fixture.ts", ...(trackingBrowser ? ["tracking-fixture.ts"] : [])] }));
     run(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.connections.json"]);
     const artifacts = resolve(process.env.MARKETING_CONNECTION_ARTIFACTS || "artifacts/connections-review/browser");
     await mkdir(artifacts, { recursive: true });
     await cp(resolve(".marketing-build/source-manifest.json"), join(artifacts, "source-manifest.json"));
-    run(process.execPath, ["connections-check.mjs", artifacts]);
+    if (!prepareOnly) run(process.execPath, ["connections-check.mjs", artifacts]);
   }
-  console.log(sha ? `Qualified public Git install ${sha}` : "Qualified uncommitted candidate package projection; public Git publication remains separate");
-} finally { await rm(root, { recursive: true, force: true }); }
+  console.log(`Consumer root: ${root}`);
+  console.log(prepareOnly ? `Prepared consumer retained for isolated browser validation: ${root}; browser journey NOT RUN` : sha ? `Qualified public Git install ${sha}` : "Qualified uncommitted candidate package projection; public Git publication remains separate");
+} finally { if (!prepareOnly && process.env.MARKETING_TEST_RETAIN !== "1") await rm(root, { recursive: true, force: true }); }

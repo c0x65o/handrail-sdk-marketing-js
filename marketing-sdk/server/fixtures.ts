@@ -16,7 +16,9 @@ import { Store, digest, requireThat } from "./store.js";
 export class FixtureProvider implements ProviderPort {
   readonly evidence = "fixture" as const;
   loseNextResponse = false;
-  constructor(readonly store: Store) {}
+  constructor(readonly store: Store) {
+    Object.defineProperty(this, "evidence", { value: "fixture", writable: false, configurable: false });
+  }
   async verify(g: Grant) {
     return {
       accountId: g.accountId,
