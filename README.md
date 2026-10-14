@@ -226,3 +226,14 @@ verification. The newest overlapping provider collection must cover the entire
 requested window in the same timezone and currency; otherwise the SDK returns
 `refresh_required`. Missing or denied reports never fall back to older totals.
 Subset attribution stays unknown unless separately measured for that window.
+
+
+`observedMeasurementSpend(evidence, {asOf, maxAgeMs})` exposes provider-observed
+spend for a host's existing spending controls without declaring a current-day
+performance total. It requires intact, compatible, nonoverlapping API evidence,
+explicit campaign-day rows, completed pagination and the caller's freshness
+policy. Missing rows, future observations, synthetic sources and failed reads
+remain unknown. Explicit zero is retained. `fullWindowComplete` stays false for
+an open day, and `reportingLagUnbounded: true` makes clear that observed use is
+not an allowance or a guarantee against delayed provider costs. This API does
+not change authority, budgets, schedules or final-performance calculations.

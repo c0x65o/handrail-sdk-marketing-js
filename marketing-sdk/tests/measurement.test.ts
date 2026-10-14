@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MeasurementInput } from "../core/measurement.js";
-import { buildMeasurementEvidence, measured, unknownMeasurement, saveMeasurementEvidence, readMeasurementEvidence, measurementDays, saveMeasurementRevision, readLatestMeasurementEvidence, aggregateMeasurementEvidence, compatibleMeasurementWindows } from "../server/measurement.js";
+import { buildMeasurementEvidence, measured, unknownMeasurement, saveMeasurementEvidence, readMeasurementEvidence, measurementDays, saveMeasurementRevision, readLatestMeasurementEvidence, aggregateMeasurementEvidence, compatibleMeasurementWindows, observedMeasurementSpend } from "../server/measurement.js";
 import { testStore } from "./datastore.js";
 
 function input(): MeasurementInput {
@@ -135,6 +135,47 @@ test("equivalent UTC instant formats are compatible; date-only windows are not i
   const original = input().window;
   assert.equal(compatibleMeasurementWindows(original, { ...original, from: original.from.replace(".000Z", "Z") }), true);
   assert.throws(() => measurementDays({ ...original, from: "2026-10-07" }), /invalid_instant/);
+});
+
+test("current-day observed spend is distinct from final totals and does not confer spending authority", () => {
+  const data=input(); data.source.kind="provider_api"; data.source.collectedAt="2026-10-08T12:00:00.000Z";
+  const evidence=buildMeasurementEvidence(data), before=structuredClone(evidence);
+  const observed=observedMeasurementSpend([evidence],{asOf:"2026-10-08T12:05:00.000Z",maxAgeMs:15*60000});
+  assert.equal(evidence.metrics.spendMinor.value,null);
+  assert.equal(observed.spendMinor.value,1000);
+  assert.equal(observed.observationComplete,true); assert.equal(observed.fullWindowComplete,false);
+  assert.equal(observed.reportingLagUnbounded,true);
+  assert.deepEqual(observed.evidenceIds,[evidence.id]); assert.deepEqual(evidence,before);
+  assert.equal(observed.oldestCollectedAt,data.source.collectedAt);
+  for(const row of data.rows)row.spendMinor=measured(0);
+  assert.equal(observedMeasurementSpend([buildMeasurementEvidence(data)],{asOf:data.source.collectedAt,maxAgeMs:0}).spendMinor.value,0);
+  data.source.collectedAt="2026-10-09T01:00:00.000Z";
+  assert.equal(observedMeasurementSpend([buildMeasurementEvidence(data)],{asOf:data.source.collectedAt,maxAgeMs:0}).fullWindowComplete,true);
+});
+
+test("observed-spend controls reject missing, stale, synthetic, failed, overlapping and incompatible evidence", () => {
+  const fresh=()=>{const data=input(); data.source.kind="provider_api"; data.source.collectedAt="2026-10-08T12:00:00.000Z"; return data;};
+  const options={asOf:"2026-10-08T12:05:00.000Z",maxAgeMs:15*60000};
+  for(const change of [
+    (d:MeasurementInput)=>{d.rows.pop();}, (d:MeasurementInput)=>{d.rows[0]!.spendMinor=unknownMeasurement("missing_spend");},
+    (d:MeasurementInput)=>{d.source.paginationComplete=false;}, (d:MeasurementInput)=>{d.source.missingReason="expired_credentials";},
+    (d:MeasurementInput)=>{d.source.collectedAt="2026-10-08T11:00:00.000Z";},
+    (d:MeasurementInput)=>{d.source.collectedAt="2026-10-08T13:00:00.000Z";}, (d:MeasurementInput)=>{d.source.kind="synthetic";},
+    (d:MeasurementInput)=>{d.window.until="2026-10-10T00:00:00.000Z";d.rows.push({...d.rows[0]!,day:"2026-10-09"});},
+  ]) { const data=fresh(); change(data); const observed=observedMeasurementSpend([buildMeasurementEvidence(data)],options);
+    assert.equal(observed.spendMinor.value,null);assert.equal(observed.observationComplete,false);assert.ok(observed.reasons.length); }
+  const first=buildMeasurementEvidence(fresh());
+  assert.equal(observedMeasurementSpend([],options).spendMinor.value,null);
+  assert.equal(observedMeasurementSpend([first,first],options).spendMinor.value,null);
+  for(const currency of ["USD","EUR"]) {
+    const second=fresh(); second.identity.nativeCampaignId="other";second.identity.campaignIds=["other"];second.rows.forEach(row=>row.campaignId="other");second.window.currency=currency;
+    assert.equal(observedMeasurementSpend([first,buildMeasurementEvidence(second)],options).spendMinor.value,currency==="USD"?2000:null);
+    second.window.from="2026-10-08T00:00:00.000Z";second.rows.shift();
+    assert.equal(observedMeasurementSpend([first,buildMeasurementEvidence(second)],options).spendMinor.value,null);
+  }
+  const corrupt=structuredClone(first);corrupt.rows[0]!.spendMinor.value=corrupt.rows[0]!.spendMinor.value!+1;
+  assert.throws(()=>observedMeasurementSpend([corrupt],options),/measurement_integrity_mismatch/);
+  assert.throws(()=>observedMeasurementSpend([first],{...options,maxAgeMs:-1}),/invalid_measurement_freshness/);
 });
 
 test("saved-window views retain provenance, reject newer partial scope and never count a projection as a provider reread", async () => {

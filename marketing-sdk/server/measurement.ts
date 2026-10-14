@@ -260,6 +260,49 @@ export interface MeasurementWindowScope {
   provider: "meta" | "linkedin";
   accountId: string;
 }
+
+/** Keep current-day observed use separate from unknown full-day performance.
+ * Callers supply their existing freshness policy and retain spending authority.
+ * A complete page without a campaign-day row is still unknown, never zero. */
+export function observedMeasurementSpend(evidence: MeasurementEvidence[], options: {asOf: string; maxAgeMs: number}): import("../core/measurement.js").ObservedMeasurementSpend {
+  instant(options.asOf);
+  requireThat(Number.isSafeInteger(options.maxAgeMs) && options.maxAgeMs >= 0, "invalid_measurement_freshness", 422);
+  const reasons: string[] = [], first = evidence[0], identities = new Set<string>(), collected: string[] = [];
+  if (!first) reasons.push("no_measurement_evidence");
+  for (const item of evidence) {
+    const {id, digest: hash, ...body} = item;
+    requireThat(id === `measurement_${hash}` && digest(body) === hash, "measurement_integrity_mismatch");
+    if (first && (first.identity.projectId !== item.identity.projectId || !compatibleMeasurementWindows(first.window, item.window)))
+      reasons.push("incompatible_measurement_scope");
+    for (const campaignId of item.identity.campaignIds) {
+      const key = `${item.identity.provider}/${item.identity.accountId}/${campaignId}`;
+      if (identities.has(key)) reasons.push("overlapping_campaign_evidence");
+      identities.add(key);
+    }
+    if (item.source.kind !== "provider_api") reasons.push("synthetic_evidence");
+    const age = Date.parse(options.asOf) - Date.parse(item.source.collectedAt);
+    if (age < 0) reasons.push("collection_after_observation_time");
+    else if (age > options.maxAgeMs) reasons.push("saved_measurement_stale");
+    collected.push(item.source.collectedAt);
+    // Only the still-open window is allowed. Missing rows, failed pagination,
+    // permission errors and provider scope failures invalidate the observation.
+    reasons.push(...item.coverage.reasons.filter(reason => reason !== "window_open_at_collection"));
+    if (measurementDays(item.window).some(day => day > localDate(item.source.collectedAt, item.window.timezone)))
+      reasons.push("unobserved_future_days");
+    for (const row of item.rows) if (row.spendMinor.value === null) reasons.push(row.spendMinor.reason!);
+  }
+  const unique = [...new Set(reasons)];
+  const total = unique.length ? null : evidence.reduce((sum, item) => sum + item.rows.reduce((n, row) => n + row.spendMinor.value!, 0), 0);
+  if (total !== null && !Number.isSafeInteger(total)) unique.push("measurement_sum_overflow");
+  const complete = unique.length === 0;
+  collected.sort((a,b) => Date.parse(a) - Date.parse(b));
+  return {basis:"observed_provider_spend", evidenceIds:evidence.map(item => item.id),
+    window:first && !unique.includes("incompatible_measurement_scope") ? first.window : null,
+    spendMinor:complete ? measured(total!) : unknownMeasurement(unique.join(";")), observationComplete:complete,
+    fullWindowComplete:complete && evidence.every(item => item.coverage.complete),
+    oldestCollectedAt:collected[0] ?? null, newestCollectedAt:collected.at(-1) ?? null,
+    asOf:options.asOf, reasons:unique, reportingLagUnbounded:true};
+}
 export interface MeasurementWindowRead {
   status: "available" | "missing" | "refresh_required";
   reason: string | null;

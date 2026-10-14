@@ -128,3 +128,19 @@ export interface MeasurementAggregate {
   reasons: string[];
   metrics: MeasurementEvidence["metrics"];
 }
+
+/** Observed use for existing spending controls. Never a spending allowance or
+ * final performance total; providers can revise these observations after lag. */
+export interface ObservedMeasurementSpend {
+  basis: "observed_provider_spend";
+  evidenceIds: string[];
+  window: MeasurementWindow | null;
+  spendMinor: MeasurementValue;
+  observationComplete: boolean;
+  fullWindowComplete: boolean;
+  oldestCollectedAt: string | null;
+  newestCollectedAt: string | null;
+  asOf: string;
+  reasons: string[];
+  reportingLagUnbounded: true;
+}

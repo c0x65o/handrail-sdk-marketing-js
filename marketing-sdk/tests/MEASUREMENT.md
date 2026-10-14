@@ -41,3 +41,12 @@ Final checks after the equivalent-UTC-instant and scope validation changes:
 service checks passed against disposable PostgreSQL. The final service check
 requires evidence provider/account/campaign/window to match the authorized
 reporting scope before persisting its reference.
+
+
+Observed-spend contract v0.1.13: normal build and strict public consumer compile
+passed. All 14 measurement tests passed against disposable PostgreSQL, including
+current-day observed spend versus unknown final totals, explicit zero, immutable
+inputs, missing rows, expired-credential evidence, partial pagination, freshness,
+future/synthetic observations, overlap and incompatible currencies/windows.
+This is an observation API for existing host spending controls, not new authority
+or a guarantee against reporting lag. No provider mutation was performed.
