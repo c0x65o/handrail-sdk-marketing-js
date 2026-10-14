@@ -1,4 +1,4 @@
-import type { HistoricalCampaignSnapshot, HistoricalImportReceipt, HistoricalRecord, HistoricalRecordKind } from "../core/adoption.js";
+import type { HistoricalCampaignSnapshot, HistoricalImportReceipt, HistoricalRecord, HistoricalRecordKind, HistoricalProjectSnapshot, HistoricalProjectImportReceipt } from "../core/adoption.js";
 import { canonical } from "../core/index.js";
 import { measurementDays, readMeasurementEvidence, compatibleMeasurementWindows } from "./measurement.js";
 import { Store, digest, requireThat, type Principal, DomainError } from "./store.js";
@@ -12,6 +12,15 @@ export interface HistoricalCampaignSource {
   assertCurrent(principal: Principal, snapshot: HistoricalCampaignSnapshot): Promise<void>;
   withCurrentSnapshot<T>(principal: Principal, snapshot: HistoricalCampaignSnapshot, commit: () => Promise<T>): Promise<T>;
 }
+export interface HistoricalProjectSource {
+  authorize(principal: Principal, projectId: string): Promise<void>;
+  capture(principal: Principal, projectId: string): Promise<HistoricalProjectSnapshot>;
+  assertCurrent(principal: Principal, snapshot: HistoricalProjectSnapshot): Promise<void>;
+  withCurrentSnapshot<T>(principal: Principal, snapshot: HistoricalProjectSnapshot, commit: () => Promise<T>): Promise<T>;
+}
+type Snapshot = HistoricalCampaignSnapshot | HistoricalProjectSnapshot;
+type Receipt = HistoricalImportReceipt | HistoricalProjectImportReceipt;
+const projectScope = (s: Snapshot): s is HistoricalProjectSnapshot => "scope" in s && s.scope === "project";
 const kinds: HistoricalRecordKind[] = ["campaign", "provider_object", "material", "targeting", "budget", "authority", "operation", "report", "attribution", "lead", "event", "outcome"];
 const metrics = ["spendMinor", "impressions", "clicks", "outboundClicks", "providerConversions", "qualified"];
 const text = (v: unknown) => typeof v === "string" && v.length > 0;
@@ -19,9 +28,9 @@ const time = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse
 const recordKey = (r: Pick<HistoricalRecord, "kind" | "sourceId" | "sourceRevision">) => canonical([r.kind, r.sourceId, r.sourceRevision]);
 // Re-reading unchanged source content does not invent a correction or replace its
 // first capture time. Original per-record reporting/collection times remain hashed.
-const snapshotDigest = (s: HistoricalCampaignSnapshot) => digest({ ...s,
+const snapshotDigest = (s: Snapshot) => digest({ ...s,
   source: { ...s.source, capturedAt: null, receiptRefs: [...s.source.receiptRefs].sort() },
-  providerCampaignIds: [...s.providerCampaignIds].sort(), unsettledOperationIds: [...s.unsettledOperationIds].sort(),
+  ...(!projectScope(s) ? { providerCampaignIds: [...s.providerCampaignIds].sort() } : {}), unsettledOperationIds: [...s.unsettledOperationIds].sort(),
   records: [...s.records].sort((a,b) => recordKey(a) < recordKey(b) ? -1 : recordKey(a) > recordKey(b) ? 1 : 0),
   totals: s.totals.map(t => ({ ...t, sourceRecordIds: [...t.sourceRecordIds].sort() })).sort((a,b) => canonical(a) < canonical(b) ? -1 : canonical(a) > canonical(b) ? 1 : 0),
 });
@@ -34,16 +43,22 @@ function validateJson(value: unknown): void {
     typeof value === "object" && (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype), "historical_invalid_json", 422);
   if (value && typeof value === "object") for (const v of Object.values(value)) validateJson(v);
 }
-function validate(snapshot: HistoricalCampaignSnapshot) {
+function validate(snapshot: Snapshot) {
   validateJson(snapshot);
-  requireThat(snapshot.schemaVersion === 1 && text(snapshot.projectId) && text(snapshot.nativeCampaignId) &&
-    ["meta", "linkedin", "unknown"].includes(snapshot.provider) && (snapshot.accountId === null || text(snapshot.accountId)) &&
-    ["acquisition", "recruitment", "unknown"].includes(snapshot.purpose), "historical_identity_invalid", 422);
-  requireThat(Array.isArray(snapshot.providerCampaignIds) && snapshot.providerCampaignIds.every(text) &&
-    new Set(snapshot.providerCampaignIds).size === snapshot.providerCampaignIds.length, "historical_provider_identity_conflict", 422);
-  requireThat(Array.isArray(snapshot.identityMissingReasons) && snapshot.identityMissingReasons.every(text) &&
-    (snapshot.provider !== "unknown" && snapshot.accountId !== null && snapshot.providerCampaignIds.length > 0 || snapshot.identityMissingReasons.length > 0) &&
-    (snapshot.purpose === "unknown" ? text(snapshot.purposeReason) : snapshot.purposeReason === null), "historical_missing_identity_reason_required", 422);
+  if (projectScope(snapshot)) {
+    requireThat(snapshot.schemaVersion === 1 && text(snapshot.projectId) && text(snapshot.scopeReason) &&
+      !["nativeCampaignId", "provider", "accountId", "providerCampaignIds", "purpose"].some(k => k in snapshot),
+      "historical_project_identity_invalid", 422);
+  } else {
+    requireThat(snapshot.schemaVersion === 1 && text(snapshot.projectId) && text(snapshot.nativeCampaignId) &&
+      ["meta", "linkedin", "unknown"].includes(snapshot.provider) && (snapshot.accountId === null || text(snapshot.accountId)) &&
+      ["acquisition", "recruitment", "unknown"].includes(snapshot.purpose), "historical_identity_invalid", 422);
+    requireThat(Array.isArray(snapshot.providerCampaignIds) && snapshot.providerCampaignIds.every(text) &&
+      new Set(snapshot.providerCampaignIds).size === snapshot.providerCampaignIds.length, "historical_provider_identity_conflict", 422);
+    requireThat(Array.isArray(snapshot.identityMissingReasons) && snapshot.identityMissingReasons.every(text) &&
+      (snapshot.provider !== "unknown" && snapshot.accountId !== null && snapshot.providerCampaignIds.length > 0 || snapshot.identityMissingReasons.length > 0) &&
+      (snapshot.purpose === "unknown" ? text(snapshot.purposeReason) : snapshot.purposeReason === null), "historical_missing_identity_reason_required", 422);
+  }
   requireThat(snapshot.source && text(snapshot.source.system) && text(snapshot.source.revision) && time(snapshot.source.capturedAt) &&
     Array.isArray(snapshot.source.receiptRefs) && snapshot.source.receiptRefs.length > 0 && snapshot.source.receiptRefs.every(text), "historical_source_required", 422);
   requireThat(Array.isArray(snapshot.records) && snapshot.expectedCounts && Array.isArray(snapshot.totals) &&
@@ -70,7 +85,7 @@ function validate(snapshot: HistoricalCampaignSnapshot) {
   requireThat(Object.keys(snapshot.expectedCounts).every(k => kinds.includes(k as HistoricalRecordKind)) &&
     kinds.every(k => Number.isSafeInteger(snapshot.expectedCounts[k] ?? 0) && (snapshot.expectedCounts[k] ?? 0) === (counts[k] ?? 0)), "historical_count_mismatch", 422);
   const campaigns = snapshot.records.filter(r => r.kind === "campaign");
-  requireThat(campaigns.length > 0 && campaigns.every(r => r.sourceId === snapshot.nativeCampaignId), "historical_campaign_identity_mismatch", 422);
+  requireThat(projectScope(snapshot) ? campaigns.length === 0 : campaigns.length > 0 && campaigns.every(r => r.sourceId === snapshot.nativeCampaignId), "historical_campaign_identity_mismatch", 422);
   const operations = new Set(snapshot.records.filter(r => r.kind === "operation").map(r => r.sourceId));
   requireThat(new Set(snapshot.unsettledOperationIds).size === snapshot.unsettledOperationIds.length &&
     snapshot.unsettledOperationIds.every(id => operations.has(id)), "historical_operation_missing", 422);
@@ -116,71 +131,109 @@ export class HistoricalCampaignImports {
     await this.source.authorize(principal, project, nativeCampaignId);
     const snapshot = structuredClone(await this.source.capture(principal, project, nativeCampaignId));
     requireThat(snapshot.projectId === project && snapshot.nativeCampaignId === nativeCampaignId, "historical_scope_mismatch", 403);
-    const counts = validate(snapshot), sourceDigest = snapshotDigest(snapshot);
-    const pointerKey = digest([snapshot.source.system, nativeCampaignId]), key = digest([principal.userId, requestKey]);
-    return this.source.withCurrentSnapshot(principal, snapshot, () => this.store.transaction(async () => {
-      await this.store.authorize(principal, project, ["admin", "editor"]);
-      await this.source.assertCurrent(principal, snapshot);
-      const replay = await optional<{ sourceDigest: string; receiptId: string }>(this.store, project, "historicalImportRequest", key);
-      if (replay) {
-        requireThat(replay.sourceDigest === sourceDigest, "historical_request_conflict");
-        const receipt = await this.store.get<HistoricalImportReceipt>(project, "historicalImport", replay.receiptId);
-        await this.source.assertCurrent(principal, snapshot);
-        return receipt;
-      }
-      const id = `history_${sourceDigest}`, existing = await optional<HistoricalImportReceipt>(this.store, project, "historicalImport", id);
-      if (existing) {
-        await this.store.put(project, "historicalImportRequest", key, { sourceDigest, receiptId: id });
-        await this.source.assertCurrent(principal, snapshot);
-        return existing;
-      }
-      for (const r of snapshot.records) if (r.provenance === "verified_evidence") {
-        const evidence = await readMeasurementEvidence(this.store, project, r.evidenceId!);
-        requireThat(evidence.identity.nativeCampaignId === nativeCampaignId && evidence.identity.provider === snapshot.provider &&
-          evidence.identity.accountId === snapshot.accountId && evidence.source.kind === "provider_api" &&
-          evidence.identity.campaignIds.every(id => snapshot.providerCampaignIds.includes(id)), "historical_evidence_scope_mismatch", 422);
-        requireThat(r.kind === "report" && r.measurement && compatibleMeasurementWindows(r.measurement.window, evidence.window) &&
-          Object.entries(r.measurement.values).every(([metric, value]) => {
-            const actual = metric === "qualified" ? evidence.outcomes?.qualified : evidence.metrics[metric as keyof typeof evidence.metrics];
-            return actual && canonical(value) === canonical(actual);
-          }), "historical_verified_values_mismatch", 422);
-      }
-      const previous = await optional<{ id: string }>(this.store, project, "historicalImportCurrent", pointerKey);
-      const recordRefs: HistoricalImportReceipt["recordRefs"] = [];
-      for (const record of snapshot.records) {
-        const hash = digest({ project, nativeCampaignId, system: snapshot.source.system, record });
-        const saved = await optional<HistoricalRecord>(this.store, project, "historicalRecord", hash);
-        if (saved) requireThat(digest(saved) === digest(record), "historical_record_corrupt");
-        else await this.store.put(project, "historicalRecord", hash, record);
-        recordRefs.push({ kind: record.kind, sourceId: record.sourceId, sourceRevision: record.sourceRevision, digest: hash });
-      }
-      const receipt: HistoricalImportReceipt = { schemaVersion: 1, id, projectId: project, nativeCampaignId, sourceDigest,
-        previousImportId: previous?.id ?? null, source: snapshot.source, recordRefs, counts, totals: snapshot.totals,
-        unsettledOperationIds: snapshot.unsettledOperationIds, importedAt: new Date().toISOString(), importedBy: principal.userId,
-        executionTransferred: false, status: "history_reconciled" };
-      await this.store.put(project, "historicalSnapshot", id, snapshot);
-      await this.store.put(project, "historicalImport", id, receipt);
-      await this.store.put(project, "historicalImportCurrent", pointerKey, { id });
-      await this.store.put(project, "historicalImportRequest", key, { sourceDigest, receiptId: id });
-      // Read back persisted bytes before accepting retention. No campaign/event/grant writes.
-      requireThat(snapshotDigest(await this.store.get(project, "historicalSnapshot", id)) === sourceDigest, "historical_snapshot_reconciliation_failed");
-      for (const ref of recordRefs) {
-        const record = await this.store.get<HistoricalRecord>(project, "historicalRecord", ref.digest);
-        requireThat(digest({ project, nativeCampaignId, system: snapshot.source.system, record }) === ref.digest, "historical_record_reconciliation_failed");
-      }
-      await this.store.append(project, nativeCampaignId, "campaign.history_imported", { importId: id, sourceDigest, counts, executionTransferred: false });
-      await this.store.authorize(principal, project, ["admin", "editor"]);
-      await this.source.assertCurrent(principal, snapshot);
-      return receipt;
-    }));
+    return await persistHistory(this.store, this.source, principal, project, snapshot, requestKey) as HistoricalImportReceipt;
   }
   async read(principal: Principal, project: string, importId: string) {
     await this.store.authorize(principal, project);
     const receipt = await this.store.get<HistoricalImportReceipt>(project, "historicalImport", importId);
+    requireThat("nativeCampaignId" in receipt && text(receipt.nativeCampaignId), "historical_scope_mismatch", 403);
     await this.source.authorize(principal, project, receipt.nativeCampaignId);
     const snapshot = await this.store.get<HistoricalCampaignSnapshot>(project, "historicalSnapshot", importId);
     requireThat(snapshotDigest(snapshot) === receipt.sourceDigest, "historical_snapshot_reconciliation_failed");
     await this.source.authorize(principal, project, receipt.nativeCampaignId);
+    await this.store.authorize(principal, project);
+    return { receipt, snapshot };
+  }
+}
+
+// Both scopes use the same reconciliation and immutable persistence. Campaign v1
+// digests and keys stay unchanged so already-imported receipts remain readable.
+async function persistHistory<S extends Snapshot>(store: Store, source: {
+  assertCurrent(principal: Principal, snapshot: S): Promise<void>;
+  withCurrentSnapshot<T>(principal: Principal, snapshot: S, commit: () => Promise<T>): Promise<T>;
+}, principal: Principal, project: string, snapshot: S, requestKey: string): Promise<Receipt> {
+  const counts = validate(snapshot), sourceDigest = snapshotDigest(snapshot);
+  const isProject = projectScope(snapshot), nativeCampaignId = isProject ? null : snapshot.nativeCampaignId;
+  const identity = isProject ? { scope: "project" as const } : { nativeCampaignId: nativeCampaignId! };
+  const pointerKey = digest(isProject ? [snapshot.source.system, "project", project] : [snapshot.source.system, nativeCampaignId]);
+  const key = digest(isProject ? [principal.userId, "project", requestKey] : [principal.userId, requestKey]);
+  return source.withCurrentSnapshot(principal, snapshot, () => store.transaction(async () => {
+    await store.authorize(principal, project, ["admin", "editor"]);
+    await source.assertCurrent(principal, snapshot);
+    const replay = await optional<{ sourceDigest: string; receiptId: string }>(store, project, "historicalImportRequest", key);
+    if (replay) {
+      requireThat(replay.sourceDigest === sourceDigest, "historical_request_conflict");
+      const receipt = await store.get<Receipt>(project, "historicalImport", replay.receiptId);
+      await source.assertCurrent(principal, snapshot);
+      return receipt;
+    }
+    const id = `${isProject ? "project_history" : "history"}_${sourceDigest}`, existing = await optional<Receipt>(store, project, "historicalImport", id);
+    if (existing) {
+      await store.put(project, "historicalImportRequest", key, { sourceDigest, receiptId: id });
+      await source.assertCurrent(principal, snapshot);
+      return existing;
+    }
+    for (const r of snapshot.records) if (r.provenance === "verified_evidence") {
+      const evidence = await readMeasurementEvidence(store, project, r.evidenceId!);
+      requireThat(evidence.source.kind === "provider_api" && (projectScope(snapshot)
+        ? evidence.identity.nativeCampaignId === null
+        : evidence.identity.nativeCampaignId === snapshot.nativeCampaignId && evidence.identity.provider === snapshot.provider &&
+          evidence.identity.accountId === snapshot.accountId && evidence.identity.campaignIds.every(id => snapshot.providerCampaignIds.includes(id))), "historical_evidence_scope_mismatch", 422);
+      requireThat(r.kind === "report" && r.measurement && compatibleMeasurementWindows(r.measurement.window, evidence.window) &&
+        Object.entries(r.measurement.values).every(([metric, value]) => {
+          const actual = metric === "qualified" ? evidence.outcomes?.qualified : evidence.metrics[metric as keyof typeof evidence.metrics];
+          return actual && canonical(value) === canonical(actual);
+        }), "historical_verified_values_mismatch", 422);
+    }
+    const previous = await optional<{ id: string }>(store, project, "historicalImportCurrent", pointerKey);
+    const recordRefs: HistoricalImportReceipt["recordRefs"] = [];
+    for (const record of snapshot.records) {
+      const hash = digest({ project, ...identity, system: snapshot.source.system, record });
+      const saved = await optional<HistoricalRecord>(store, project, "historicalRecord", hash);
+      if (saved) requireThat(digest(saved) === digest(record), "historical_record_corrupt");
+      else await store.put(project, "historicalRecord", hash, record);
+      recordRefs.push({ kind: record.kind, sourceId: record.sourceId, sourceRevision: record.sourceRevision, digest: hash });
+    }
+    const receipt: Receipt = { schemaVersion: 1, id, projectId: project, ...identity, sourceDigest,
+      previousImportId: previous?.id ?? null, source: snapshot.source, recordRefs, counts, totals: snapshot.totals,
+      unsettledOperationIds: snapshot.unsettledOperationIds, importedAt: new Date().toISOString(), importedBy: principal.userId,
+      executionTransferred: false, status: "history_reconciled" };
+    await store.put(project, "historicalSnapshot", id, snapshot);
+    await store.put(project, "historicalImport", id, receipt);
+    await store.put(project, "historicalImportCurrent", pointerKey, { id });
+    await store.put(project, "historicalImportRequest", key, { sourceDigest, receiptId: id });
+    // Read back persisted bytes before accepting retention. No campaign/event/grant writes.
+    requireThat(snapshotDigest(await store.get(project, "historicalSnapshot", id)) === sourceDigest, "historical_snapshot_reconciliation_failed");
+    for (const ref of recordRefs) {
+      const record = await store.get<HistoricalRecord>(project, "historicalRecord", ref.digest);
+      requireThat(digest({ project, ...identity, system: snapshot.source.system, record }) === ref.digest, "historical_record_reconciliation_failed");
+    }
+    await store.append(project, nativeCampaignId ?? project, isProject ? "project.history_imported" : "campaign.history_imported", { importId: id, sourceDigest, counts, executionTransferred: false });
+    await store.authorize(principal, project, ["admin", "editor"]);
+    await source.assertCurrent(principal, snapshot);
+    return receipt;
+  }));
+
+}
+
+export class HistoricalProjectImports {
+  constructor(readonly store: Store, readonly source: HistoricalProjectSource) {}
+  async stage(principal: Principal, project: string, requestKey: string): Promise<HistoricalProjectImportReceipt> {
+    requireThat(text(requestKey), "historical_request_invalid", 422);
+    await this.store.authorize(principal, project, ["admin", "editor"]);
+    await this.source.authorize(principal, project);
+    const snapshot = structuredClone(await this.source.capture(principal, project));
+    requireThat(snapshot.projectId === project && projectScope(snapshot), "historical_scope_mismatch", 403);
+    return await persistHistory(this.store, this.source, principal, project, snapshot, requestKey) as HistoricalProjectImportReceipt;
+  }
+  async read(principal: Principal, project: string, importId: string) {
+    await this.store.authorize(principal, project);
+    await this.source.authorize(principal, project);
+    const receipt = await this.store.get<HistoricalProjectImportReceipt>(project, "historicalImport", importId);
+    requireThat(receipt.scope === "project", "historical_scope_mismatch", 403);
+    const snapshot = await this.store.get<HistoricalProjectSnapshot>(project, "historicalSnapshot", importId);
+    requireThat(projectScope(snapshot) && snapshotDigest(snapshot) === receipt.sourceDigest, "historical_snapshot_reconciliation_failed");
+    await this.source.authorize(principal, project);
     await this.store.authorize(principal, project);
     return { receipt, snapshot };
   }

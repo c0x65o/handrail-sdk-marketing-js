@@ -62,3 +62,13 @@ export interface HistoricalImportReceipt {
   executionTransferred: false;
   status: "history_reconciled";
 }
+
+/** Project-wide or unattributed history, never a synthetic campaign. */
+export interface HistoricalProjectSnapshot extends Pick<HistoricalCampaignSnapshot,
+  "schemaVersion" | "projectId" | "source" | "records" | "expectedCounts" | "totals" | "unsettledOperationIds"> {
+  scope: "project";
+  scopeReason: string;
+}
+export interface HistoricalProjectImportReceipt extends Omit<HistoricalImportReceipt, "nativeCampaignId"> {
+  scope: "project";
+}

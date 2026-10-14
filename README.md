@@ -262,3 +262,8 @@ SDK rules. `reader` is the Store's read-only `list` interface, so hosts can borr
 an existing admission transaction without another pool connection or any write.
 Subsets retain the stored parent's evidence ID and collection time. A newer
 incomplete/narrow report invalidates the request; older values are not revived.
+
+Historical retention APIs (`HistoricalCampaignImports`, `HistoricalProjectImports`)
+are described in [the adoption contract](marketing-sdk/tests/ADOPTION.md). Project
+history preserves unattributed records without inventing campaigns; neither API
+creates execution authority or transfers campaign ownership.

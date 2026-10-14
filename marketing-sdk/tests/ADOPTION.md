@@ -39,3 +39,17 @@ unknown values, concurrent replay, reopen persistence, immutable corrections,
 counts, incompatible windows/currencies, total coverage, double counting, forged
 evidence references, cross-project scope and source-access rollback. No provider
 network request is made by the import service.
+
+`HistoricalProjectImports` retains project-wide operational records and unattributed
+leads/events with an explicit `scope: "project"` and `scopeReason`. It never invents
+a campaign identity. Original nullable or later-corrected campaign references remain
+in each source payload; project imports cannot contain campaign records or claim
+a top-level campaign/provider/account identity. Verified evidence in this scope must
+resolve to SDK provider evidence whose native campaign identity is null. Evidence
+for a known campaign belongs to its campaign import. The two import scopes have
+separate request/current pointers and outbox event types, and their read APIs reject
+each other's receipts. Existing campaign v1 hashes and receipts remain unchanged.
+
+Project tests additionally cover concurrent replay, persistence reopening, corrections
+without rewriting prior attribution, scope rejection, unknown metrics, reconciliation
+failures and rollback/read rejection when current host access is revoked.
