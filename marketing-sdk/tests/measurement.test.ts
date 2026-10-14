@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MeasurementInput } from "../core/measurement.js";
-import { buildMeasurementEvidence, measured, unknownMeasurement, saveMeasurementEvidence, readMeasurementEvidence, measurementDays, saveMeasurementRevision, readLatestMeasurementEvidence, aggregateMeasurementEvidence, compatibleMeasurementWindows, observedMeasurementSpend } from "../server/measurement.js";
+import { buildMeasurementEvidence, measured, unknownMeasurement, saveMeasurementEvidence, readMeasurementEvidence, measurementDays, saveMeasurementRevision, readLatestMeasurementEvidence, aggregateMeasurementEvidence, compatibleMeasurementWindows, observedMeasurementSpend, readObservedMeasurementSpend } from "../server/measurement.js";
 import { testStore } from "./datastore.js";
 
 function input(): MeasurementInput {
@@ -176,6 +176,27 @@ test("observed-spend controls reject missing, stale, synthetic, failed, overlapp
   const corrupt=structuredClone(first);corrupt.rows[0]!.spendMinor.value=corrupt.rows[0]!.spendMinor.value!+1;
   assert.throws(()=>observedMeasurementSpend([corrupt],options),/measurement_integrity_mismatch/);
   assert.throws(()=>observedMeasurementSpend([first],{...options,maxAgeMs:-1}),/invalid_measurement_freshness/);
+});
+
+test("read-only observed-window selection preserves stored parent references and never falls back past a correction",async()=>{
+  const data=input();data.source.kind="provider_api";data.source.collectedAt="2026-10-08T12:00:00.000Z";
+  const parent=buildMeasurementEvidence(data), records=[parent];
+  const store={list:async<T>(project:string,kind:string)=>{
+    assert.equal(project,"p");assert.equal(kind,"measurementEvidence");return records as T[];
+  }};
+  const scope={projectId:"p",nativeCampaignId:"native",provider:"meta" as const,accountId:"a",campaignIds:["c"],
+    window:{...data.window,from:"2026-10-08T00:00:00.000Z"}};
+  const options={asOf:"2026-10-08T12:05:00.000Z",maxAgeMs:15*60000};
+  const observed=await readObservedMeasurementSpend(store,[scope],options);
+  assert.equal(observed.spendMinor.value,900);assert.equal(observed.fullWindowComplete,false);
+  assert.deepEqual(observed.evidenceIds,[parent.id]);assert.equal(records.length,1);
+  assert.equal((await readObservedMeasurementSpend(store,[{...scope,campaignIds:["replacement"]}],options)).spendMinor.value,null);
+  assert.equal((await readObservedMeasurementSpend(store,[scope,{...scope,nativeCampaignId:"missing"}],options)).spendMinor.value,null);
+  data.source.collectedAt="2026-10-08T12:01:00.000Z";data.source.paginationComplete=false;
+  const partial=buildMeasurementEvidence(data,parent.id);records.push(partial);
+  const corrected=await readObservedMeasurementSpend(store,[scope],options);
+  assert.equal(corrected.spendMinor.value,null);assert.deepEqual(corrected.evidenceIds,[partial.id]);
+  assert.ok(corrected.reasons.includes("pagination_incomplete"));
 });
 
 test("saved-window views retain provenance, reject newer partial scope and never count a projection as a provider reread", async () => {

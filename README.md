@@ -237,3 +237,12 @@ remain unknown. Explicit zero is retained. `fullWindowComplete` stays false for
 an open day, and `reportingLagUnbounded: true` makes clear that observed use is
 not an allowance or a guarantee against delayed provider costs. This API does
 not change authority, budgets, schedules or final-performance calculations.
+
+
+`readObservedMeasurementSpend(reader, scopes, {asOf, maxAgeMs})` selects the latest
+stored revision for each native campaign and requested window, verifies the
+current provider campaign IDs, and calculates observed spend through the same
+SDK rules. `reader` is the Store's read-only `list` interface, so hosts can borrow
+an existing admission transaction without another pool connection or any write.
+Subsets retain the stored parent's evidence ID and collection time. A newer
+incomplete/narrow report invalidates the request; older values are not revived.

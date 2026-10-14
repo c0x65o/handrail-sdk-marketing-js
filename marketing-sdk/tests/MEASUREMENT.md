@@ -50,3 +50,10 @@ inputs, missing rows, expired-credential evidence, partial pagination, freshness
 future/synthetic observations, overlap and incompatible currencies/windows.
 This is an observation API for existing host spending controls, not new authority
 or a guarantee against reporting lag. No provider mutation was performed.
+
+
+Read-only observed-window selection v0.1.14: normal build, strict public consumer
+compile and all 15 measurement tests passed. The added test uses a reader with no
+write methods, checks subset amount and original stored parent ID, changed native
+provider bindings, missing campaigns and a later partial correction. Existing
+materialized-window revision tests also passed after sharing the selection logic.
