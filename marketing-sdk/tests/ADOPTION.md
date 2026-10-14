@@ -53,3 +53,8 @@ each other's receipts. Existing campaign v1 hashes and receipts remain unchanged
 Project tests additionally cover concurrent replay, persistence reopening, corrections
 without rewriting prior attribution, scope rejection, unknown metrics, reconciliation
 failures and rollback/read rejection when current host access is revoked.
+
+After an uncertain HTTP acknowledgement, `readRequest(principal, project, requestKey)`
+resolves that actor's original receipt without capturing current source or retrying
+an import. A missing receipt returns null. Lookup retains current SDK membership
+and source authorization; project/campaign request namespaces stay separate.

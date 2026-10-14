@@ -133,6 +133,12 @@ export class HistoricalCampaignImports {
     requireThat(snapshot.projectId === project && snapshot.nativeCampaignId === nativeCampaignId, "historical_scope_mismatch", 403);
     return await persistHistory(this.store, this.source, principal, project, snapshot, requestKey) as HistoricalImportReceipt;
   }
+  async readRequest(principal: Principal, project: string, requestKey: string) {
+    requireThat(text(requestKey), "historical_request_invalid", 422);
+    await this.store.authorize(principal, project);
+    const request = await optional<{ receiptId: string }>(this.store, project, "historicalImportRequest", digest([principal.userId, requestKey]));
+    return request ? this.read(principal, project, request.receiptId) : null;
+  }
   async read(principal: Principal, project: string, importId: string) {
     await this.store.authorize(principal, project);
     const receipt = await this.store.get<HistoricalImportReceipt>(project, "historicalImport", importId);
@@ -225,6 +231,15 @@ export class HistoricalProjectImports {
     const snapshot = structuredClone(await this.source.capture(principal, project));
     requireThat(snapshot.projectId === project && projectScope(snapshot), "historical_scope_mismatch", 403);
     return await persistHistory(this.store, this.source, principal, project, snapshot, requestKey) as HistoricalProjectImportReceipt;
+  }
+  async readRequest(principal: Principal, project: string, requestKey: string) {
+    requireThat(text(requestKey), "historical_request_invalid", 422);
+    await this.store.authorize(principal, project);
+    await this.source.authorize(principal, project);
+    const request = await optional<{ receiptId: string }>(this.store, project, "historicalImportRequest", digest([principal.userId, "project", requestKey]));
+    await this.source.authorize(principal, project);
+    await this.store.authorize(principal, project);
+    return request ? this.read(principal, project, request.receiptId) : null;
   }
   async read(principal: Principal, project: string, importId: string) {
     await this.store.authorize(principal, project);

@@ -245,3 +245,22 @@ test("project import rolls back on access loss and retained history requires cur
     await assert.rejects(f.service.stage(f.principal, "p", "accepted"), /project-source-access-revoked/);
   } finally { await f.close(); }
 });
+
+test("request lookup resolves uncertain acknowledgements without capture, writes or granting access to another actor", async () => {
+  const f = await projectFixture(); try {
+    assert.equal(await f.service.readRequest(f.principal, "p", "lost-ack"), null);
+    const receipt = await f.service.stage(f.principal, "p", "lost-ack");
+    f.source.capture = async () => { throw Error("lookup_must_not_recapture"); };
+    assert.equal((await f.service.readRequest(f.principal, "p", "lost-ack"))?.receipt.id, receipt.id);
+    const uid = await f.store.createUser("another", "fixture");
+    await f.store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(uid, "p", "admin");
+    const other = await f.store.authenticate((await f.store.login("another", "fixture", "fixture"))!);
+    assert.equal(await f.service.readRequest(other, "p", "lost-ack"), null);
+    const campaign = await f.campaignService.stage(f.principal, "p", "native", "lost-ack");
+    assert.equal((await f.campaignService.readRequest(f.principal, "p", "lost-ack"))?.receipt.id, campaign.id);
+    assert.equal((await f.service.readRequest(f.principal, "p", "lost-ack"))?.receipt.id, receipt.id);
+    assert.equal((await f.store.list("p", "historicalImport")).length, 2);
+    f.revoke(); await assert.rejects(f.service.readRequest(f.principal, "p", "lost-ack"), /project-source-access-revoked/);
+    await assert.rejects(f.service.readRequest(f.principal, "p", "absent"), /project-source-access-revoked/);
+  } finally { await f.close(); }
+});
