@@ -136,3 +136,38 @@ test("equivalent UTC instant formats are compatible; date-only windows are not i
   assert.equal(compatibleMeasurementWindows(original, { ...original, from: original.from.replace(".000Z", "Z") }), true);
   assert.throws(() => measurementDays({ ...original, from: "2026-10-07" }), /invalid_instant/);
 });
+
+test("saved-window views retain provenance, reject newer partial scope and never count a projection as a provider reread", async () => {
+  const {materializeMeasurementWindow, readCampaignMeasurementRevisions} = await import('../server/measurement.js');
+  const dir = mkdtempSync(join(tmpdir(), "marketing-window-")), store = await testStore(join(dir, "store"));
+  try {
+    await store.db.prepare("INSERT INTO projects(id,name) VALUES(?,?)").run("p", "Measurement");
+    const original = await saveMeasurementRevision(store, input());
+    const scope = {projectId: "p", nativeCampaignId: "native", provider: "meta" as const, accountId: "a"};
+    const window = {...original.window, until: "2026-10-08T00:00:00.000Z"};
+    const first = await materializeMeasurementWindow(store, scope, window, "2026-10-11T00:00:00.000Z");
+    assert.equal(first.status, "available");
+    assert.equal(first.evidence!.metrics.spendMinor.value, 100);
+    assert.deepEqual(first.sourceEvidenceIds, [original.id]);
+    assert.equal(first.evidence!.source.collectedAt, original.source.collectedAt);
+    assert.equal(first.evidence!.outcomes, null);
+    assert.equal(first.evidence!.maturity.state, "unknown");
+    assert.deepEqual(await readMeasurementEvidence(store, "p", first.evidence!.id), first.evidence);
+    assert.deepEqual(await materializeMeasurementWindow(store, scope, window, "2026-10-11T00:00:00.000Z"), first);
+    const narrower = input(); narrower.window = window; narrower.rows = [narrower.rows[0]!];
+    narrower.source.collectedAt = "2026-10-11T00:00:00.000Z";
+    const newer = await saveMeasurementRevision(store, narrower);
+    const full = await materializeMeasurementWindow(store, scope, original.window, "2026-10-12T00:00:00.000Z");
+    assert.equal(full.status, "refresh_required"); assert.equal(full.evidence, null); assert.deepEqual(full.sourceEvidenceIds, [newer.id]);
+    const historical = await materializeMeasurementWindow(store, scope, original.window, "2026-10-10T12:00:00.000Z");
+    assert.equal(historical.evidence!.id, original.id);
+    assert.equal((await readCampaignMeasurementRevisions(store, {...scope, projectId: "other"})).length, 0);
+    const failed = input(); failed.source.collectedAt = "2026-10-12T00:00:00.000Z";
+    failed.source.missingReason = "permission_error"; failed.source.paginationComplete = false; failed.rows = [];
+    const denial = await saveMeasurementRevision(store, failed);
+    const unavailable = await materializeMeasurementWindow(store, scope, window, "2026-10-13T00:00:00.000Z");
+    assert.equal(unavailable.evidence!.metrics.spendMinor.value, null);
+    assert.deepEqual(unavailable.sourceEvidenceIds, [denial.id]);
+    assert.equal((await materializeMeasurementWindow(store, scope, {...window, currency: "EUR"}, "2026-10-13T00:00:00.000Z")).reason, "saved_measurement_units_changed");
+  } finally {await store.close(); rmSync(dir, {recursive: true, force: true});}
+});

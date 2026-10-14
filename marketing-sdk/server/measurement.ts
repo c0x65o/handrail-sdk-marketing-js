@@ -253,3 +253,59 @@ export function aggregateMeasurementEvidence(evidence: MeasurementEvidence[]): i
       weightedCpm: ratio(spendMinor, impressions, 1000 / (first?.window.minorUnitsPerMajor || 1)),
       outboundCtrPercent: ratio(outboundClicks, impressions, 100), costPerQualifiedMinor: ratio(spendMinor, qualified, 1) } };
 }
+
+export interface MeasurementWindowScope {
+  projectId: string;
+  nativeCampaignId: string;
+  provider: "meta" | "linkedin";
+  accountId: string;
+}
+export interface MeasurementWindowRead {
+  status: "available" | "missing" | "refresh_required";
+  reason: string | null;
+  sourceEvidenceIds: string[];
+  evidence: MeasurementEvidence | null;
+}
+const WINDOW_PROJECTION_COLLECTOR = "sdk_saved_window_projection_v1";
+/** Read immutable revisions without treating a saved API observation as a fresh provider read. */
+export async function readCampaignMeasurementRevisions(store: Store, scope: MeasurementWindowScope, asOf = new Date().toISOString()): Promise<MeasurementEvidence[]> {
+  instant(asOf);
+  const records = await store.list<MeasurementEvidence>(scope.projectId, "measurementEvidence");
+  const selected = records.filter(e => e.identity.projectId === scope.projectId && e.identity.nativeCampaignId === scope.nativeCampaignId &&
+    e.identity.provider === scope.provider && e.identity.accountId === scope.accountId && Date.parse(e.source.collectedAt) <= Date.parse(asOf));
+  for (const evidence of selected) {
+    const { id, digest: hash, ...body } = evidence;
+    requireThat(id === `measurement_${hash}` && digest(body) === hash, "measurement_integrity_mismatch");
+  }
+  return selected.sort((a, b) => Date.parse(b.source.collectedAt) - Date.parse(a.source.collectedAt) || b.id.localeCompare(a.id));
+}
+/** Persist a bounded view of the latest overlapping collection. Never combine stale
+ * daily fragments to conceal a newer incomplete report. A narrower latest read
+ * requires a fresh whole-window collection; it does not resurrect older totals.
+ * The projection retains original collection time and source snapshots. */
+export async function materializeMeasurementWindow(store: Store, scope: MeasurementWindowScope, window: MeasurementWindow, asOf = new Date().toISOString()): Promise<MeasurementWindowRead> {
+  const days = measurementDays(window);
+  return store.transaction(async () => {
+    const revisions = await readCampaignMeasurementRevisions(store, scope, asOf);
+    const latest = revisions.find(e => e.source.collector !== WINDOW_PROJECTION_COLLECTOR &&
+      Date.parse(e.window.from) < Date.parse(window.until) && Date.parse(e.window.until) > Date.parse(window.from));
+    if (!latest) return { status: "missing", reason: "no_saved_window_evidence", sourceEvidenceIds: [], evidence: null };
+    const sourceEvidenceIds = [latest.id];
+    if (compatibleMeasurementWindows(latest.window, window)) return { status: "available", reason: null, sourceEvidenceIds, evidence: latest };
+    if (latest.window.currency !== window.currency || latest.window.timezone !== window.timezone || latest.window.minorUnitsPerMajor !== window.minorUnitsPerMajor)
+      return { status: "refresh_required", reason: "saved_measurement_units_changed", sourceEvidenceIds, evidence: null };
+    if (Date.parse(latest.window.from) > Date.parse(window.from) || Date.parse(latest.window.until) < Date.parse(window.until))
+      return { status: "refresh_required", reason: "latest_collection_does_not_cover_window", sourceEvidenceIds, evidence: null };
+    const evidence = await saveMeasurementEvidence(store, {
+      identity: latest.identity, window,
+      source: { ...latest.source, collector: WINDOW_PROJECTION_COLLECTOR,
+        receiptIds: [...latest.source.receiptIds, latest.id], dataThrough: null },
+      rows: latest.rows.filter(row => days.includes(row.day)), snapshots: latest.snapshots,
+      ...(latest.placements ? { placements: { ...latest.placements, rows: latest.placements.rows.filter(row => days.includes(row.day)) } } : {}),
+      delivery: latest.delivery, outcomes: null,
+      maturity: { state: "unknown", reason: "subset_attribution_not_independently_qualified", evidenceRefs: sourceEvidenceIds,
+        reportingLagEndsAt: null, attributionEndsAt: null, rereadAt: null, coverageVerified: false },
+    });
+    return { status: "available", reason: null, sourceEvidenceIds, evidence };
+  });
+}

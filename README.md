@@ -217,3 +217,12 @@ reporting day, a zero provider conversion count or passing tests cannot establis
 mature outcomes. Qualification costs additionally require compatible windows,
 currency, QA exclusions and verified attribution coverage. Consumer applications
 must preserve these distinctions and the cited evidence ID when making decisions.
+
+Saved reporting can use `readCampaignMeasurementRevisions` and
+`materializeMeasurementWindow`. A materialized subset is immutable evidence
+whose receipts include its original provider evidence ID and whose collection
+time remains unchanged. It is not another provider read or an independent
+verification. The newest overlapping provider collection must cover the entire
+requested window in the same timezone and currency; otherwise the SDK returns
+`refresh_required`. Missing or denied reports never fall back to older totals.
+Subset attribution stays unknown unless separately measured for that window.
