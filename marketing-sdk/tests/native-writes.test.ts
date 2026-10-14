@@ -174,6 +174,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
         fn({
           accessToken: "private-test-token",
         }),
+      useReadOnly: async (_g,guard,fn) => {await guard();return fn({accessToken:"private-test-token",expiresAt:Date.parse("2099-01-01"),scopes:["ads_read"]});},
     },
     store,
     fetcher,
@@ -221,6 +222,13 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     assert.ok(reconciled);
     assert.equal(writes, 5);
     assert.ok(reconciled.ids.readbackDigest);
+    const existingIds={campaign:retained.campaign!,adset:retained.adset!,creative:retained.creative!,ad:retained.ad!,image:retained.image!};
+    const observed=await provider.inspectExistingCampaign(campaign,grant,[asset],existingIds,async()=>{});
+    assert.equal(observed.candidateReceipt.ids.readbackDigest,reconciled.ids.readbackDigest);assert.equal(writes,5);
+    assert.equal(observed.executionReady,false);assert.equal(observed.originalMediaContentVerified,false);
+    let readGuards=0;
+    await assert.rejects(provider.inspectExistingCampaign(campaign,grant,[asset],existingIds,async()=>{if(++readGuards>3)throw Error("access-revoked-during-read");}),/access-revoked-during-read/);
+    assert.equal(writes,5);
     const paused = {
       ...campaign,
       state: "paused" as const,
@@ -278,6 +286,8 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         startAt: "2026-10-08T00:00:00Z", endAt: "2026-10-15T00:00:00Z", timezone: "UTC" } };
     fixtureEligibility(c, grant);
     let objects = new Map<string, any>(), writes = 0, loseRead = false, drift: ((o: any, collection: string) => void) | null = null;
+    const statusWrites: {id:string;status:string}[]=[];
+    let losePauseAcknowledgement=false;
     const fetcher: typeof fetch = async (raw, init) => {
       const url = new URL(String(raw)), path = decodeURIComponent(url.pathname), last = path.split("/").at(-1)!;
       if (path.endsWith("/introspectToken")) return Response.json({ active: true, scope: "rw_ads r_ads_reporting r_organization_admin w_organization_social r_organization_social" });
@@ -289,7 +299,11 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         const body = JSON.parse(String(init.body));
         if (last === "images") return Response.json({ value: { uploadUrl: "https://fixture.invalid/upload", image: "urn:li:image:fixture" } });
         if (objects.has(last)) {
+          statusWrites.push({id:last,status:body.patch.$set.status??body.patch.$set.intendedStatus});
           Object.assign(objects.get(last), body.patch.$set);
+          if(losePauseAcknowledgement&&last==="urn:li:sponsoredCreative:103") {
+            losePauseAcknowledgement=false;loseRead=true;
+          }
           return new Response(null, { status: 204 });
         }
         const id = last === "adCampaignGroups" ? "101" : last === "adCampaigns" ? "102" : "urn:li:sponsoredCreative:103";
@@ -305,7 +319,10 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       assert.ok(objects.has(last), `Unexpected fixture request ${path}`);
       return Response.json(objects.get(last));
     };
-    const provider = new NativeProvider("linkedin", { use: async (_g, fn) => fn({ accessToken: "fixture-only", clientId: "fixture-client", clientSecret: "fixture-secret" }) }, store, fetcher);
+    const provider = new NativeProvider("linkedin", {
+      use: async (_g, fn) => fn({ accessToken: "fixture-only", clientId: "fixture-client", clientSecret: "fixture-secret" }),
+      useReadOnly: async (_g,guard,fn) => {await guard();return fn({accessToken:"fixture-only",clientId:"fixture-client",clientSecret:"fixture-secret",expiresAt:Date.parse("2099-01-01"),scopes:["r_ads"]});},
+    }, store, fetcher);
     await assert.rejects(provider.prepare({ ...c, material: { ...c.material, advertisingBudget: undefined } }, grant, [asset], "legacy", () => {}, () => {}), /explicit_daily_budget/);
     assert.equal(writes, 0);
     const mutations = [
@@ -345,6 +362,25 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     assert.equal(writes, writeCount);
     assert.ok(receipt?.ids.readbackDigest);
     assert.equal(receipt.delivery, "unverified");
+    assert.equal(objects.get("101").status,"ACTIVE");
+    assert.equal(objects.get("102").status,"DRAFT");
+    const existingIds={group:receipt.ids.group!,campaign:receipt.ids.campaign!,creative:receipt.ids.creative!,image:receipt.ids.image!};
+    const readOnlyWrites=writes;
+    const inspected=await provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{});
+    assert.equal(inspected.candidateReceipt.ids.campaign,receipt.ids.campaign);
+    assert.equal(inspected.candidateReceipt.ids.readbackDigest,receipt.ids.readbackDigest);assert.equal(writes,readOnlyWrites);
+    assert.equal(inspected.executionReady,false);
+    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],{...existingIds,readbackDigest:"forged"},async()=>{}),/existing_campaign_identity_invalid/);
+    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{throw Error("current-authority-revoked");}),/current-authority-revoked/);
+    objects.get("102").status="ACTIVE";
+    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{}),/existing_campaign_not_paused/);
+    objects.get("102").status="DRAFT";objects.get("102").account="urn:li:sponsoredAccount:999";
+    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{}),/provider_effective_material_mismatch/);
+    objects.get("102").account="urn:li:sponsoredAccount:123";assert.equal(writes,readOnlyWrites);
+    // Simulate an unrelated campaign sharing this group. No campaign-scoped
+    // operation may change the group or that campaign, even on lost readback.
+    objects.set("unrelated",{id:"unrelated",campaignGroup:"urn:li:sponsoredCampaignGroup:101",status:"ACTIVE"});
+    const groupBefore=structuredClone(objects.get("101"));
     const paused = { ...c, state: "paused" as const, receipt };
     objects.get("102").dailyBudget.amount = "31.00";
     await assert.rejects(provider.activate(paused, grant, () => {}), /external_material_changed/);
@@ -352,8 +388,26 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     objects.get("102").dailyBudget.amount = "30.00";
     const enabled = await provider.activate(paused, grant, () => {});
     assert.equal(enabled.intent, "enabled");
+    assert.deepEqual(statusWrites.slice(-2).map(x=>x.id),["urn:li:sponsoredCreative:103","102"]);
     const againPaused = await provider.pause({ ...paused, state: "enabled", receipt: enabled }, grant, () => {});
-    assert.equal((await provider.activate({ ...paused, receipt: againPaused }, grant, () => {})).intent, "enabled");
+    assert.deepEqual(statusWrites.slice(-2).map(x=>x.id),["102","urn:li:sponsoredCreative:103"]);
+    assert.deepEqual(objects.get("101"),groupBefore);
+    assert.equal(objects.get("unrelated").status,"ACTIVE");
+    assert.ok(statusWrites.every(x=>x.id!=="101"&&x.id!=="unrelated"));
+    objects.get("101").status="PAUSED";
+    const beforeBlockedActivation=writes;
+    await assert.rejects(provider.activate({...paused,receipt:againPaused},grant,()=>{}),/linkedin_campaign_group_not_active/);
+    assert.equal(writes,beforeBlockedActivation);
+    assert.ok(await provider.reconcile(paused,grant,{kind:"pause",payloadDigest:againPaused.payloadDigest,receipt:againPaused}));
+    objects.get("101").status="ACTIVE";
+    const reenabled=await provider.activate({ ...paused, receipt: againPaused }, grant, () => {});
+    assert.equal(reenabled.intent, "enabled");
+    losePauseAcknowledgement=true;
+    await assert.rejects(provider.pause({...paused,state:"enabled",receipt:reenabled},grant,()=>{}));
+    const afterUncertainPause=writes;
+    const reconciledPause=await provider.reconcile(paused,grant,{kind:"pause",payloadDigest:reenabled.payloadDigest,receipt:reenabled});
+    assert.equal(reconciledPause?.intent,"paused");assert.equal(writes,afterUncertainPause);
+    assert.deepEqual(objects.get("101"),groupBefore);assert.equal(objects.get("unrelated").status,"ACTIVE");
     // Old receipt digests used the v1 field set. Adding readback fields must not
     // strand a safety pause or rewrite the original campaign material.
     const pick = (o: any, fields: string[]) => Object.fromEntries(fields.map(f => [f, o[f]]));

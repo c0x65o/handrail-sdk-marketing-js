@@ -11,6 +11,13 @@ import type {
 } from "../core/index.js";
 
 /** The host owns execution. No scheduler is started by importing the SDK. */
+export interface ExistingCampaignInspection {
+  candidateReceipt: Receipt;
+  /** Provider image identity/owner/status do not verify original upload bytes. */
+  originalMediaContentVerified: false;
+  executionReady: false;
+  missingReasons: ["original_media_content_binding_unverified", "execution_ownership_not_transferred"];
+}
 export interface ProviderPort {
   readonly evidence: "fixture" | "provider";
   verify(
@@ -26,6 +33,12 @@ export interface ProviderPort {
     permissions: Permission[];
   }>;
   plan(campaign: Campaign, grant: Grant, assets: Asset[]): unknown;
+  /** Read existing provider identities against exact material. Does not create
+   * objects, transfer execution ownership, or issue approval/spending authority. */
+  inspectExistingCampaign?(
+    campaign: Campaign, grant: Grant, assets: Asset[], providerIds: Record<string, string>,
+    guard: () => Promise<void>,
+  ): Promise<ExistingCampaignInspection>;
   prepare(
     campaign: Campaign,
     grant: Grant,

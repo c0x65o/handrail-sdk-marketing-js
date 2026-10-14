@@ -339,16 +339,18 @@ export class LinkedInMarketingClient {
 
   async createCampaignGroup(adAccountId, input = {}) {
     const id = accountId(adAccountId);
+    const status = input.status ?? "DRAFT";
+    if (!["DRAFT", "ACTIVE"].includes(status)) throw new LinkedInMarketingError("Campaign groups can only be created DRAFT or ACTIVE", { code: "invalid_configuration", status: 400 });
     const payload = {
       account: `urn:li:sponsoredAccount:${id}`,
       name: linkedInObjectName(input.name, "Handrail campaign group"),
-      status: "DRAFT",
+      status,
       ...(input.startAt || input.endAt ? { runSchedule: { ...(input.startAt ? { start: Number(input.startAt) } : {}), ...(input.endAt ? { end: Number(input.endAt) } : {}) } } : {}),
       ...(input.totalBudgetCents ? { totalBudget: moneyFromCents(input.totalBudgetCents, input.currencyCode) } : {}),
     };
     const created = await this.requestWithMeta(`adAccounts/${id}/adCampaignGroups`, { method: "POST", body: payload });
     if (!created.id) throw new LinkedInMarketingError("LinkedIn did not return a campaign group identifier", { code: "verification_failed", status: 502 });
-    return { id: created.id, urn: `urn:li:sponsoredCampaignGroup:${created.id}`, status: "DRAFT", payload: created.payload };
+    return { id: created.id, urn: `urn:li:sponsoredCampaignGroup:${created.id}`, status, payload: created.payload };
   }
 
   async updateCampaignGroup(adAccountId, campaignGroupId, fields = {}) {

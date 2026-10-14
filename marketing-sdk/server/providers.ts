@@ -12,7 +12,7 @@ import type {
   Permission,
   Receipt,
 } from "../core/index.js";
-import type { ProviderPort } from "./ports.js";
+import type { ExistingCampaignInspection, ProviderPort } from "./ports.js";
 import { digest, requireThat, Store, DomainError } from "./store.js";
 import { collectProviderMeasurement, measurementAccountId } from "./measurement-collectors.js";
 import { buildMeasurementEvidence } from "./measurement.js";
@@ -238,6 +238,9 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     accountId: g.accountId,
     group: {
       name: m.name,
+      // A newly created empty container can be ACTIVE while its campaign and
+      // creative remain DRAFT. Campaign execution never changes group status.
+      status: "ACTIVE",
       totalBudgetCents: m.budget.minor,
       currencyCode: m.budget.currency,
       startAt: Date.parse(m.startAt),
@@ -859,6 +862,52 @@ export class NativeProvider implements ProviderPort {
       evidence: "provider",
     };
   }
+  async inspectExistingCampaign(c: Campaign, g: Grant, assets: Asset[], providerIds: Record<string, string>, guard: () => Promise<void>): Promise<ExistingCampaignInspection> {
+    requireThat(["meta", "linkedin"].includes(this.name) && g.provider === this.name && c.projectId === g.projectId && c.grantId === g.id,
+      "existing_campaign_scope_mismatch", 403);
+    requireThat(this.vault.useReadOnly, "read_only_credential_custody_required");
+    const required = this.name === "meta" ? ["campaign", "adset", "creative", "ad", "image"] : ["group", "campaign", "creative", "image"];
+    const allowed = this.name === "linkedin" ? [...required, "conversion"] : required;
+    requireThat(providerIds && Object.keys(providerIds).every(k => allowed.includes(k)) && required.every(k => typeof providerIds[k] === "string" && providerIds[k]!.length > 0) &&
+      Object.values(providerIds).every(v => typeof v === "string" && v.length > 0), "existing_campaign_identity_invalid", 422);
+    // Readback versions/digests come from this SDK read, never supplied history.
+    const ids = { ...providerIds, readbackVersion: this.name === "meta" ? "4" : "3" };
+    const plan = this.plan(c, g, assets), scope = digest({c,g,assets,providerIds});
+    const current = async () => {
+      await guard();
+      requireThat(digest({c,g,assets,providerIds}) === scope && !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "existing_campaign_scope_changed", 403);
+    };
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      requireThat(url.origin === (this.name === "meta" ? "https://graph.facebook.com" : "https://api.linkedin.com") &&
+        (!init?.method || init.method === "GET") && init?.redirect === "error", "existing_campaign_read_only_boundary", 403);
+      await current();
+      let response: Response;
+      try { response = await this.fetcher(input, init); }
+      catch { throw new DomainError("existing_campaign_read_unavailable"); }
+      await current(); return response;
+    };
+    await current();
+    return this.vault.useReadOnly<ExistingCampaignInspection>(g, current, async credentials => {
+      requireThat(credentials.expiresAt > Date.now(), "provider_access_expired_or_denied", 403);
+      const client = this.name === "meta" ? new MetaMarketingClient({...credentials,fetchImpl:fetcher})
+        : new LinkedInMarketingClient({...credentials,fetchImpl:fetcher});
+      const snapshot = await this.snapshot(client,g,ids);
+      requireThat(snapshot.paused, "existing_campaign_not_paused");
+      this.validateSnapshot(snapshot.material,plan,ids);
+      await current();
+      return {candidateReceipt:{...this.receipt({...ids,readbackDigest:digest(snapshot.material)},digest(plan),"paused"),
+        providerRequestId:"lastRequestId" in client && typeof client.lastRequestId === "string" ? client.lastRequestId : null},
+        originalMediaContentVerified:false,executionReady:false,
+        missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred"]};
+    }).catch(async error => {
+      // Client wrappers may translate a revoked guard into a transport error.
+      // Recheck authority and never expose transport/credential error text.
+      await current();
+      if (error instanceof DomainError) throw error;
+      throw new DomainError("existing_campaign_read_unavailable");
+    });
+  }
   private async snapshot(
     client: any,
     g: Grant,
@@ -867,6 +916,7 @@ export class NativeProvider implements ProviderPort {
     material: any;
     paused: boolean;
     enabled: boolean;
+    groupStatus?: string;
   }> {
     requireThat(ids.campaign, "incomplete_provider_identity");
     requireThat(ids.readbackVersion === undefined || ["1", "2", "3"].includes(ids.readbackVersion) ||
@@ -930,7 +980,7 @@ export class NativeProvider implements ProviderPort {
         contentCallToActionLabel: rawPost.contentCallToActionLabel,
         distribution: rawPost.distribution,
       };
-      const statuses = [group.status, campaign.status, creative.intendedStatus];
+      const statuses = [campaign.status, creative.intendedStatus];
       // Exclude reporting/lastModified data from exact material comparison.
       const pick = (obj: any, fields: string[]) =>
         Object.fromEntries(fields.map((f) => [f, obj[f]]));
@@ -961,7 +1011,8 @@ export class NativeProvider implements ProviderPort {
           post,
         },
         paused: statuses.every((x) => ["DRAFT", "PAUSED"].includes(x)),
-        enabled: statuses.every((x) => x === "ACTIVE"),
+        enabled: group.status === "ACTIVE" && statuses.every((x) => x === "ACTIVE"),
+        groupStatus: group.status,
       };
     }
     requireThat(
@@ -1216,6 +1267,7 @@ export class NativeProvider implements ProviderPort {
       };
       if (activate && c.material.settings) await this.verifySettings(client, c, g);
       const before = await this.snapshot(client, g, ids);
+      if (activate && this.name === "linkedin") requireThat(before.groupStatus === "ACTIVE", "linkedin_campaign_group_not_active");
       if (activate && this.name === "meta") requireThat(before.material.campaign.is_adset_budget_sharing_enabled === false,
         "meta_budget_sharing_unverified");
       requireThat(
@@ -1235,11 +1287,13 @@ export class NativeProvider implements ProviderPort {
           );
         }
       } else if (this.name === "linkedin") {
+        // A campaign-scoped action has no authority over a shared group. Stop
+        // the campaign first; on activation, enable its creative before it.
         if (!activate) {
           await beforeWrite();
-          await client.updateCampaignGroupStatus(
+          await client.updateCampaignStatus(
             g.accountId,
-            ids.group,
+            ids.campaign,
             "PAUSED",
           );
         }
@@ -1249,17 +1303,11 @@ export class NativeProvider implements ProviderPort {
           ids.creative,
           activate ? "ACTIVE" : "PAUSED",
         );
-        await beforeWrite();
-        await client.updateCampaignStatus(
-          g.accountId,
-          ids.campaign,
-          activate ? "ACTIVE" : "PAUSED",
-        );
         if (activate) {
           await beforeWrite();
-          await client.updateCampaignGroupStatus(
+          await client.updateCampaignStatus(
             g.accountId,
-            ids.group,
+            ids.campaign,
             "ACTIVE",
           );
         }

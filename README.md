@@ -176,6 +176,34 @@ fixture with no SDK passwords/sessions. It supplies no production host/native ad
 
 ## Historical campaign retention
 
+LinkedIn campaign execution preserves shared campaign groups. Pause changes the
+campaign first and its creative second; activation changes the creative first
+and campaign second, and requires an already ACTIVE group. Neither path edits
+group status or budget. Pause/read-only reconciliation accepts stopped owned
+children beneath an active group. A paused/draft shared group is not implicitly
+reactivated by campaign authority.
+
+Preparation creates a new empty ACTIVE group and DRAFT campaign/creative, with
+unchanged budget and approval checks; no ad can serve before campaign activation.
+LinkedIn documents ACTIVE/DRAFT group creation and independent child status in
+[campaign groups](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaign-groups?view=li-lms-2026-09)
+and [status propagation](https://learn.microsoft.com/en-us/linkedin/marketing/usecases/foundations/statuses?view=li-lms-2026-05).
+This change does not adopt existing campaigns or grant authority over existing
+groups. Native HTTP fixtures cover shared-group preservation, paused-group
+activation rejection before writes and read-only recovery after lost readback;
+live execution qualification remains required.
+
+`NativeProvider.inspectExistingCampaign` reads retained Meta/LinkedIn object IDs
+against the supplied exact configuration through required `VaultPort.useReadOnly`
+custody. It admits only provider GETs with current-authority checks around each
+read, verifies paused owned children, and recomputes the readback digest; callers
+cannot supply historical readback versions/digests. It returns an
+`ExistingCampaignInspection`, not an executable campaign: original asset bytes
+still require a verified upload-to-provider binding, and execution ownership has
+not transferred. No provider objects, grants, approvals or conversions are
+created. Host adoption must resolve these requirements before installing its
+candidate receipt as execution state.
+
 The server export `HistoricalCampaignImports` retains a host's consistent native
 campaign snapshot through an explicit identity/source port. Core exports the
 typed snapshot, record, total and receipt contracts. The SDK reconciles source
