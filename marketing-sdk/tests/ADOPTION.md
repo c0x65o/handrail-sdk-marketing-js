@@ -58,3 +58,42 @@ After an uncertain HTTP acknowledgement, `readRequest(principal, project, reques
 resolves that actor's original receipt without capturing current source or retrying
 an import. A missing receipt returns null. Lookup retains current SDK membership
 and source authorization; project/campaign request namespaces stay separate.
+
+## Existing-provider execution adoption
+
+`CampaignExecutionAdoptions` is the server transition from reconciled native
+history to one paused SDK execution campaign. Its only action inputs are native
+campaign identity and request key. A trusted host source supplies current material,
+existing grant, original provider identities, upload provenance and retirement/
+settlement evidence; none are browser- or agent-authored approval fields.
+
+The SDK checks intact retained history, account/campaign/purpose identity, original
+uploaded bytes and media metadata, and current grant/session/source access. The
+host must verify the upload intent and accepted provider acknowledgment referenced
+by the retained media record, including the post-transcoding hash for Meta. A
+matching provider image ID alone is insufficient. The SDK's provider port then
+performs fresh read-only inspection of the exact stopped hierarchy/material.
+
+Transfer requires all legacy writes to be disabled monotonically and every
+historical unresolved operation to have current reconciliation evidence. The host
+must hold source/identity guards through the SDK commit and prohibit competing
+writers. The present Handrail pause-only quiescence receipt does not satisfy this
+contract. This requirement cannot be satisfied by passing an imported approval or
+by observing an expired writer lock alone.
+
+The final SDK transaction retains the native campaign ID, links its original
+history/revision, records one owner for each campaign-owned mutable provider
+object, and saves an immutable request receipt. Existing SDK campaign/uncertain
+operation identities also block a duplicate owner. LinkedIn's shared group and
+media never receive campaign execution ownership. A lost commit acknowledgment
+is resolved through `readRequest`; replay creates no second campaign or provider
+objects. History, original grants and conversions remain untouched. The transition
+creates no approval decision, spending reservation, scheduler, worker or paid
+provider request. New activation still requires current exact-revision approval
+and existing spending controls.
+
+The contract is implemented and exercised with intercepted provider observations
+and disposable SQL. A consumer must implement the trusted source, media import,
+current Vault/grant binding and monotonic native execution guard before invoking
+it live. Passing these tests is not evidence that Handrail has transferred a
+campaign or completed an authorized live pilot.

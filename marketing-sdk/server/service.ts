@@ -542,6 +542,7 @@ export class MarketingServer {
       const old = input.id ? await this.store.get<Campaign>(project, "campaign", input.id) : null;
       const c: Campaign = { id: old?.id ?? id(), projectId: project, revision: (old?.revision ?? 0) + 1,
         grantId: g.id, creativeSetId: old?.creativeSetId ?? id(), ...(old?.draftOrigin ? { draftOrigin: old.draftOrigin } : {}),
+        ...(old?.adoptionOrigin ? { adoptionOrigin: old.adoptionOrigin } : {}),
         material: structuredClone(input.material), state: "draft", receipt: old?.receipt ?? null,
         ...(old?.receipt ? { preparedMaterial: structuredClone(old.preparedMaterial ?? old.material) } : {}) };
       return { c, grant: await this.legacySetupBinding(project, g), previous: old ? digest(old) : null, assets: "" };

@@ -83,6 +83,8 @@ export interface Campaign {
   creativeSetId: string;
   /** Immutable local source attribution; never client-authored. */
   draftOrigin?: { draftId: string; revision: number; actorId: string; materialDigest: string; accountId: string };
+  /** Original native history and ownership transition; never client-authored. */
+  adoptionOrigin?: { nativeCampaignId: string; historyImportId: string; sourceRevision: string; receiptId: string };
   material: Material;
   state: "draft" | "paused" | "enabled" | "unknown";
   receipt: Receipt | null;

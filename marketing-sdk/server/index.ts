@@ -33,3 +33,4 @@ export type { NativeTextPlanning, NativeTextPlanningOptions, TextPlanningAccess,
 export * from "./measurement.js";
 export * from "./measurement-collectors.js";
 export * from "./adoption.js";
+export * from "./execution-adoption.js";

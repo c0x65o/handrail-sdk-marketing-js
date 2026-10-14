@@ -34,6 +34,21 @@ const snapshotDigest = (s: Snapshot) => digest({ ...s,
   records: [...s.records].sort((a,b) => recordKey(a) < recordKey(b) ? -1 : recordKey(a) > recordKey(b) ? 1 : 0),
   totals: s.totals.map(t => ({ ...t, sourceRecordIds: [...t.sourceRecordIds].sort() })).sort((a,b) => canonical(a) < canonical(b) ? -1 : canonical(a) > canonical(b) ? 1 : 0),
 });
+/** Trusted server read; callers must independently authorize current access. */
+export async function readHistoricalCampaignSnapshot(store: Store, project: string, importId: string) {
+  const receipt = await store.get<HistoricalImportReceipt>(project, "historicalImport", importId);
+  const snapshot = await store.get<HistoricalCampaignSnapshot>(project, "historicalSnapshot", importId);
+  requireThat(receipt.projectId === project && receipt.id === importId && "nativeCampaignId" in receipt &&
+    snapshot.projectId === project && snapshot.nativeCampaignId === receipt.nativeCampaignId &&
+    snapshotDigest(snapshot) === receipt.sourceDigest && receipt.recordRefs.length === snapshot.records.length &&
+    new Set(receipt.recordRefs.map(r => r.digest)).size === receipt.recordRefs.length, "historical_snapshot_reconciliation_failed");
+  for (const ref of receipt.recordRefs) {
+    const record = await store.get<HistoricalRecord>(project, "historicalRecord", ref.digest);
+    requireThat(digest({ project, nativeCampaignId: snapshot.nativeCampaignId, system: snapshot.source.system, record }) === ref.digest &&
+      snapshot.records.some(r => digest(r) === digest(record)), "historical_record_reconciliation_failed");
+  }
+  return { receipt, snapshot };
+}
 const validValue = (v: unknown): boolean => {
   const m = v as {value?: number | null;reason?: string | null} | null;
   return !!m && (m.value === null ? text(m.reason) : Number.isSafeInteger(m.value) && m.value! >= 0 && m.reason === null);
