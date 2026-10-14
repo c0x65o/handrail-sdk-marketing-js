@@ -339,6 +339,7 @@ export class MetaMarketingClient {
     return { id: objectId, dailyBudgetCents: dailyBudget, configuredStatus: verified.status || null, effectiveStatus: verified.effective_status || null, verified };
   }
 
+  /** @param {string} pixelId @param {{since?: string, until?: string, event?: string}} options */
   getPixelEventStats(pixelId, { since, until, event = "Lead" } = {}) {
     return this.request(`${pixelId}/stats`, { params: {
       aggregation: "event",

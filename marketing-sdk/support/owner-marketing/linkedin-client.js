@@ -516,6 +516,7 @@ export class LinkedInMarketingClient {
     return { campaign: campaign.urn, conversion: conversion.urn };
   }
 
+  /** @param {{conversionId?: string, eventId?: string, email?: string, conversionHappenedAt?: number}} input */
   async sendConversionEvent({ conversionId, eventId, email, conversionHappenedAt = Date.now() } = {}) {
     const conversion = partnerConversionUrn(conversionId);
     const normalizedEmail = String(email || "").trim().toLowerCase();
@@ -640,6 +641,7 @@ export class LinkedInMarketingClient {
     return this.request("adTargetingFacets");
   }
 
+  /** @param {{facet?: string, query?: string | null, localeLanguage?: string, localeCountry?: string}} input */
   findTargetingEntities({ facet, query = null, localeLanguage = "en", localeCountry = "US" } = {}) {
     const facetUrn = String(facet || "").startsWith("urn:li:adTargetingFacet:") ? String(facet) : `urn:li:adTargetingFacet:${String(facet || "").trim()}`;
     const facetName = facetUrn.split(":").at(-1);
@@ -654,6 +656,7 @@ export class LinkedInMarketingClient {
     } });
   }
 
+  /** @param {{kind?: string, organizationId?: string, bytes?: Uint8Array, mediaType?: string | null, filename?: string | null}} input */
   async uploadAsset({ kind, organizationId, bytes, mediaType = null, filename = null } = {}) {
     if (!["image", "document"].includes(kind)) throw new LinkedInMarketingError("LinkedIn asset kind must be image or document", { code: "invalid_asset", status: 400 });
     const content = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
@@ -718,7 +721,7 @@ export class LinkedInMarketingClient {
     const end = new Date(until).getTime();
     const utcDate = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}(?:T00:00:00(?:\.000)?Z)?$/.test(value) &&
       Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value.slice(0, 10);
-    if (!utcDate(since) || !utcDate(until) || start > end || end + 86_400_000 > Date.now()) {
+    if (!utcDate(since) || !utcDate(until) || start > end || end > Math.floor(Date.now() / 86_400_000) * 86_400_000) {
       throw new LinkedInMarketingError("A valid inclusive reporting date range is required", { code: "provider_reporting_range_invalid", status: 400 });
     }
     // LinkedIn adAnalytics has no pagination and caps responses at 15,000 rows.

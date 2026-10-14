@@ -75,7 +75,7 @@ export async function collectProviderMeasurement(options: CollectionOptions): Pr
     return raw.map(row => {
       const meta = identity.provider === "meta";
       const campaignId = meta ? String(row.campaign_id) : placements ? campaignIds[0]! : String(row.pivotValues?.[0] || "").replace(/^urn:li:sponsoredCampaign:/, "");
-      const day = meta ? row.date_start : linkedDate(row.dateRange?.start), end = meta ? row.date_stop : linkedDate(row.dateRange?.end);
+      const day = meta ? row.date_start : linkedDate(row.dateRange?.start), end = meta ? row.date_stop : row.dateRange?.end ? linkedDate(row.dateRange.end) : day;
       requireThat(campaignIds.includes(campaignId) && days.includes(day) && end === day &&
         (meta ? String(row.account_id) === identity.accountId && !row.adset_id && !row.ad_id : Array.isArray(row.pivotValues) && row.pivotValues.length === 1),
       "measurement_row_scope_mismatch", 422);

@@ -116,3 +116,20 @@ test("LinkedIn failed date partitions and expired credentials preserve unknown s
   const expired = buildMeasurementEvidence(await collectProviderMeasurement(data));
   assert.equal(reads, 1); assert.equal(expired.source.missingReason, "permission_error"); assert.equal(expired.metrics.impressions.value, null);
 });
+
+// Current UTC day may be observed, but cannot be represented as a complete total.
+test("LinkedIn current-day observations remain provisional and future dates are rejected", async () => {
+  const today = new Date().toISOString().slice(0, 10), start = Date.parse(today);
+  const day = {year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)), day: Number(today.slice(8, 10))};
+  const client = new LinkedInMeasurementClient({accessToken: "fixture", clientId: "client", clientSecret: "secret", fetchImpl: async () =>
+    Response.json({elements: [{dateRange: {start: day}, pivotValues: ["urn:li:sponsoredCampaign:20"], costInLocalCurrency: "1", impressions: 10, clicks: 1}]})});
+  const input = options({provider: "linkedin", client});
+  input.window = {...input.window, from: new Date(start).toISOString(), until: new Date(start + 86400000).toISOString()};
+  input.now = () => new Date().toISOString();
+  const evidence = buildMeasurementEvidence(await collectProviderMeasurement(input));
+  assert.equal(evidence.observedDelivery, true);
+  assert.equal(evidence.metrics.impressions.value, null);
+  assert.ok(evidence.coverage.reasons.includes("window_open_at_collection"));
+  const tomorrow = new Date(start + 86400000).toISOString().slice(0, 10);
+  await assert.rejects(client.getAnalytics("10", {since: tomorrow, until: tomorrow}), {code: "provider_reporting_range_invalid"});
+});

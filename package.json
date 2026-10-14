@@ -1,6 +1,6 @@
 {
   "name": "@handrail/marketing",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "type": "module",
   "engines": {
@@ -62,7 +62,8 @@
     "test:postgres": "node marketing-sdk/tests/postgres-runner.mjs",
     "test:consumer": "node marketing-sdk/tests/consumer.mjs",
     "test:browser:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs --browser",
-    "start": "node .marketing-build/reference/host.js"
+    "start": "node .marketing-build/reference/host.js",
+    "typecheck:consumer": "tsc --noEmit --strict --module NodeNext --moduleResolution NodeNext --target ES2022 --types node measurement-consumer-check.mts"
   },
   "dependencies": {
     "@types/pg": "8.23.1",
