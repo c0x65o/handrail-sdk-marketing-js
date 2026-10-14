@@ -14,6 +14,8 @@ import type {
 } from "../core/index.js";
 import type { ProviderPort } from "./ports.js";
 import { digest, requireThat, Store, DomainError } from "./store.js";
+import { collectProviderMeasurement, measurementAccountId } from "./measurement-collectors.js";
+import { buildMeasurementEvidence } from "./measurement.js";
 import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
@@ -1359,57 +1361,28 @@ export class NativeProvider implements ProviderPort {
           1 / 10000,
         );
       }
-      if (this.name === "meta") {
-        const r = await client.getInsights(g.accountId, {
-          since,
-          until: through,
-          level: "campaign",
-          objectIds: [c.receipt!.ids.campaign],
-        });
-        requireThat(Array.isArray(r.data), "provider_metrics_unavailable");
-        return summarizeMetrics(
-          r.data,
-          {
-            impressions: "impressions",
-            clicks: "clicks",
-            spend: "spend",
-          },
-          100,
-        );
-      }
-      const r = await client.getAnalytics(g.accountId, {
-        since,
-        until: through,
-        campaignUrns: [`urn:li:sponsoredCampaign:${c.receipt!.ids.campaign}`],
+      const accountId = measurementAccountId(this.name, g.accountId);
+      const measurement = await collectProviderMeasurement({
+        client: this.name === "meta" ? { provider: "meta", client } : { provider: "linkedin", client },
+        identity: { projectId: c.projectId, nativeCampaignId: c.id, sdkCampaignId: c.id, provider: this.name,
+          accountId, campaignIds: [c.receipt!.ids.campaign!], materialVersion: String(c.revision), purpose: c.material.purpose || "unknown" },
+        window: { from, until, timezone: g.timezone, currency: g.currency, minorUnitsPerMajor: 100 },
+        verifiedScope: { accountId, campaignIds: [c.receipt!.ids.campaign!], currency: g.currency, timezone: g.timezone,
+          evidenceRefs: [g.id, c.receipt!.payloadDigest] },
+        delivery: { configuredStatus: c.state, effectiveStatus: null, evidenceRefs: [c.receipt!.payloadDigest] },
+        outcomes: null,
+        maturity: { state: "unknown", reason: "attribution_coverage_unverified", evidenceRefs: [], reportingLagEndsAt: null,
+          attributionEndsAt: null, rereadAt: null, coverageVerified: false },
       });
-      requireThat(Array.isArray(r.elements), "provider_metrics_unavailable");
-      const reportDate = (d: any) => {
-        requireThat(d && [d.year, d.month, d.day].every(Number.isInteger), "provider_metrics_scope_mismatch");
-        const value = `${String(d.year).padStart(4, "0")}-${String(d.month).padStart(2, "0")}-${String(d.day).padStart(2, "0")}`;
-        requireThat(Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "provider_metrics_scope_mismatch");
-        return value;
-      };
-      const days = new Set<string>();
-      for (const row of r.elements) {
-        const start = reportDate(row.dateRange?.start), end = reportDate(row.dateRange?.end);
-        requireThat(start === end && start >= since && end <= through && !days.has(start) &&
-          exactTargeting(row.pivotValues, [`urn:li:sponsoredCampaign:${c.receipt!.ids.campaign}`]), "provider_metrics_scope_mismatch");
-        days.add(start);
-      }
-      return summarizeMetrics(
-        r.elements,
-        {
-          impressions: "impressions",
-          clicks: "clicks",
-          spend: "costInLocalCurrency",
-          conversions: "externalWebsiteConversions",
-        },
-        100,
-      );
+      const evidence = buildMeasurementEvidence(measurement);
+      return { spendMinor: evidence.metrics.spendMinor.value, impressions: evidence.metrics.impressions.value,
+        clicks: evidence.metrics.clicks.value, providerConversions: evidence.metrics.providerConversions.value, measurement };
     });
     return {
       ...values,
-      reportingBasis,
+      reportingBasis: "measurement" in values && values.measurement
+        ? { ...reportingBasis, completeThrough: buildMeasurementEvidence(values.measurement).coverage.complete ? until : null }
+        : reportingBasis,
       from,
       until,
       timezone: g.timezone,

@@ -1,3 +1,5 @@
+import { measurementAccountId } from "./measurement-collectors.js";
+import { saveMeasurementRevision, readMeasurementEvidence } from "./measurement.js";
 import type { AudienceContext, AudienceCommands, AudienceChoice, AudienceSelection, AudienceSearch } from "../core/audience.js";
 import { countryCode } from "./countries.js";
 import { HostAgent } from "./agent.js";
@@ -2112,7 +2114,14 @@ export class MarketingServer {
       requireThat(values.currency === c.material.budget.currency && values.timezone === c.material.timezone && values.from === input.from && values.until === input.until, "metrics_scope_mismatch");
       const currentGrant = await this.grant(project, g.id, "report");
       requireThat(digest(currentGrant) === digest(g) && (await this.store.get<Campaign>(project, "campaign", c.id)).revision === c.revision, "metrics_scope_changed");
-      const snap: Metrics = { ...values, reportingBasis, id: id(), projectId: project, campaignId: c.id };
+      const { measurement, ...metrics } = values;
+      if (measurement) requireThat(measurement.identity.provider === g.provider && measurement.identity.projectId === project && measurement.identity.sdkCampaignId === c.id &&
+        measurement.identity.nativeCampaignId === c.id && measurement.identity.accountId === measurementAccountId(g.provider, g.accountId) &&
+        measurement.window.from === input.from && measurement.window.until === input.until && measurement.window.currency === g.currency &&
+        measurement.window.timezone === g.timezone && (measurement.source.kind === "synthetic" && this.providers[g.provider].evidence === "fixture" ||
+          measurement.identity.campaignIds.length === 1 && measurement.identity.campaignIds[0] === c.receipt?.ids.campaign), "metrics_scope_mismatch");
+      const evidence = measurement ? await saveMeasurementRevision(this.store, measurement) : null;
+      const snap: Metrics = { ...metrics, ...(evidence ? { evidenceId: evidence.id, spendMinor: evidence.metrics.spendMinor.value, impressions: evidence.metrics.impressions.value, clicks: evidence.metrics.clicks.value, providerConversions: evidence.metrics.providerConversions.value } : {}), reportingBasis: evidence ? { ...reportingBasis, completeThrough: evidence.coverage.complete ? input.until : null } : reportingBasis, id: id(), projectId: project, campaignId: c.id };
       await this.store.put(project, "metrics", snap.id, snap); return snap;
     });
   }
@@ -2142,6 +2151,7 @@ export class MarketingServer {
             m.currency === currency && m.timezone === c.material.timezone,
         )
         .at(-1);
+      const measurement = snap?.evidenceId ? await readMeasurementEvidence(this.store, project, snap.evidenceId) : null;
       const windowEvents = (
         await this.store.list<FirstPartyEvent>(project, "event")
       ).filter(
@@ -2188,6 +2198,9 @@ export class MarketingServer {
         observedAt: snap?.observedAt || null,
         stale: !snap || this.now() - Date.parse(snap.observedAt) > 3600000,
         source: snap?.source || "unavailable",
+        ...(measurement ? { evidenceId: measurement.id, weightedCpm: measurement.metrics.weightedCpm,
+          outboundCtrPercent: measurement.metrics.outboundCtrPercent, evidenceConfidence: measurement.confidence,
+          attributionMaturity: measurement.maturity } : {}),
         attribution: "last-paid-click-7d-v1",
         spendMinor: metric(spend),
         impressions: metric(impressions),

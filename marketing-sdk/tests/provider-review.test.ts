@@ -94,7 +94,10 @@ test("review: LinkedIn reports completed UTC days with inclusive API end, reject
       [{ ...analytic, dateRange: undefined }], [analytic, analytic],
     ]) {
       reportRows = invalid;
-      await assert.rejects(t.port.metrics(campaign, grant, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"), /metrics_scope_mismatch/);
+      const rejected = await t.port.metrics(campaign, grant, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z");
+      assert.equal(rejected.spendMinor, null); assert.equal(rejected.impressions, null);
+      assert.equal(rejected.reportingBasis?.completeThrough, null);
+      assert.ok(["measurement_row_scope_mismatch", "measurement_overlapping_rows"].includes(rejected.measurement?.source.missingReason || ""));
     }
     const before = t.requests.length;
     for (const [from, until] of [["2026-03-08T06:00:00Z", "2026-03-09T05:00:00Z"], ["2026-01-01T00:00:01Z", "2026-01-02T00:00:00Z"], ["2099-01-01T00:00:00Z", "2099-01-02T00:00:00Z"]])

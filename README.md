@@ -173,3 +173,47 @@ limits](marketing-sdk/design/ACCEPTANCE.md#connections-implementation-candidate-
 `node marketing-sdk/tests/consumer.mjs --portable` additionally qualifies independent
 browser login and original-session resume using a disposable existing-host SQL
 fixture with no SDK passwords/sessions. It supplies no production host/native adapter.
+
+## Measurement evidence
+
+The server exports `collectProviderMeasurement`, `buildMeasurementEvidence`,
+`saveMeasurementRevision`, `readMeasurementEvidence` and
+`readLatestMeasurementEvidence`. Core exports their typed measurement contracts.
+These reads do not publish, pause, change budgets or transfer campaign ownership.
+Hosts supply current authenticated provider clients and verified account/campaign
+scope; credentials never enter evidence records.
+
+The Meta collector uses cursor pagination on the original trusted endpoint. The
+LinkedIn collector uses the client's partitioned daily analytics queries because
+[adAnalytics does not support pagination](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads-reporting/ads-reporting?view=li-lms-2026-09).
+Transient read retries retain separate safe receipts. Denied or incomplete reads,
+absent daily rows and unsupported metrics remain unknown, including when the
+provider returns an empty array. Configured/effective status is separate from
+observed impressions. Currency, minor-unit scale, timezone and half-open windows
+are explicit. CPM uses summed spend divided by summed impressions; outbound CTR
+never substitutes total clicks. Provider conversions retain a named definition,
+and are separate from host submissions and qualifications. Meta conversion totals
+remain unknown unless the host supplies one exact qualified action mapping.
+
+Optional placement queries are separate from totals. Meta uses publisher/platform
+position; LinkedIn uses a per-campaign `PLACEMENT_NAME` query. A successful query
+alone does not mark placement coverage complete: spend and impressions must
+reconcile to campaign daily totals. Placement records are never added to totals.
+
+`saveMeasurementRevision` atomically stores content-addressed evidence and an
+outbox reference in the existing Store, deduplicates exact collection replay, and
+links corrections to the preceding evidence for the same scope. The original
+revision remains readable; reads verify its digest. Source snapshots contain only
+typed measurement facts and safe error codes, not raw transport responses, URLs
+or credentials. Persist evidence within the host's current authorization boundary;
+these trusted server functions do not replace host authorization. Existing native
+`syncMetrics` uses that authorized transaction and `results` returns the exact
+evidence ID, CPM, outbound CTR, confidence and maturity when evidence is present.
+An incomplete report cannot claim a complete-through watermark. Browser comparison
+is explicitly `not_compared`; this release does not qualify browser verification.
+
+Attribution maturity requires explicit coverage, lag and reread evidence. A closed
+reporting day, a zero provider conversion count or passing tests cannot establish
+mature outcomes. Qualification costs additionally require compatible windows,
+currency, QA exclusions and verified attribution coverage. Consumer applications
+must preserve these distinctions and the cited evidence ID when making decisions.

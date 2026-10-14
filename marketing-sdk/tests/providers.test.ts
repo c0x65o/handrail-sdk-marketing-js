@@ -859,7 +859,9 @@ test("native reporting refuses partial/future provider days before transport and
     assert.equal(reads, 0);
     const metrics = await provider.metrics(campaign, g, "2026-03-08T06:00:00Z", "2026-03-09T05:00:00Z");
     assert.equal(metrics.spendMinor, null); assert.equal(metrics.clicks, null); assert.equal(metrics.impressions, null);
-    assert.equal(metrics.reportingBasis?.completeThrough, "2026-03-09T05:00:00Z");
+    assert.equal(metrics.reportingBasis?.completeThrough, null);
+    assert.equal(metrics.measurement?.source.paginationComplete, true);
+    assert.equal(metrics.measurement?.rows.length, 0);
     assert.equal(metrics.reportingBasis?.timezone, g.timezone);
     assert.equal(reads, 1);
   } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }

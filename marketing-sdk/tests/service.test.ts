@@ -1396,3 +1396,35 @@ for (const action of ["role", "session"] as const) test(`report HTTP read releas
     assert.equal((await t.store.list("qa-alpha", "metrics")).length, 0);
   } finally { await side.close(); await t.close(); }
 });
+
+test("syncMetrics commits its SDK evidence and results reference the exact persisted revision", async () => {
+  const t = await setupTest();
+  try {
+    const c = await campaign(t), read = t.provider.metrics.bind(t.provider);
+    t.provider.metrics = async (campaign, grant, from, until) => {
+      const metrics = await read(campaign, grant, from, until);
+      const value = (n: number) => ({ value: n, reason: null });
+      return { ...metrics, spendMinor: 999999, measurement: {
+        identity: { projectId: campaign.projectId, nativeCampaignId: campaign.id, sdkCampaignId: campaign.id, provider: "meta" as const,
+          accountId: grant.accountId.replace(/^act_/, ""), campaignIds: ["123"], materialVersion: String(campaign.revision), purpose: "acquisition" as const },
+        window: { from, until, timezone: grant.timezone, currency: grant.currency, minorUnitsPerMajor: 100 },
+        source: { kind: "synthetic" as const, collector: "test", apiVersion: "fixture", collectedAt: "2026-03-10T00:00:00Z",
+          receiptIds: ["test-read"], snapshotDigests: ["a".repeat(64)], paginationComplete: true, missingReason: null, dataThrough: null },
+        rows: [{ campaignId: "123", day: "2026-03-08", placement: null, spendMinor: value(500), impressions: value(1000),
+          clicks: value(20), outboundClicks: value(10), landingViews: value(8), providerConversions: { value: null, reason: "unmapped" },
+          conversionDefinition: null, providerCpm: value(5), providerOutboundCtrPercent: value(1) }],
+        delivery: { configuredStatus: "ACTIVE", effectiveStatus: "ACTIVE", evidenceRefs: ["test-read"] }, outcomes: null,
+        maturity: { state: "unknown" as const, reason: "unverified", evidenceRefs: [], coverageVerified: false,
+          reportingLagEndsAt: null, attributionEndsAt: null, rereadAt: null },
+      } };
+    };
+    const range = { campaignId: c.id, from: "2026-03-08T06:00:00Z", until: "2026-03-09T05:00:00Z" };
+    const snap = await t.service.syncMetrics(t.admin, "qa-alpha", range);
+    assert.equal(snap.spendMinor, 500); assert.ok(snap.evidenceId); assert.equal(snap.measurement, undefined);
+    const stored = await t.store.get<any>("qa-alpha", "measurementEvidence", snap.evidenceId!);
+    assert.equal(stored.metrics.weightedCpm.value, 5);
+    const results = await t.service.results(t.admin, "qa-alpha", range);
+    assert.equal(results.evidenceId, snap.evidenceId); assert.equal(results.weightedCpm?.value, 5);
+    assert.equal(results.outboundCtrPercent?.value, 1); assert.equal(results.attributionMaturity?.state, "unknown");
+  } finally { await t.close(); }
+});

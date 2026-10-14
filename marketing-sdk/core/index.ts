@@ -1,3 +1,4 @@
+import type { MeasurementInput, MeasurementEvidence } from "./measurement.js";
 export * from "./audience.js";
 import type { AudienceCommands } from "./audience.js";
 import type { CampaignCheckCommands } from "./preflight.js";
@@ -285,6 +286,9 @@ export interface Conversation {
   messages: { speaker: string; text: string; at: string }[];
 }
 export interface Metrics {
+  /** Pending provider evidence; syncMetrics persists it in the same authorized transaction. */
+  measurement?: MeasurementInput;
+  evidenceId?: string;
   id: string;
   projectId: string;
   campaignId: string;
@@ -305,6 +309,11 @@ export interface Metric {
   reason: string | null;
 }
 export interface Results {
+  evidenceId?: string;
+  weightedCpm?: Metric;
+  outboundCtrPercent?: Metric;
+  evidenceConfidence?: MeasurementEvidence["confidence"];
+  attributionMaturity?: MeasurementEvidence["maturity"];
   campaignId: string;
   timezone: string;
   currency: string;
@@ -531,3 +540,5 @@ export function canonical(value: unknown): string {
     .map((k) => `${JSON.stringify(k)}:${canonical(object[k])}`)
     .join(",")}}`;
 }
+
+export type * from "./measurement.js";

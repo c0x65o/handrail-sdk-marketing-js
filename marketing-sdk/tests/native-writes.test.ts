@@ -106,7 +106,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
       assert.equal(init?.method??"GET","GET");assert.equal(url.searchParams.get('level'),'campaign');
       assert.deepEqual(JSON.parse(url.searchParams.get('time_range')!),{since:'2026-10-01',until:'2026-10-01'});
       assert.ok(url.searchParams.get('filtering')?.includes(retained.campaign!));
-      return Response.json({data:[{impressions:'1000',clicks:'25',spend:'12.50',actions:[{action_type:'lead',value:'999'}]}]});
+      return Response.json({data:[{account_id:'123',campaign_id:retained.campaign,date_start:'2026-10-01',date_stop:'2026-10-01',impressions:'1000',clicks:'25',spend:'12.50',actions:[{action_type:'lead',value:'999'}]}]});
     }
     if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [{ hash: "provider-image-hash", status: "ACTIVE" }] });
     if (init?.method === "POST") {

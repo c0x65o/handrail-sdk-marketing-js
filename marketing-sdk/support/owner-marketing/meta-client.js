@@ -216,10 +216,12 @@ export class MetaMarketingClient {
     return this.readAllPages(`${accountPath(adAccountId)}/campaigns`, { fields: "id,name,status,effective_status,objective,start_time,stop_time,daily_budget,lifetime_budget,updated_time", limit: 100 });
   }
 
-  getInsights(adAccountId, { since, until, datePreset = "last_30d", level = "account", objectIds = [] } = {}) {
+  /** @param {string} adAccountId @param {{since?: string, until?: string, datePreset?: string, level?: string, objectIds?: string[], breakdowns?: string, fields?: string}} options */
+  getInsights(adAccountId, { since, until, datePreset = "last_30d", level = "account", objectIds = [], breakdowns = undefined, fields = undefined } = {}) {
     if (!["account", "campaign", "adset", "ad"].includes(level)) throw new MetaMarketingError("Unsupported Meta insight level", { code: "invalid_configuration", status: 400 });
     return this.readAllPages(`${accountPath(adAccountId)}/insights`, {
-      fields: "account_id,account_name,campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,date_start,date_stop,spend,reach,impressions,frequency,cpm,clicks,inline_link_clicks,outbound_clicks,actions,cost_per_action_type",
+      fields: fields || "account_id,account_name,campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,date_start,date_stop,spend,reach,impressions,frequency,cpm,clicks,inline_link_clicks,outbound_clicks,actions,cost_per_action_type",
+      breakdowns,
       level,
       time_range: since && until ? { since, until } : undefined,
       date_preset: since && until ? undefined : datePreset,

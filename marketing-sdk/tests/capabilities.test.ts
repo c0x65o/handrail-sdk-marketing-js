@@ -581,7 +581,8 @@ test("Meta v4 SQL operation retains unknown HTTP effects, forbids retry replay a
   const t = await native("meta");
   try {
     await t.store.db.acquireExecutor();
-    const principal = { userId: await t.store.createUser("sharing-fixture", "") };
+    await t.store.createUser("sharing-fixture", "fixture-password");
+    const principal = await t.store.authenticate((await t.store.login("sharing-fixture", "fixture-password", "capability-test"))!);
     await t.store.db.prepare("INSERT INTO memberships VALUES(?,?,?)").run(principal.userId, "p", "admin");
     const destination = Buffer.from("intercepted destination");
     t.c.material.destinationDigest = byteDigest(destination); eligible(t.c, t.g);
