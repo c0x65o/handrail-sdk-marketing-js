@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeProvider } from "../server/providers.js";
-import { byteDigest } from "../server/store.js";
+import { byteDigest, digest } from "../server/store.js";
 import type { Asset, Campaign, Grant } from "../core/index.js";
 test("native Meta HTTP write/readback, external drift guard and lost acknowledgment reconciliation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "marketing-native-write-"));
@@ -92,7 +92,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
   const requests: {path:string;method:string;body?:unknown}[]=[];
   let writes = 0,
     nextId = 100,
-    loseAdRead = true;
+    loseAdRead = true, loseBudgetAcknowledgment = false;
   let retained: Record<string, string> = {};
   let checks = 0;
   const fetcher: typeof fetch = async (raw, init) => {
@@ -140,6 +140,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
           ...(await objects.get(last)),
           ...body,
         });
+        if (loseBudgetAcknowledgment && body.lifetime_budget) { loseBudgetAcknowledgment = false; throw Error("lost budget response"); }
         return Response.json({
           success: true,
         });
@@ -257,6 +258,40 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     assert.equal(writes,beforeRecovery);
     assert.equal(await provider.reconcile(paused,grant,{kind:'prepare',payloadDigest:partial.payloadDigest,receipt:{...partial,ids:{image:retained.image!}}}),null);
     assert.equal(writes,beforeRecovery);
+    const stopped = await provider.pause({ ...paused, receipt: enabled }, grant, () => {});
+    const edited: Campaign = { ...paused, revision: 2, state: "draft", receipt: stopped,
+      preparedMaterial: structuredClone(campaign.material),
+      material: { ...campaign.material, budget: { currency: "USD", minor: 43000 } } };
+    const beforeUpdate = writes, objectCount = objects.size;
+    await assert.rejects(provider.prepare(edited, grant, [asset], "must-not-create", () => {}, () => {}), /existing_campaign_requires_update/);
+    const desired = digest(provider.plan(edited, grant, [asset]));
+    // A pre-write crash must not reconcile the old budget as the edited budget.
+    assert.equal(await provider.reconcile(edited, grant, { kind: "prepare", payloadDigest: desired, receipt: null }), null);
+    const changed = { ...edited, material: { ...edited.material, headline: "Unqualified creative replacement" } };
+    await assert.rejects(provider.update(changed, grant, [asset], () => {}, () => {}), /existing_campaign_edit_unqualified/);
+    assert.equal(writes, beforeUpdate);
+    await assert.rejects(provider.update(edited, grant, [asset], () => {}, () => {}), /account_capability_unverified/);
+    assert.equal(writes, beforeUpdate);
+    fixtureEligibility(edited, grant);
+    await assert.rejects(provider.update(edited, grant, [asset], () => {}, () => { throw Error("current-authority-revoked"); }), /current-authority-revoked/);
+    assert.equal(writes, beforeUpdate);
+    const updated = await provider.update(edited, grant, [asset], value => { retained = { ...value }; }, () => {});
+    assert.equal(writes, beforeUpdate + 1); assert.equal(objects.size, objectCount);
+    for (const key of ["campaign", "adset", "ad", "creative", "image"]) assert.equal(updated.ids[key], stopped.ids[key]);
+    assert.equal(objects.get(updated.ids.adset!).lifetime_budget, "43000");
+    assert.equal(objects.get(updated.ids.campaign!).status, "PAUSED");
+    const second: Campaign = { ...edited, revision: 3, receipt: updated, preparedMaterial: structuredClone(edited.material),
+      material: { ...edited.material, budget: { currency: "USD", minor: 44000 } } };
+    fixtureEligibility(second, grant);
+    loseBudgetAcknowledgment = true;
+    await assert.rejects(provider.update(second, grant, [asset], value => { retained = { ...value }; }, () => {}));
+    assert.equal(retained.readbackDigest, undefined);
+    const afterLost = writes;
+    const recovered = await provider.reconcile(second, grant, { kind: "prepare", payloadDigest: digest(provider.plan(second, grant, [asset])),
+      receipt: { ...updated, ids: retained, payloadDigest: digest(provider.plan(second, grant, [asset])) } });
+    assert.ok(recovered); assert.equal(writes, afterLost); assert.equal(objects.size, objectCount);
+    assert.equal(recovered.ids.adset, stopped.ids.adset);
+    assert.equal(objects.get(recovered.ids.adset!).lifetime_budget, "44000");
   } finally {
     await store.close();
     if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, {
@@ -423,5 +458,35 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       receipt: { ...receipt, ids: { ...legacyIds, readbackDigest: digest(legacyMaterial) } } };
     assert.equal((await provider.pause(legacy, grant, () => {})).intent, "paused");
     await assert.rejects(provider.activate(legacy, grant, () => {}), /explicit_daily_budget_required/);
+    const edited: Campaign = { ...c, revision: 2, state: "draft", receipt: reconciledPause!, preparedMaterial: structuredClone(c.material),
+      material: { ...c.material, advertisingBudget: { ...c.material.advertisingBudget!, daily: { currency: "USD", minor: 3100 } } } };
+    const beforeUpdate = writes, countBefore = objects.size;
+    assert.equal(await provider.reconcile(edited, grant, { kind: "prepare", payloadDigest: digest(provider.plan(edited, grant, [asset])), receipt: null }), null);
+    const wrong = { ...edited, material: { ...edited.material, budget: { currency: "USD", minor: 43000 },
+      advertisingBudget: { ...edited.material.advertisingBudget!, lifetime: { currency: "USD", minor: 43000 } } } };
+    await assert.rejects(provider.update(wrong, grant, [asset], () => {}, () => {}), /existing_campaign_edit_unqualified/);
+    await assert.rejects(provider.update(edited, grant, [asset], () => {}, () => {}), /account_capability_unverified/);
+    assert.equal(writes, beforeUpdate);
+    fixtureEligibility(edited, grant);
+    await assert.rejects(provider.update(edited, grant, [asset], () => {}, () => { throw Error("current-authority-revoked"); }), /current-authority-revoked/);
+    assert.equal(writes, beforeUpdate);
+    const updated = await provider.update(edited, grant, [asset], value => { ids = { ...value }; }, () => {});
+    assert.equal(writes, beforeUpdate + 1); assert.equal(objects.size, countBefore);
+    assert.equal(objects.get("102").dailyBudget.amount, "31.00");
+    assert.deepEqual(objects.get("101"), groupBefore); assert.equal(objects.get("unrelated").status, "ACTIVE");
+    for (const key of ["group", "campaign", "creative", "image"]) assert.equal(updated.ids[key], receipt.ids[key]);
+    assert.equal(updated.intent, "paused");
+    const second: Campaign = { ...edited, revision: 3, receipt: updated, preparedMaterial: structuredClone(edited.material),
+      material: { ...edited.material, advertisingBudget: { ...edited.material.advertisingBudget!, daily: { currency: "USD", minor: 3200 } } } };
+    // Lost read after accepted budget write; recovery reads all material and never posts.
+    fixtureEligibility(second, grant);
+    let retainedUpdate: Record<string, string> = {};
+    await assert.rejects(provider.update(second, grant, [asset], value => { retainedUpdate = { ...value }; loseRead = true; }, () => {}));
+    const afterLost = writes;
+    const recovered = await provider.reconcile(second, grant, { kind: "prepare", payloadDigest: digest(provider.plan(second, grant, [asset])),
+      receipt: { ...updated, ids: retainedUpdate, payloadDigest: digest(provider.plan(second, grant, [asset])) } });
+    assert.ok(recovered); assert.equal(writes, afterLost); assert.equal(objects.get("102").dailyBudget.amount, "32.00");
+    assert.deepEqual(objects.get("101"), groupBefore); assert.equal(objects.size, countBefore);
+
   } finally { await store.close(); if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, { recursive: true, force: true }); }
 });

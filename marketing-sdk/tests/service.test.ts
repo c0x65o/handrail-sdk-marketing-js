@@ -1354,7 +1354,7 @@ test("typed material edits invalidate packet authority and the agent uses the sa
       identity: { pageId: "987654" }, targeting: { languages: [], interestGroups: [], excludedCustomAudiences: [] }, nondiscriminationAccepted: true };
     const updated = await t.service.saveCampaign(t.admin, "qa-alpha", { id: c.id, expectedRevision: c.revision, grantId: c.grantId,
       material: { ...c.material, settings, purpose: "acquisition" } });
-    assert.equal(updated.creativeSetId, c.creativeSetId); assert.equal(updated.receipt, null);
+    assert.equal(updated.creativeSetId, c.creativeSetId); assert.deepEqual(updated.receipt, c.receipt); assert.deepEqual(updated.preparedMaterial, c.material);
     await assert.rejects(t.service.execute(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, requestKey: "stale-capability" }), /changed|revision|paused|stale_material/);
     const call = agentTools({ call: (command, input) => t.service.call(t.agent, "qa-alpha", command, input), assetUrl: () => "" });
     await assert.rejects(call("marketing_saveCampaign", { grantId: c.grantId, material: { ...updated.material, settings: { ...settings, accountId: "act_999" } } }), /account_context_mismatch/);
@@ -1426,5 +1426,41 @@ test("syncMetrics commits its SDK evidence and results reference the exact persi
     const results = await t.service.results(t.admin, "qa-alpha", range);
     assert.equal(results.evidenceId, snap.evidenceId); assert.equal(results.weightedCpm?.value, 5);
     assert.equal(results.outboundCtrPercent?.value, 1); assert.equal(results.attributionMaturity?.state, "unknown");
+  } finally { await t.close(); }
+});
+
+
+test("paused edits retain provider identities and use update with durable unknown recovery, never create", async () => {
+  const t = await setupTest();
+  try {
+    const c = await prepared(t);
+    const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
+    await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
+    const edited = await t.service.saveCampaign(t.admin, "qa-alpha", { id: c.id, expectedRevision: c.revision, grantId: c.grantId,
+      material: { ...c.material, budget: { ...c.material.budget, minor: c.material.budget.minor + 100 } } });
+    assert.deepEqual(edited.receipt, c.receipt); assert.deepEqual(edited.preparedMaterial, c.material);
+    assert.equal(edited.state, "draft");
+    await assert.rejects(t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "unsupported-update" }), /existing_campaign_update_unavailable/);
+    const port: import("../server/ports.js").ProviderPort = t.provider;
+    let creates = 0, updates = 0;
+    t.provider.prepare = async () => { creates++; throw Error("must not create"); };
+    port.validateUpdate = () => {};
+    port.update = async (current, grant, assets, retain, guard) => {
+      await guard(); updates++;
+      const receipt = { ...current.receipt!, payloadDigest: digest(port.plan(current, grant, assets)) };
+      await retain(receipt.ids);
+      await t.store.put(current.projectId, "fixtureEffect", current.id, receipt);
+      throw Error("lost update acknowledgment");
+    };
+    const op = await t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "same-id-update" });
+    assert.equal((await t.service.dispatch("qa-alpha", op.id)).state, "unknown");
+    await t.service.dispatch("qa-alpha", op.id);
+    await assert.rejects(t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "do-not-retry" }), /existing_operation_requires_reconciliation/);
+    assert.equal((await t.service.reconcile(t.admin, "qa-alpha", { operationId: op.id })).state, "succeeded");
+    const saved = await t.store.get<Campaign>("qa-alpha", "campaign", c.id);
+    assert.deepEqual(saved.receipt!.ids, c.receipt!.ids); assert.deepEqual(saved.preparedMaterial, edited.material);
+    assert.equal(creates, 0); assert.equal(updates, 1);
+    await assert.rejects(t.service.execute(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, requestKey: "old-approval" }), /changed|revision|paused|stale_material/);
+    assert.deepEqual((await t.store.get<Operation>("qa-alpha", "operation", op.id)).receipt, saved.receipt);
   } finally { await t.close(); }
 });

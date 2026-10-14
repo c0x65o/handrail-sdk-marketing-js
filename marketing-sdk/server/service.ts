@@ -542,7 +542,8 @@ export class MarketingServer {
       const old = input.id ? await this.store.get<Campaign>(project, "campaign", input.id) : null;
       const c: Campaign = { id: old?.id ?? id(), projectId: project, revision: (old?.revision ?? 0) + 1,
         grantId: g.id, creativeSetId: old?.creativeSetId ?? id(), ...(old?.draftOrigin ? { draftOrigin: old.draftOrigin } : {}),
-        material: structuredClone(input.material), state: "draft", receipt: null };
+        material: structuredClone(input.material), state: "draft", receipt: old?.receipt ?? null,
+        ...(old?.receipt ? { preparedMaterial: structuredClone(old.preparedMaterial ?? old.material) } : {}) };
       return { c, grant: await this.legacySetupBinding(project, g), previous: old ? digest(old) : null, assets: "" };
     });
     if ("recovered" in prepared) return prepared.recovered!;
@@ -663,6 +664,11 @@ export class MarketingServer {
     else requireThat(!c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
     const g = await this.grant(project, c.grantId, kind);
     const a = await this.assets(c, false); // Decode during unlocked dispatch; retain byte/ownership checks here.
+    if (kind === "prepare" && c.receipt) {
+      const provider = this.providers[g.provider];
+      requireThat(provider.update && provider.validateUpdate, "existing_campaign_update_unavailable");
+      provider.validateUpdate(c, g, a);
+    }
     if (kind !== "pause" && g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     // A safety pause binds the observed receipt, including legacy provider plans.
     // It must not require inventing a daily approval or rebuilding provider objects.
@@ -1284,6 +1290,11 @@ export class MarketingServer {
         await this.store.authorize(p, project, ["admin", "editor", "approver"]);
       else await this.auth(p, project, true);
       requireThat(c.revision === o.campaignRevision, "stale_material");
+      if (o.kind === "prepare" && c.receipt) {
+        const provider = this.providers[g.provider];
+        requireThat(provider.update && provider.validateUpdate, "existing_campaign_update_unavailable");
+        provider.validateUpdate(c, g, await this.assets(c));
+      }
       if (o.packetId) await this.approved(project, o.packetId);
       requireThat(
         (o.kind === "pause" ? c.receipt?.payloadDigest : digest(this.providers[g.provider].plan(c, g, await this.assets(c)))) ===
@@ -1446,25 +1457,24 @@ export class MarketingServer {
     try {
       const receipt =
         o.kind === "prepare"
-          ? await provider.prepare(
+          ? await (async () => {
+            const retain = async (ids: Record<string, string>) => {
+              o.receipt = { ids, payloadDigest: o.payloadDigest, intent: "paused", delivery: "unverified",
+                providerRequestId: null, observedAt: new Date(this.now()).toISOString(), evidence: provider.evidence };
+              await this.store.put(project, "operation", o.id, o);
+            };
+            if (c.receipt) {
+              requireThat(provider.update, "existing_campaign_update_unavailable");
+              return provider.update(c, g, await this.assets(c), retain, beforeWrite);
+            }
+            return provider.prepare(
               c,
               g,
               await this.assets(c),
               o.id,
-              async (ids) => {
-                o.receipt = {
-                  ids,
-                  payloadDigest: o.payloadDigest,
-                  intent: "paused",
-                  delivery: "unverified",
-                  providerRequestId: null,
-                  observedAt: new Date(this.now()).toISOString(),
-                  evidence: provider.evidence,
-                };
-                await this.store.put(project, "operation", o.id, o);
-              },
+              retain,
               beforeWrite,
-            )
+            ); })()
           : o.kind === "activate"
             ? await provider.activate(c, g, beforeWrite)
             : await provider.pause(c, g, beforeWrite);
@@ -1503,6 +1513,7 @@ export class MarketingServer {
         ...c,
         state: receipt.intent,
         receipt,
+        preparedMaterial: o.kind === "prepare" ? structuredClone(c.material) : c.preparedMaterial ?? c.material,
       });
       await this.store.db
         .prepare(
@@ -1572,7 +1583,8 @@ export class MarketingServer {
       // Concurrent successful readback returns the same original operation.
       if (current.state === "succeeded") {
         requireThat(current.receipt && digest({ ...current, state: o.state, receipt: o.receipt, reason: o.reason }) === digest(o) &&
-          digest(campaign) === digest({ ...c, state: current.receipt.intent, receipt: current.receipt }), "operation_changed");
+          digest(campaign) === digest({ ...c, state: current.receipt.intent, receipt: current.receipt,
+            preparedMaterial: o.kind === "prepare" ? c.material : c.preparedMaterial ?? c.material }), "operation_changed");
         return current;
       }
       requireThat(digest(campaign) === digest(c), "reconciliation_material_changed");

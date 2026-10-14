@@ -86,6 +86,8 @@ export interface Campaign {
   material: Material;
   state: "draft" | "paused" | "enabled" | "unknown";
   receipt: Receipt | null;
+  /** Last provider-verified material. Retained across local edits; never client-authored. */
+  preparedMaterial?: Material;
 }
 /** Local planning material. Missing/blank fields are not publication readiness. */
 export type PartialSettings<T> = T extends (infer U)[] ? PartialSettings<U>[] : T extends object ? { [K in keyof T]?: PartialSettings<T[K]> } : T;

@@ -651,6 +651,70 @@ export class NativeProvider implements ProviderPort {
   plan(c: Campaign, g: Grant, assets: Asset[]) {
     return providerPlan(c, g, assets);
   }
+  validateUpdate(c: Campaign, g: Grant, assets: Asset[]) {
+    requireThat(this.name === "meta" || this.name === "linkedin", "existing_campaign_update_unavailable");
+    requireThat(c.receipt?.intent === "paused" && c.receipt.ids.readbackDigest && c.preparedMaterial,
+      "paused_verified_material_required");
+    const previous = c.preparedMaterial;
+    const oldPlan = this.plan({ ...c, material: previous }, g, assets);
+    requireThat(digest(oldPlan) === c.receipt.payloadDigest, "prepared_material_binding_changed");
+    const normalized = structuredClone(c.material);
+    // Only qualified budget fields are mutable in this update contract. Shared
+    // group budgets, creatives, targeting and schedules cannot be recreated.
+    if (this.name === "meta") {
+      requireThat(!previous.advertisingBudget?.daily && !normalized.advertisingBudget?.daily,
+        "meta_daily_budget_semantics_unverified");
+      normalized.budget.minor = previous.budget.minor;
+      if (normalized.advertisingBudget && previous.advertisingBudget)
+        normalized.advertisingBudget.lifetime.minor = previous.advertisingBudget.lifetime.minor;
+    } else {
+      requireThat(previous.advertisingBudget?.daily && normalized.advertisingBudget?.daily,
+        "linkedin_explicit_daily_budget_required");
+      normalized.advertisingBudget.daily.minor = previous.advertisingBudget.daily.minor;
+    }
+    requireThat(digest(normalized) === digest(previous), "existing_campaign_edit_unqualified");
+    this.plan(c, g, assets);
+  }
+  async update(c: Campaign, g: Grant, assets: Asset[],
+    retain: (ids: Record<string, string>) => void | Promise<void>, beforeWrite: () => void | Promise<void>) {
+    this.validateUpdate(c, g, assets);
+    const plan: any = this.plan(c, g, assets);
+    const scope = digest({ c, g, assets });
+    const guard = async () => {
+      await beforeWrite();
+      requireThat(digest({ c, g, assets }) === scope, "provider_scope_changed");
+      await this.prerequisite(c, g);
+    };
+    await guard();
+    const { readbackDigest: previousDigest, ...ids } = c.receipt!.ids;
+    return this.use(g, async client => {
+      if (this.name === "linkedin") client.beforeWrite = async () => {
+        requireThat((await this.linkedInPermissions(client, g, undefined, guard, "prepare")).includes("prepare"), "provider_capability_missing");
+        await guard();
+      };
+      await this.verifySettings(client, c, g);
+      const before = await this.snapshot(client, g, ids);
+      requireThat(before.paused, "existing_campaign_not_paused");
+      requireThat(digest(before.material) === previousDigest, "external_material_changed");
+      // Persist original identities without claiming the new material has been
+      // observed. A lost acknowledgment is resolved by reads, never replay.
+      await retain({ ...ids });
+      await guard();
+      if (c.receipt!.payloadDigest !== digest(plan)) {
+        if (this.name === "meta") await client.request(ids.adset, {
+          method: "POST", body: { lifetime_budget: plan.adset.lifetime_budget },
+        });
+        else await client.updateCampaignBudget(g.accountId, ids.campaign, plan.campaign.dailyBudgetCents, g.currency);
+      }
+      const after = await this.snapshot(client, g, ids);
+      requireThat(after.paused, "existing_campaign_not_paused");
+      this.validateSnapshot(after.material, plan, ids);
+      await guard();
+      const observed = { ...ids, readbackDigest: digest(after.material) };
+      await retain(observed);
+      return { ...this.receipt(observed, digest(plan), "paused"), providerRequestId: client.lastRequestId || null };
+    });
+  }
   private async bytes(project: string, a: Asset) {
     return Buffer.from(
       (await this.store.db
@@ -666,6 +730,7 @@ export class NativeProvider implements ProviderPort {
     retain: (ids: Record<string, string>) => void | Promise<void>,
     beforeWrite: () => void | Promise<void>,
   ) {
+    requireThat(!c.receipt, "existing_campaign_requires_update");
     if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     const plan: any = this.plan(c, g, assets);
     await this.prerequisite(c, g);
@@ -1377,7 +1442,7 @@ export class NativeProvider implements ProviderPort {
       if (!(o.kind === "activate" ? s.enabled : s.paused)) return null;
       if (this.name === "meta" && receipt.ids.readbackVersion === "4" && o.kind !== "pause" &&
         s.material.campaign.is_adset_budget_sharing_enabled !== false) return null;
-      if (!receipt.ids.readbackDigest) {
+      if (!receipt.ids.readbackDigest || receipt.payloadDigest !== o.payloadDigest) {
         if (o.kind !== "prepare") return null;
         const assets = await Promise.all(
           c.material.assetIds.map(
@@ -1401,6 +1466,7 @@ export class NativeProvider implements ProviderPort {
           "paused",
         );
       }
+      if (!receipt.ids.readbackDigest || receipt.payloadDigest !== o.payloadDigest) return null;
       if (digest(s.material) !== receipt.ids.readbackDigest) return null;
       return this.receipt(
         receipt.ids,

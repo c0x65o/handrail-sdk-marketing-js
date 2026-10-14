@@ -33,6 +33,13 @@ export interface ProviderPort {
     permissions: Permission[];
   }>;
   plan(campaign: Campaign, grant: Grant, assets: Asset[]): unknown;
+  validateUpdate?(campaign: Campaign, grant: Grant, assets: Asset[]): void;
+  /** Update stopped existing objects. Absence never permits recreating them. */
+  update?(
+    campaign: Campaign, grant: Grant, assets: Asset[],
+    retain: (ids: Record<string, string>) => void | Promise<void>,
+    beforeWrite: () => void | Promise<void>,
+  ): Promise<Receipt>;
   /** Read existing provider identities against exact material. Does not create
    * objects, transfer execution ownership, or issue approval/spending authority. */
   inspectExistingCampaign?(

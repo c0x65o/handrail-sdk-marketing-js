@@ -295,3 +295,23 @@ Historical retention APIs (`HistoricalCampaignImports`, `HistoricalProjectImport
 are described in [the adoption contract](marketing-sdk/tests/ADOPTION.md). Project
 history preserves unattributed records without inventing campaigns; neither API
 creates execution authority or transfers campaign ownership.
+
+Editing a prepared campaign retains its provider receipt and the last verified
+`preparedMaterial`. Preparing that edited revision invokes the provider's update
+contract; an unavailable update never falls back to creating replacement objects.
+The qualified update fields are Meta lifetime budget and LinkedIn campaign daily
+budget, while all owned objects are stopped. LinkedIn group budgets/status and
+original campaign/ad/creative/image identities remain unchanged. Other edits are
+retained locally but cannot be prepared until their update behavior is qualified.
+Meta daily-budget execution remains unqualified.
+
+Updates require current exact-material capability evidence and host write
+authority, compare the previous provider snapshot before writing, and retain
+identities before the request. A lost acknowledgment keeps the existing execution
+lease and requires read-only reconciliation against the new values. The old
+receipt cannot prove that an edited budget was applied. Activation still requires
+a new approval packet for the edited revision and the existing spending controls.
+These intercepted HTTP and disposable SQL tests do not constitute a live pilot
+or authorize changing any deployed campaign budget. The request shapes follow
+[Meta's AdSet update API](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adset.py)
+and [LinkedIn campaign partial updates](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaigns?view=li-lms-2026-09).
