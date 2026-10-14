@@ -174,6 +174,22 @@ limits](marketing-sdk/design/ACCEPTANCE.md#connections-implementation-candidate-
 browser login and original-session resume using a disposable existing-host SQL
 fixture with no SDK passwords/sessions. It supplies no production host/native adapter.
 
+## Historical campaign retention
+
+The server export `HistoricalCampaignImports` retains a host's consistent native
+campaign snapshot through an explicit identity/source port. Core exports the
+typed snapshot, record, total and receipt contracts. The SDK reconciles source
+counts and compatible totals, preserves original identities and immutable
+corrections, and provides durable retry/read APIs. Unknown identity, purpose and
+measurements require explanations. Existing approvals and unsettled effects are
+retained as history, without granting spending authority or replaying events.
+
+This retention stage never transfers execution ownership or creates provider
+objects. A consumer must separately reconcile and bind execution under its
+existing authority. See [the adoption contract and validation](marketing-sdk/tests/ADOPTION.md).
+The normal build and 20 adoption tests plus 15 measurement regressions passed on
+disposable PostgreSQL; live consumer adoption remains separate qualification.
+
 ## Measurement evidence
 
 The server exports `collectProviderMeasurement`, `buildMeasurementEvidence`,

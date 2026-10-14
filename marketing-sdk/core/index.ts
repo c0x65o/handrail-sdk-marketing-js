@@ -1,4 +1,5 @@
 import type { MeasurementInput, MeasurementEvidence } from "./measurement.js";
+export * from "./adoption.js";
 export * from "./audience.js";
 import type { AudienceCommands } from "./audience.js";
 import type { CampaignCheckCommands } from "./preflight.js";

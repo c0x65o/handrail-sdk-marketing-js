@@ -32,3 +32,4 @@ export { createNativeTextPlanning, createSyntheticTextPlanning, createTextPlanni
 export type { NativeTextPlanning, NativeTextPlanningOptions, TextPlanningAccess, TextPurposePermission } from './text-planning.js';
 export * from "./measurement.js";
 export * from "./measurement-collectors.js";
+export * from "./adoption.js";
