@@ -305,6 +305,13 @@ original campaign/ad/creative/image identities remain unchanged. Other edits are
 retained locally but cannot be prepared until their update behavior is qualified.
 Meta daily-budget execution remains unqualified.
 
+Original daily-only campaigns can retain `budget: null` and an explicit
+`advertisingBudget.daily` without a lifetime amount. `endAt: null` preserves an
+open schedule. Adoption, draft review and finite reporting windows keep these
+terms intact; provider inspection rejects unexpected caps or end dates. Existing
+spending controls still require qualified exposure and applicable budget-period
+authority. This representation does not authorize activation or create a cap.
+
 Updates require current exact-material capability evidence and host write
 authority, compare the previous provider snapshot before writing, and retain
 identities before the request. A lost acknowledgment keeps the existing execution

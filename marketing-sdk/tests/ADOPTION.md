@@ -92,6 +92,17 @@ creates no approval decision, spending reservation, scheduler, worker or paid
 provider request. New activation still requires current exact-revision approval
 and existing spending controls.
 
+Daily-only original campaigns use `material.budget: null`, an explicit
+`advertisingBudget.daily`, and no `advertisingBudget.lifetime`. An open-ended
+original schedule uses `endAt: null`; null is an explicit absence, not an unknown
+amount or zero. Missing daily amounts, mixed currencies, conflicting lifetime
+fields and invalid schedules are rejected. Provider plans and inspections retain
+that absence without supplying a campaign cap, group cap or end date. Reporting
+still selects finite, completed provider days. Draft promotion and review preserve
+the same terms. Meta daily activation qualification and existing finite budget
+authority checks remain required; representing or adopting the original terms
+does not grant permission to spend.
+
 The contract is implemented and exercised with intercepted provider observations
 and disposable SQL. A consumer must implement the trusted source, media import,
 current Vault/grant binding and monotonic native execution guard before invoking

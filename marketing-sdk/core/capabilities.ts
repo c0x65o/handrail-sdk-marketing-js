@@ -137,7 +137,7 @@ export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "a
     } else check(m.purpose === "acquisition" && s.specialAdCategory === undefined && s.specialAdCategoryCountry === undefined && s.conversion === undefined, "purpose_conversion_mismatch");
   } else if (s.provider === "linkedin") {
     check(m.timezone === "UTC" && (!g || g.timezone === "UTC"), "linkedin_utc_required");
-    check([m.startAt, m.endAt].every(v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.000)?Z$/.test(v)), "linkedin_schedule_requires_utc_midnights");
+    check([m.startAt, ...(m.endAt === null ? [] : [m.endAt])].every(v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.000)?Z$/.test(v)), "linkedin_schedule_requires_utc_midnights");
     check(only(s, [...base, "bid", "politicalIntent", "politicalConsent"]), "unexpected_settings_fields");
     check(s.apiVersion === "202609" && s.format === "STANDARD_UPDATE", "unsupported_format_or_api");
     check(LINKEDIN_COMBINATIONS.some(row => row[0] === s.objective && row[1] === s.optimization && row[2] === s.bid?.mode && row[3] === s.bid?.costType), "unsupported_objective_optimization_bid");
@@ -195,5 +195,5 @@ export function capabilityStatus(m: Material, g: PublicGrant, now = Date.now()) 
 export function dailyExposureMinor(m: Pick<Material, "settings" | "budget" | "advertisingBudget">): number | null {
   const daily = m.advertisingBudget?.daily?.minor;
   return m.settings?.provider === "meta" && daily !== undefined ? null : daily === undefined ? null : m.settings?.provider === "linkedin"
-    ? Math.min(m.budget.minor, Math.ceil(daily * 1.5)) : daily;
+    ? Math.min(m.budget?.minor ?? Infinity, Math.ceil(daily * 1.5)) : daily;
 }

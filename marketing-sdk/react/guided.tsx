@@ -1,3 +1,4 @@
+import { materialCurrency, materialEndTime } from "../core/index.js";
 import { CountryAudience } from "./audience.js";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CAPABILITY_VERSION, capabilityBlockers, capabilityStatus, LINKEDIN_COMBINATIONS, META_COMBINATIONS,
@@ -72,15 +73,15 @@ function TuplePicker({ material: m, onChange }: { material: Material; onChange: 
 }
 function ScheduleFields({ material: m, onChange }: { material: Material; onChange: (patch: Partial<Material>) => void }) {
   const [error, setError] = useState("");
-  const date = (value: string) => { try { return dateAtInstant(value, m.timezone); } catch { return ""; } };
+  const date = (value: string | null) => { try { return value === null ? "" : dateAtInstant(value, m.timezone); } catch { return ""; } };
   return <fieldset><legend>Authored campaign schedule · {m.timezone}</legend>
     <p>Start is inclusive; end is the first day excluded. These dates control the campaign schedule, not the reporting window. Choosing a date explicitly replaces that boundary with the start of that day.</p>
     {([['startAt', 'Start date'], ['endAt', 'End date (exclusive)']] as const).map(([field, label]) => <label key={field}>{label}<input type="date" value={date(m[field])} onChange={e => {
-      try { onChange({ [field]: instantAtDate(e.target.value, m.timezone) }); setError(""); } catch (e) { setError((e as Error).message); }
+      try { onChange({ [field]: field === "endAt" && !e.target.value ? null : instantAtDate(e.target.value, m.timezone) }); setError(""); } catch (e) { setError((e as Error).message); }
     }} /></label>)}
     <details><summary>Exact UTC instants</summary><label>Start (UTC)<input value={m.startAt} onChange={e => onChange({ startAt: e.target.value })} /></label>
-      <label>End (UTC, exclusive)<input value={m.endAt} onChange={e => onChange({ endAt: e.target.value })} /></label></details>
-    <p>{m.startAt || "Start required"} → {m.endAt || "End required"} (exclusive)</p>
+      <label>End (UTC, exclusive)<input value={m.endAt ?? ""} onChange={e => onChange({ endAt: e.target.value || null })} /></label></details>
+    <p>{m.startAt || "Start required"} → {m.endAt === null ? "No end date" : m.endAt || "End required"} (exclusive)</p>
     {m.settings?.provider === "linkedin" && <p>LinkedIn requires UTC midnight boundaries. Partial days and non-UTC schedules are rejected.</p>}
     {error && <p role="alert">{error}</p>}
   </fieldset>;
@@ -145,15 +146,17 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
     {(g.provider !== "linkedin" || !s) && <AudienceFields material={m} grant={g} value={m.audience} onChange={audience => update({ audience })} />}
     {!["USD", "EUR", "GBP", "CAD", "AUD"].includes(g.currency) && <p role="status">This account currency is not supported by the SDK money contract. Existing amounts are retained; choose a supported account.</p>}
     <fieldset disabled={!["USD", "EUR", "GBP", "CAD", "AUD"].includes(g.currency)}><legend>Planning media amounts · {g.currency}</legend>
-    <label>Lifetime media budget ({g.currency})<input type="number" min="0.01" step="0.01" required value={m.budget.minor / 100 || ""} onChange={e => {
-      const budget = { currency: g.currency, minor: Math.round(Number(e.target.value) * 100) }; update({ budget, ...(m.advertisingBudget ? { advertisingBudget: { ...m.advertisingBudget, lifetime: budget } } : {}) });
+    <label>Lifetime media budget ({g.currency})<input type="number" min="0.01" step="0.01" required={!m.advertisingBudget?.daily} value={m.budget ? m.budget.minor / 100 || "" : ""} onChange={e => {
+      const budget = e.target.value ? { currency: g.currency, minor: Math.round(Number(e.target.value) * 100) } : null;
+      const { lifetime: _lifetime, ...terms } = m.advertisingBudget ?? {};
+      update({ budget, ...(m.advertisingBudget ? { advertisingBudget: { ...terms, ...(budget ? { lifetime: budget } : {}) } } : {}) });
     }} /></label>
-    {g.provider !== "google" && <label>Daily media budget ({g.currency}){g.provider === "linkedin" ? " — required" : " — optional"}<input type="number" min="0.01" step="0.01" required={g.provider === "linkedin"} value={m.advertisingBudget?.daily ? m.advertisingBudget.daily.minor / 100 : ""} onChange={e => update({ advertisingBudget: e.target.value ? { ...m.advertisingBudget, lifetime: m.budget, daily: { currency: g.currency, minor: Math.round(Number(e.target.value) * 100) } } : undefined })} /></label>}
+    {g.provider !== "google" && <label>Daily media budget ({g.currency}){g.provider === "linkedin" ? " — required" : " — optional"}<input type="number" min="0.01" step="0.01" required={g.provider === "linkedin"} value={m.advertisingBudget?.daily ? m.advertisingBudget.daily.minor / 100 : ""} onChange={e => update({ advertisingBudget: e.target.value ? { ...m.advertisingBudget, ...(m.budget ? { lifetime: m.budget } : {}), daily: { currency: g.currency, minor: Math.round(Number(e.target.value) * 100) } } : undefined })} /></label>}
     </fieldset>
     {s?.provider === "linkedin" && <p>Policy checks reserve 150% of the daily amount, bounded by your lifetime approval, for potential daily overdelivery.</p>}
     {providerBudgetBlockers(m).length > 0 && <p role="status">Meta daily budget exposure and cap compatibility are unverified. Native preparation and activation are blocked; saving a draft does not qualify them.</p>}
     <p>Daily amounts are pacing targets, not hard intraday caps. Reservations cover managed media commitments; observed spend is separate. External campaigns, taxes and fees require additional host coverage. A pause does not settle delayed charges.</p>
-    {m.budget.currency !== g.currency && <p role="status">Retained amount uses {m.budget.currency}; this account uses {g.currency}. No currency conversion is available. <button type="button" onClick={() => update({ budget: { currency: g.currency, minor: 0 }, advertisingBudget: undefined })}>Clear amounts and use account currency</button></p>}
+    {materialCurrency(m) !== g.currency && <p role="status">Retained amount uses {materialCurrency(m)}; this account uses {g.currency}. No currency conversion is available. <button type="button" onClick={() => update({ budget: { currency: g.currency, minor: 0 }, advertisingBudget: undefined })}>Clear amounts and use account currency</button></p>}
     {m.timezone !== g.timezone && <p role="status">Retained schedule uses {m.timezone}; this account uses {g.timezone}. <button type="button" onClick={() => update({ timezone: g.timezone, startAt: "", endAt: "" })}>Clear dates and use account timezone</button></p>}
     <ScheduleFields material={m} onChange={update} />
     {s?.provider === "linkedin" && <p>Include titles OR job functions/seniority; including employers cannot also include industries/company size. Company size cannot be on both include and exclude sides. Incompatible selections remain visible until you remove them.</p>}
@@ -219,6 +222,7 @@ export function promotionMaterial(draft: CampaignDraft, g: PublicGrant, reconstr
   };
   if (base.settings?.provider === "meta") base.settings.identity = { pageId: "" };
   if (base.settings?.provider === "linkedin") base.settings.identity = { organizationId: "" };
+  if (source.budget === null) base.budget = null;
   const m = merge({ ...base, startAt: "", endAt: "", purpose: undefined }, source) as Material;
   if (m.audience.provider !== g.provider || m.settings && m.settings.provider !== g.provider)
     throw new Error("Choose an account on the draft’s original provider. Targeting and identity cannot be translated.");
@@ -259,7 +263,7 @@ function PromotionForm({ draft, grant: g, client, scope, disabled, onSaved, rend
     <button type="button" disabled={disabled} onClick={() => { try { setMaterial(promotionMaterial(draft, g, true)); setError(""); } catch (e) { setError((e as Error).message); } }}>Reconstruct provider settings for review</button>
     <details><summary>Original saved draft</summary><pre>{JSON.stringify(draft.material, null, 2)}</pre></details>
   </div>;
-  const missing = [!m.name.trim() && "Campaign name", !m.headline.trim() && "Headline", !m.body.trim() && "Copy", !m.destination && "HTTPS destination", !m.budget.minor && "Lifetime budget", !m.purpose && "Purpose", !m.startAt && "Start date", !m.endAt && "End date", !m.audience.locations.length && "Locations", m.audience.provider === "meta" && (m.audience.ageMin === undefined || m.audience.ageMax === undefined) && "Minimum and maximum age", Date.parse(m.startAt) >= Date.parse(m.endAt) && "End must be later than start", m.settings?.provider === "linkedin" && !m.advertisingBudget?.daily && "Daily budget", m.budget.currency !== g.currency && "Account currency mismatch", m.timezone !== g.timezone && "Account timezone mismatch"].filter(Boolean);
+  const missing = [!m.name.trim() && "Campaign name", !m.headline.trim() && "Headline", !m.body.trim() && "Copy", !m.destination && "HTTPS destination", !m.budget?.minor && !m.advertisingBudget?.daily && "Media budget", !m.purpose && "Purpose", !m.startAt && "Start date", m.endAt !== null && !m.endAt && "End date", !m.audience.locations.length && "Locations", m.audience.provider === "meta" && (m.audience.ageMin === undefined || m.audience.ageMax === undefined) && "Minimum and maximum age", Date.parse(m.startAt) >= materialEndTime(m) && "End must be later than start", m.settings?.provider === "linkedin" && !m.advertisingBudget?.daily && "Daily budget", materialCurrency(m) !== g.currency && "Account currency mismatch", m.timezone !== g.timezone && "Account timezone mismatch"].filter(Boolean);
   const blockers = [...missing, ...capabilityBlockers(m, g)];
   return <div ref={panel} tabIndex={-1}>
     <p>Target: {g.label} · {g.currency} · {g.timezone}. Existing draft values are retained; missing fields need your review. No CPC amount, budget or consent is supplied.</p>

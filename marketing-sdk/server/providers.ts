@@ -1,3 +1,4 @@
+import { materialCurrency, materialEndTime } from "../core/index.js";
 import { countryPage, countryCode } from "./countries.js";
 import { currentPrerequisite } from "./preflight.js";
 import { providerBudgetBlockers } from "../core/index.js";
@@ -58,11 +59,12 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
   validateAccountCapability(c, g);
   const settings = m.settings;
   requireThat(
-    g.currency === m.budget.currency && g.timezone === m.timezone,
+    g.currency === materialCurrency(m) && g.timezone === m.timezone,
     "account_context_mismatch",
   );
   if (g.provider === "google") {
     requireThat(!m.advertisingBudget?.daily, "google_daily_budget_unsupported");
+    requireThat(m.budget && m.endAt, "google_lifetime_schedule_required");
     requireThat(assets.length === 0, "google_search_text_only");
     const prefix = `customers/${g.accountId}`;
     const campaign = `${prefix}/campaigns/-2`,
@@ -189,7 +191,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         objective: ms?.objective ?? "OUTCOME_TRAFFIC",
         special_ad_categories: ms?.delivery === "employment" ? ["EMPLOYMENT"] : [],
         ...(ms?.delivery === "employment" ? { special_ad_category_country: ["US"] } : {}),
-        ...(m.advertisingBudget?.daily ? { spend_cap: String(m.budget.minor) } : {}),
+        ...(m.advertisingBudget?.daily && m.budget ? { spend_cap: String(m.budget.minor) } : {}),
         status: "PAUSED",
       },
       adset: {
@@ -199,9 +201,9 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         ...(ms ? ms.objective === "OUTCOME_AWARENESS" ? { promoted_object: { page_id: ms.identity.pageId } } : { destination_type: "WEBSITE" } : {}),
         ...(ms?.delivery === "employment" ? { promoted_object: { pixel_id: ms.conversion!.pixelId, custom_conversion_id: ms.conversion!.customConversionId } } : {}),
         bid_strategy: "LOWEST_COST_WITHOUT_CAP",
-        ...(m.advertisingBudget?.daily ? { daily_budget: String(m.advertisingBudget.daily.minor) } : { lifetime_budget: String(m.budget.minor) }),
+        ...(m.advertisingBudget?.daily ? { daily_budget: String(m.advertisingBudget.daily.minor) } : { lifetime_budget: String(m.budget!.minor) }),
         start_time: m.startAt,
-        end_time: m.endAt,
+        ...(m.endAt === null ? {} : { end_time: m.endAt }),
         status: "PAUSED",
         targeting: ms ? metaTargeting(c, ms) : {
           geo_locations: {
@@ -241,18 +243,18 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
       // A newly created empty container can be ACTIVE while its campaign and
       // creative remain DRAFT. Campaign execution never changes group status.
       status: "ACTIVE",
-      totalBudgetCents: m.budget.minor,
-      currencyCode: m.budget.currency,
+      ...(m.budget ? { totalBudgetCents: m.budget.minor } : {}),
+      currencyCode: materialCurrency(m),
       startAt: Date.parse(m.startAt),
-      endAt: Date.parse(m.endAt),
+      ...(m.endAt === null ? {} : { endAt: materialEndTime(m) }),
     },
     campaign: {
       name: m.name,
       organizationId: g.organizationId,
-      currencyCode: m.budget.currency,
+      currencyCode: materialCurrency(m),
       dailyBudgetCents: m.advertisingBudget.daily.minor,
       startAt: Date.parse(m.startAt),
-      endAt: Date.parse(m.endAt),
+      ...(m.endAt === null ? {} : { endAt: materialEndTime(m) }),
       objectiveType: ls?.objective ?? "WEBSITE_VISIT",
       ...(ls ? { optimizationTargetType: ls.optimization, politicalIntent: ls.politicalIntent } : {}),
       format: "STANDARD_UPDATE",
@@ -664,8 +666,9 @@ export class NativeProvider implements ProviderPort {
     if (this.name === "meta") {
       requireThat(!previous.advertisingBudget?.daily && !normalized.advertisingBudget?.daily,
         "meta_daily_budget_semantics_unverified");
+      requireThat(normalized.budget && previous.budget, "lifetime_budget_required");
       normalized.budget.minor = previous.budget.minor;
-      if (normalized.advertisingBudget && previous.advertisingBudget)
+      if (normalized.advertisingBudget?.lifetime && previous.advertisingBudget?.lifetime)
         normalized.advertisingBudget.lifetime.minor = previous.advertisingBudget.lifetime.minor;
     } else {
       requireThat(previous.advertisingBudget?.daily && normalized.advertisingBudget?.daily,
@@ -1153,7 +1156,11 @@ export class NativeProvider implements ProviderPort {
       }
       const { name: _name, status: _status, ...expected } = plan.adset;
       expected.start_time = new Date(expected.start_time).getTime();
-      expected.end_time = new Date(expected.end_time).getTime();
+      if (expected.end_time !== undefined) expected.end_time = new Date(expected.end_time).getTime();
+      else requireThat(s.adset.end_time == null, "unexpected_provider_end_time");
+      if (!plan.campaign.spend_cap) requireThat(s.campaign.spend_cap == null || Number(s.campaign.spend_cap) === 0, "unexpected_provider_spend_cap");
+      const unusedBudget = plan.adset.daily_budget ? s.adset.lifetime_budget : s.adset.daily_budget;
+      requireThat(unusedBudget == null || Number(unusedBudget) === 0, "unexpected_provider_budget_mode");
       requireThat(
         subset(
           {
@@ -1270,18 +1277,21 @@ export class NativeProvider implements ProviderPort {
         s.campaign.objectiveType === plan.campaign.objectiveType &&
         s.campaign.type === plan.campaign.type && s.campaign.costType === plan.campaign.costType &&
         s.campaign.format === plan.campaign.format &&
-        linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode) &&
+        (plan.group.totalBudgetCents === undefined ? s.group.totalBudget == null :
+          linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode)) &&
+        (plan.group.endAt !== undefined || s.group.runSchedule?.end == null) &&
+        (plan.campaign.endAt !== undefined || s.campaign.runSchedule?.end == null) &&
           subset(
             s.campaign.targetingCriteria,
             plan.campaign.targetingCriteria,
           ) &&
           subset(s.group.runSchedule, {
             start: plan.group.startAt,
-            end: plan.group.endAt,
+            ...(plan.group.endAt === undefined ? {} : { end: plan.group.endAt }),
           }) &&
           subset(s.campaign.runSchedule, {
             start: plan.campaign.startAt,
-            end: plan.campaign.endAt,
+            ...(plan.campaign.endAt === undefined ? {} : { end: plan.campaign.endAt }),
           }) &&
           s.campaign.campaignGroup ===
             `urn:li:sponsoredCampaignGroup:${ids.group}` &&

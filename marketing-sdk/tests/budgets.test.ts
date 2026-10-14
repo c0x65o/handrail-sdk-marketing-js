@@ -71,12 +71,12 @@ test("budget pacing uses current observed spend, null is unknown, and legacy lif
       observedAt: new Date(now - 1000).toISOString(), todayMinor: 0, periodMinor: null, source: "fixture" as const, receipt: "missing-period" };
     await budget.observe("p", observation);
     await assert.rejects(budget.reserve(c, operation(c)), /current_observed_spend_required/);
-    await assert.rejects(budget.reserve({ ...c, material: { ...c.material, advertisingBudget: { lifetime: c.material.budget, daily: { currency: "USD", minor: -1 } } } }, operation(c)), /unsupported_money/);
+    await assert.rejects(budget.reserve({ ...c, material: { ...c.material, advertisingBudget: { lifetime: c.material.budget!, daily: { currency: "USD", minor: -1 } } } }, operation(c)), /unsupported_money/);
     await budget.observe("p", { ...observation, observedAt: new Date(now).toISOString(), todayMinor: 500, periodMinor: 1000, receipt: "current" });
     await assert.rejects(budget.reserve(c, operation(c)), /advertising_budget_exceeded/);
     await assert.rejects(budget.reserve({ ...c, material: { ...c.material, advertisingBudget: undefined } }, operation(c)), /explicit_daily_budget_required/);
     await assert.rejects(budget.observe("p", observation), /stale_spend_observation/);
-    await assert.rejects(budget.reserve({ ...c, material: { ...c.material, advertisingBudget: { lifetime: c.material.budget, daily: { currency: "USD", minor: 900 } } } }, operation(c)), /campaign_budget_ceiling/);
+    await assert.rejects(budget.reserve({ ...c, material: { ...c.material, advertisingBudget: { lifetime: c.material.budget!, daily: { currency: "USD", minor: 900 } } } }, operation(c)), /campaign_budget_ceiling/);
     assert.deepEqual(await s.list("p", "advertisingBudgetReservation"), []);
     await budget.configure({ ...p, dailyCeilingMinor: 2000 });
     // Daily capacity now fits, but observed period spend plus 2 days does not.
@@ -173,9 +173,22 @@ test("review: UTC native reservations retain incurred exposure after pause/reduc
     assert.equal((await store.get<AdvertisingBudgetReservation>("p", "advertisingBudgetReservation", original.id)).state, "active");
     await assert.rejects(ledger.reserve(c, { ...op, id: "retry" }), /requires_reconciliation/);
     await assert.rejects(ledger.configure({ ...p, dailyCeilingMinor: 9000 }), /unsettled_reservations/);
-    const lifetimeOnly = { ...campaign("p", "lifetime"), material: { ...c.material, advertisingBudget: { lifetime: c.material.budget } } };
+    const lifetimeOnly = { ...campaign("p", "lifetime"), material: { ...c.material, advertisingBudget: { lifetime: c.material.budget! } } };
     await assert.rejects(ledger.reserve(lifetimeOnly, operation(lifetimeOnly)), /explicit_daily_budget_required/);
     const meta = { ...campaign("p", "meta"), material: { ...c.material, audience: { provider: "meta" as const, locations: ["US"], expansion: false as const } } };
     await assert.rejects(ledger.reserve(meta, operation(meta)), /meta_daily_budget_semantics_unverified/);
   } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('retaining daily-only or open schedules never invents bounded spending authority',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'open-budget-')),store=await testStore(join(dir,'db'));
+  try{
+    await store.db.prepare('INSERT INTO projects VALUES(?,?)').run('p','fixture');
+    const budgets=new AdvertisingBudgets(store,()=>now,'fixture');await budgets.configure(policy('p'));
+    const c=campaign('p');c.material.budget=null;delete c.material.advertisingBudget!.lifetime;
+    await assert.rejects(budgets.reserve(c,operation(c)),/bounded_lifetime_authority_required/);
+    c.material.endAt=null;
+    await assert.rejects(budgets.reserve(c,operation(c)),/campaign_outside_budget_period/);
+    assert.equal((await store.list('p','advertisingBudgetReservation')).length,0);
+  }finally{await store.close();rmSync(dir,{recursive:true,force:true});}
 });

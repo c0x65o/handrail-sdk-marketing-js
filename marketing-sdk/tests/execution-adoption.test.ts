@@ -31,7 +31,7 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     settings: fixtureSettings(providerName, grant.accountId, '42'), destination: 'https://example.com', destinationDigest: 'a'.repeat(64),
     assetIds: [asset.id], audience: { provider: 'meta', locations: ['US'], ageMin: 25, ageMax: 54, expansion: false },
     budget: { currency: 'USD', minor: 42000 }, startAt: '2026-10-01T00:00:00Z', endAt: '2026-11-01T00:00:00Z', timezone: 'UTC' };
-  if(providerName==='linkedin'){material.audience={provider:'linkedin',locations:['urn:li:geo:1'],expansion:false};material.advertisingBudget={lifetime:material.budget,daily:{currency:'USD',minor:3000}};}
+  if(providerName==='linkedin'){material.audience={provider:'linkedin',locations:['urn:li:geo:1'],expansion:false};material.advertisingBudget={lifetime:material.budget!,daily:{currency:'USD',minor:3000}};}
   await store.put('p', 'grant', grant.id, grant); await store.put('p', 'asset', asset.id, asset);
   const row = (kind: HistoricalRecord['kind'], sourceId: string, payload: HistoricalRecord['payload']): HistoricalRecord => ({
     kind, sourceId, sourceRevision: '1', recordedAt: null, collectedAt: '2026-10-14T00:00:00Z', provenance: 'legacy_observation',
@@ -71,6 +71,19 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     deny: () => { denied = true; }, fail: () => { failCommit = true; }, reads: () => reads,
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
+
+for (const name of ['meta','linkedin'] as const) test(`${name} daily-only open-ended adoption preserves absent caps and schedule without authority`, async () => {
+  const f=await fixture(name);try {
+    f.candidate.material.budget=null; f.candidate.material.endAt=null;
+    f.candidate.material.advertisingBudget={daily:{currency:'USD',minor:500}};
+    await f.service.adopt(f.principal,'p','native','daily-original');
+    const c=await f.store.get<Campaign>('p','campaign','native');
+    assert.equal(c.material.budget,null);assert.equal(c.material.endAt,null);
+    assert.deepEqual(c.material.advertisingBudget,{daily:{currency:'USD',minor:500}});
+    assert.deepEqual(c.preparedMaterial,c.material);assert.equal(c.state,'paused');
+    for(const kind of ['decision','packet','operation','advertisingBudgetReservation'])assert.equal((await f.store.list('p',kind)).length,0);
+  } finally {await f.close();}
+});
 
 test('adoption persists one stopped SDK owner, original provider IDs and history without grants, approvals, events or writes', async () => {
   const f = await fixture(); try {

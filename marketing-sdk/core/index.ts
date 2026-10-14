@@ -28,9 +28,9 @@ export interface Money {
   currency: string;
   minor: number;
 }
-/** Legacy Material.budget remains the lifetime approval; daily is never inferred. */
+/** Daily and lifetime terms are independent; absent lifetime means no lifetime cap. */
 export interface AdvertisingBudget {
-  lifetime: Money;
+  lifetime?: Money;
   daily?: Money;
   campaignDailyCeiling?: Money;
   campaignLifetimeCeiling?: Money;
@@ -68,12 +68,20 @@ export interface Material {
   destinationDigest: string;
   assetIds: string[];
   audience: Audience;
-  budget: Money;
+  /** Explicit lifetime amount, or null for a daily-only campaign. */
+  budget: Money | null;
   advertisingBudget?: AdvertisingBudget;
   purpose?: MarketingPurpose;
   startAt: string;
-  endAt: string;
+  /** Null preserves an open-ended provider schedule. */
+  endAt: string | null;
   timezone: string;
+}
+export function materialCurrency(m: Pick<Material, "budget" | "advertisingBudget">): string {
+  return m.budget?.currency ?? m.advertisingBudget?.daily?.currency ?? "";
+}
+export function materialEndTime(m: Pick<Material, "endAt">): number {
+  return m.endAt === null ? Infinity : Date.parse(m.endAt);
 }
 export interface Campaign {
   id: string;
@@ -97,7 +105,7 @@ export type DraftMaterial = Omit<Partial<Material>, "name" | "audience" | "budge
   settings?: PartialSettings<ProviderSettings>;
   name: string;
   audience?: Partial<Audience>;
-  budget?: Partial<Money>;
+  budget?: Partial<Money> | null;
 };
 /** Project-owned local document, never a provider campaign or an account grant. */
 export interface CampaignDraft {

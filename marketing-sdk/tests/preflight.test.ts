@@ -44,7 +44,7 @@ test(`delayed prerequisite reads reject independent ${change} changes`,async()=>
     if(["copy","destination","budget","purpose"].includes(change)) {const c=await other.get<Campaign>("p","campaign",f.c.id);
       if(change==="copy")c.material.headline="Changed while reading";
       if(change==="destination")c.material.destination="https://example.com/changed";
-      if(change==="budget")c.material.budget.minor++;
+      if(change==="budget")c.material.budget!.minor++;
       if(change==="purpose")c.material.purpose="recruitment";
       await other.put("p","campaign",c.id,c);
     }else if(change==="bytes") {await other.db.prepare("UPDATE blobs SET bytes=? WHERE project_id=? AND digest=?").run(Buffer.from("changed"),"p",f.asset.digest);}

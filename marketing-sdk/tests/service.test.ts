@@ -457,7 +457,7 @@ for (const change of [
         });
       } else {
         const m = structuredClone(c.material);
-        if (change === "budget") m.budget.minor++;
+        if (change === "budget") m.budget!.minor++;
         if (change === "targeting") m.audience.ageMin = 30;
         if (change === "copy") m.headline = "Changed";
         await t.store.put("qa-alpha", "campaign", c.id, {
@@ -994,7 +994,7 @@ for (const provider of ["google", "linkedin"] as const)
           : {}),
       };
       if (provider === "linkedin") {
-        m.advertisingBudget = { lifetime: m.budget, daily: { currency: "USD", minor: 600 } };
+        m.advertisingBudget = { lifetime: m.budget!, daily: { currency: "USD", minor: 600 } };
         const year = new Date(time).getUTCFullYear();
         const from = `${year}-01-01T00:00:00Z`, until = `${year + 1}-01-01T00:00:00Z`;
         await t.service.advertisingBudgets.configure({ id: "project-budget", projectId: "qa-alpha", scope: "project", projectIds: ["qa-alpha"],
@@ -1189,20 +1189,20 @@ test("trusted source retries preserve attribution; submissions, people, QA and a
     assert.equal(results.excludedTestEvents?.value, 2);
     assert.equal(results.spendMinor.value, null);
     await t.store.put("qa-alpha", "metrics", "studio-measurement", { id:"studio-measurement",projectId:"qa-alpha",campaignId:c.id,
-      from:window.from,until:window.until,timezone:c.material.timezone,currency:c.material.budget.currency,observedAt:new Date(time).toISOString(),source:"fixture",
+      from:window.from,until:window.until,timezone:c.material.timezone,currency:c.material.budget!.currency,observedAt:new Date(time).toISOString(),source:"fixture",
       impressions:1000,clicks:25,providerConversions:7,spendMinor:100 });
     const measured=await t.service.results(t.admin,"qa-alpha",window);
     assert.equal(measured.ctr.value,0.025);assert.equal(measured.ctr.value!*100,2.5);
     assert.equal(measured.completedSubmissions?.value,2);assert.equal(measured.uniquePeople?.value,1);
     assert.equal(measured.providerConversions.value,null);assert.equal(measured.applicantRequests?.value,1);
     await t.store.put("qa-alpha", "metrics", "studio-measurement", { id:"studio-measurement",projectId:"qa-alpha",campaignId:c.id,
-      from:"2020-01-01T00:00:00Z",until:"2020-01-02T00:00:00Z",timezone:c.material.timezone,currency:c.material.budget.currency,observedAt:new Date(time).toISOString(),source:"fixture",impressions:1000,clicks:25,providerConversions:7,spendMinor:100 });
+      from:"2020-01-01T00:00:00Z",until:"2020-01-02T00:00:00Z",timezone:c.material.timezone,currency:c.material.budget!.currency,observedAt:new Date(time).toISOString(),source:"fixture",impressions:1000,clicks:25,providerConversions:7,spendMinor:100 });
     // An aggregate LinkedIn conversion number (or jobApplications) cannot become
     // a trusted completed MOU request, even when provider metrics are present.
     const aggregate = (await import("../server/providers.js")).summarizeMetrics([{ externalWebsiteConversions: "99", jobApplications: "500" }],
       { spend: "spend", impressions: "impressions", clicks: "clicks", conversions: "externalWebsiteConversions" }, 100);
     await t.store.put("qa-alpha", "metrics", "aggregate-only", { id: "aggregate-only", projectId: "qa-alpha", campaignId: c.id,
-      from: window.from, until: window.until, timezone: c.material.timezone, currency: c.material.budget.currency, observedAt: new Date(time).toISOString(), source: "fixture", ...aggregate });
+      from: window.from, until: window.until, timezone: c.material.timezone, currency: c.material.budget!.currency, observedAt: new Date(time).toISOString(), source: "fixture", ...aggregate });
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).providerConversions.value, null);
     assert.equal((await t.service.results(t.admin, "qa-alpha", window)).applicantRequests?.value, 1);
     await t.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind=?").run("qa-alpha", "validatedCoverage");
@@ -1261,7 +1261,7 @@ async function budgeted(t: Awaited<ReturnType<typeof setupTest>>) {
   await ready(t);
   const base = await campaign(t);
   const c = await t.service.saveCampaign(t.admin, "qa-alpha", { id: base.id, expectedRevision: base.revision, grantId: base.grantId,
-    material: { ...base.material, advertisingBudget: { lifetime: base.material.budget, daily: { currency: "USD", minor: 500 } } } });
+    material: { ...base.material, advertisingBudget: { lifetime: base.material.budget!, daily: { currency: "USD", minor: 500 } } } });
   const p: AdvertisingBudgetPolicy = { id: "review-policy", projectId: "qa-alpha", projectIds: ["qa-alpha"], scope: "project",
     currency: "USD", timezone: c.material.timezone,
     from: defaultCampaignSchedule(c.material.timezone, new Date(time - 2 * 86400000)).startAt,
@@ -1392,7 +1392,7 @@ for (const action of ["role", "session"] as const) test(`report HTTP read releas
       else await side.db.prepare("UPDATE sessions SET revoked_at=? WHERE token_hash=?").run(new Date().toISOString(), t.admin.sessionTokenHash!);
       return value;
     };
-    await assert.rejects(t.service.call(t.admin, "qa-alpha", "syncMetrics", {campaignId:c.id,from:c.material.startAt,until:c.material.endAt}), /session_authority_changed|authentication_required/);
+    await assert.rejects(t.service.call(t.admin, "qa-alpha", "syncMetrics", {campaignId:c.id,from:c.material.startAt,until:c.material.endAt!}), /session_authority_changed|authentication_required/);
     assert.equal((await t.store.list("qa-alpha", "metrics")).length, 0);
   } finally { await side.close(); await t.close(); }
 });
@@ -1437,7 +1437,7 @@ test("paused edits retain provider identities and use update with durable unknow
     const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
     await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
     const edited = await t.service.saveCampaign(t.admin, "qa-alpha", { id: c.id, expectedRevision: c.revision, grantId: c.grantId,
-      material: { ...c.material, budget: { ...c.material.budget, minor: c.material.budget.minor + 100 } } });
+      material: { ...c.material, budget: { ...c.material.budget!, minor: c.material.budget!.minor + 100 } } });
     assert.deepEqual(edited.receipt, c.receipt); assert.deepEqual(edited.preparedMaterial, c.material);
     assert.equal(edited.state, "draft");
     await assert.rejects(t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "unsupported-update" }), /existing_campaign_update_unavailable/);

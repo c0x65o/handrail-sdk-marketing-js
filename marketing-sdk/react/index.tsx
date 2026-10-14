@@ -1,3 +1,4 @@
+import { materialCurrency } from "../core/index.js";
 import { AudienceClientContext } from "./audience.js";
 import { CampaignPrerequisites } from "./preflight.js";
 import { MarketingTracking, TrackingReadiness } from "./tracking.js";
@@ -74,24 +75,23 @@ export function MaterialReview({
           {material.settings.conversion && <><dt>Exact conversion binding</dt><dd>{material.settings.provider === "meta" ? `${identityLabel("pixel", material.settings.conversion!.pixelId, "Selected Pixel")} · ${identityLabel("conversion", material.settings.conversion!.customConversionId, "Selected custom conversion")} · ${material.settings.conversion!.event}` : `${identityLabel("conversion", material.settings.conversion!.id, "Selected conversion")} · ${material.settings.conversion!.type} · ${material.settings.conversion!.event}`}</dd></>}
           <dt>Identity and placements</dt><dd>{material.settings.provider === "meta" ? <>{identityLabel("page", material.settings.identity.pageId, "Selected Page (name not supplied)")}{material.settings.identity.instagramUserId && ` · ${identityLabel("instagram", material.settings.identity.instagramUserId, "Selected Instagram identity (name not supplied)")}`}</> : identityLabel("organization", material.settings.identity.organizationId, "Selected organization (name not supplied)")} · {material.settings.placements.map(value => value.replaceAll("_", " ")).join(", ")}</dd>
           <dt>Audience</dt><dd>{material.audience.provider === "meta" ? material.audience.locations.map(code => /^[A-Z]{2}$/.test(code) ? new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? "Unresolved country" : "Unresolved country").join(", ") : material.audience.locations.join(", ")}{material.audience.ageMin !== undefined && ` · ages ${material.audience.ageMin}–${material.audience.ageMax}`} · expansion off</dd>
-          {material.settings.provider === "linkedin" && <><dt>Bidding</dt><dd>{material.settings.bid.mode} · {material.settings.bid.costType}{material.settings.bid.mode === "manual" && ` · ${material.budget.currency} ${material.settings.bid.amountMinor / 100}`}</dd></>}
+          {material.settings.provider === "linkedin" && <><dt>Bidding</dt><dd>{material.settings.bid.mode} · {material.settings.bid.costType}{material.settings.bid.mode === "manual" && ` · ${materialCurrency(material)} ${material.settings.bid.amountMinor / 100}`}</dd></>}
           <dt>Targeting details</dt><dd>{material.settings.provider === "meta" ? <>
             Languages: {material.settings.targeting.languages.map(x => x.label).join(", ") || "all"}. Interests: {material.settings.targeting.interestGroups.map(group => `(${group.map(x => x.label).join(" OR ")})`).join(" AND ") || "none"}. Excluded: {material.settings.targeting.excludedCustomAudiences.map(x => x.label).join(", ") || "none"}.
           </> : (["include", "exclude"] as const).map(side => <p key={side}>{side}: {Object.entries(material.settings!.provider === "linkedin" ? material.settings!.targeting[side] : {}).map(([facet, options]) => `${facet}: (${(options as { id: string; label: string }[]).map(x => x.label).join(" OR ")})`).join(side === "include" ? " AND " : " OR ") || "none"}</p>)}</dd>
         </>}
         <dt>Lifetime media budget</dt>
         <dd>
-          {material.budget.currency} {(material.budget.minor / 100).toFixed(2)}{" "}
-          · excludes fees/taxes
+          {material.budget ? `${materialCurrency(material)} ${(material.budget.minor / 100).toFixed(2)} · excludes fees/taxes` : "No lifetime cap configured"}
         </dd>
         {material.advertisingBudget?.daily && <>
           <dt>Daily media budget</dt>
           <dd>{material.advertisingBudget.daily.currency} {(material.advertisingBudget.daily.minor / 100).toFixed(2)}</dd>
         </>}
-        {material.settings?.provider === "linkedin" && <><dt>Required daily reservation exposure (150%, bounded by lifetime)</dt><dd>{material.budget.currency} {((dailyExposureMinor(material) || 0) / 100).toFixed(2)}</dd></>}
+        {material.settings?.provider === "linkedin" && <><dt>Required daily reservation exposure (150%, bounded by lifetime)</dt><dd>{materialCurrency(material)} {((dailyExposureMinor(material) || 0) / 100).toFixed(2)}</dd></>}
         <dt>Delivery window</dt>
         <dd>
-          {material.startAt} → {material.endAt} (exclusive)
+          {material.startAt} → {material.endAt ?? "No end date"}{material.endAt && " (exclusive)"}
           <br />
           {material.timezone}
         </dd>
@@ -379,7 +379,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
   }
   const window = campaign && (reportWindow === "campaign" || chosenWindow)
     ? { campaignId: campaign.id, from: reportWindow === "campaign" ? campaign.material.startAt : chosenWindow!.from,
-        until: reportWindow === "campaign" ? campaign.material.endAt : chosenWindow!.until } : null;
+        until: reportWindow === "campaign" ? campaign.material.endAt ?? new Date().toISOString() : chosenWindow!.until } : null;
   if (!data)
     return (
       <main className="loading">
@@ -1002,7 +1002,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                 <h2>Measured outcomes · {campaign.material.purpose || "acquisition"}</h2>
                 <p>
                   {campaign.material.timezone} ·{" "}
-                  {campaign.material.budget.currency}. Submissions, people and paid customers remain distinct.
+                  {materialCurrency(campaign.material)}. Submissions, people and paid customers remain distinct.
                 </p>
                 <label>Reporting window
                   <select aria-label="Reporting window" value={reportWindow} onChange={e => { setReportWindow(e.target.value); setResult(null); }}>

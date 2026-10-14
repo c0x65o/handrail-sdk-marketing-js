@@ -1,3 +1,4 @@
+import { materialCurrency } from "../core/index.js";
 import { assertTextPlanningCapability, type NativeTextPlanning } from './text-planning.js';
 import type { DraftGenerationPort } from "./studio-generation.js";
 import type { DraftGenerationJob, GenerationGrant } from "../core/index.js";
@@ -301,7 +302,7 @@ export class CampaignStudio {
       requireThat(chosen&&chosen.revision===d.studio.selection?.revision&&chosen.briefDigest===d.studio.briefDigest,'option_stale');
       const m=structuredClone(d.material) as Material; material(m,g.provider);
       const blockers=capabilityBlockers(m,g);requireThat(!blockers.length,blockers[0]??'unsupported_capability');
-      requireThat(m.budget.currency===g.currency&&m.timezone===g.timezone,'account_currency_or_timezone_mismatch');
+      requireThat(materialCurrency(m)===g.currency&&m.timezone===g.timezone,'account_currency_or_timezone_mismatch');
       const dest=await this.store.get<{url:string;source:string}>(project,'destination',m.destinationDigest);
       requireThat(dest.url===m.destination&&(this.mode==='fixture'||dest.source==='public_https'),'destination_snapshot_mismatch');
       const binding=digest([d.id,d.revision,g.provider,g.accountId]);

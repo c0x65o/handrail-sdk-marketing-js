@@ -46,7 +46,7 @@ export function draftMaterial(value: DraftMaterial) {
     typeof v === "string" && v.length <= max, "invalid_draft_text", 422);
   for (const [key, max] of Object.entries({ headline: 150, body: 3000, destination: 2000,
     destinationDigest: 64, startAt: 40, endAt: 40, timezone: 100 })) {
-    if (Object.hasOwn(value, key)) optionalText(value[key as keyof DraftMaterial], max);
+    if (Object.hasOwn(value, key) && !(key === "endAt" && value.endAt === null)) optionalText(value[key as keyof DraftMaterial], max);
   }
   const strings = (v: unknown, count: number, max: number) => {
     requireThat(Array.isArray(v) && v.length <= count, "invalid_draft_list", 422);
@@ -54,7 +54,7 @@ export function draftMaterial(value: DraftMaterial) {
   };
   for (const key of ["assetIds", "searchHeadlines", "searchDescriptions"] as const)
     if (Object.hasOwn(value, key)) strings(value[key], key === "assetIds" ? 3 : 15, 200);
-  if (Object.hasOwn(value, "budget")) {
+  if (Object.hasOwn(value, "budget") && value.budget !== null) {
     keys(value.budget, ["currency", "minor"]);
     if (Object.hasOwn(value.budget, "currency")) optionalText(value.budget.currency, 3);
     if (Object.hasOwn(value.budget, "minor")) requireThat(Number.isSafeInteger(value.budget.minor) &&
@@ -211,15 +211,17 @@ export function material(value: Material, provider: string) {
     422,
   );
   value.assetIds.forEach((x) => text(x));
-  keys(value.budget, ["currency", "minor"]);
-  requireThat(
-    ["USD", "EUR", "GBP", "CAD", "AUD"].includes(value.budget.currency) &&
-      Number.isSafeInteger(value.budget.minor) &&
-      value.budget.minor > 0 &&
-      value.budget.minor <= 1e9,
-    "unsupported_money",
-    422,
-  );
+  if (value.budget !== null) {
+    keys(value.budget, ["currency", "minor"]);
+    requireThat(
+      ["USD", "EUR", "GBP", "CAD", "AUD"].includes(value.budget.currency) &&
+        Number.isSafeInteger(value.budget.minor) &&
+        value.budget.minor > 0 &&
+        value.budget.minor <= 1e9,
+      "unsupported_money",
+      422,
+    );
+  } else requireThat(value.advertisingBudget?.daily, "daily_budget_required_without_lifetime", 422);
   requireThat(value.purpose === undefined || ["acquisition", "recruitment"].includes(value.purpose), "invalid_purpose", 422);
   const blockers = capabilityBlockers(value);
   requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
@@ -227,13 +229,14 @@ export function material(value: Material, provider: string) {
   if (value.advertisingBudget) {
     advertisingBudget(value.advertisingBudget);
     requireThat(!value.advertisingBudget.campaignDailyCeiling || (dailyExposureMinor(value) !== null && dailyExposureMinor(value)! <= value.advertisingBudget.campaignDailyCeiling.minor), "campaign_daily_exposure_exceeded", 422);
-    requireThat(value.advertisingBudget.lifetime.currency === value.budget.currency &&
-      value.advertisingBudget.lifetime.minor === value.budget.minor, "legacy_lifetime_budget_mismatch", 422);
+    requireThat(value.budget === null ? value.advertisingBudget.lifetime === undefined :
+      value.advertisingBudget.lifetime?.currency === value.budget.currency && value.advertisingBudget.lifetime?.minor === value.budget.minor, "legacy_lifetime_budget_mismatch", 422);
   }
   instant(value.startAt);
-  instant(value.endAt);
+  if (value.endAt !== null) instant(value.endAt);
+  else requireThat(value.advertisingBudget?.daily, "open_schedule_requires_daily_budget", 422);
   requireThat(
-    Date.parse(value.endAt) > Date.parse(value.startAt),
+    value.endAt === null || Date.parse(value.endAt) > Date.parse(value.startAt),
     "invalid_delivery_window",
     422,
   );
@@ -246,14 +249,16 @@ export function material(value: Material, provider: string) {
 }
 
 export function advertisingBudget(value: AdvertisingBudget) {
+  const terms: AdvertisingBudget = value;
   keys(value, ["lifetime", "daily", "campaignDailyCeiling", "campaignLifetimeCeiling"]);
-  requireThat(value.lifetime, "lifetime_budget_required", 422);
+  requireThat(terms.lifetime || terms.daily, "advertising_budget_required", 422);
+  const currency = (terms.lifetime ?? terms.daily)!.currency;
   for (const amount of Object.values(value)) {
     keys(amount, ["currency", "minor"]);
     requireThat(["USD", "EUR", "GBP", "CAD", "AUD"].includes(String(amount.currency)) &&
-      amount.currency === value.lifetime.currency && Number.isSafeInteger(amount.minor) &&
+      amount.currency === currency && Number.isSafeInteger(amount.minor) &&
       Number(amount.minor) > 0 && Number(amount.minor) <= 1e9, "unsupported_money", 422);
   }
-  requireThat(!value.campaignDailyCeiling || (value.daily && value.daily.minor <= value.campaignDailyCeiling.minor), "campaign_daily_ceiling_exceeded", 422);
-  requireThat(!value.campaignLifetimeCeiling || value.lifetime.minor <= value.campaignLifetimeCeiling.minor, "campaign_lifetime_ceiling_exceeded", 422);
+  requireThat(!terms.campaignDailyCeiling || (terms.daily && terms.daily.minor <= terms.campaignDailyCeiling.minor), "campaign_daily_ceiling_exceeded", 422);
+  requireThat(!terms.campaignLifetimeCeiling || (terms.lifetime && terms.lifetime.minor <= terms.campaignLifetimeCeiling.minor), "campaign_lifetime_ceiling_exceeded", 422);
 }

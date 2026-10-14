@@ -211,7 +211,7 @@ async function native(provider: "meta" | "linkedin") {
     if (state.loseRead && o._kind === "creatives") { state.loseRead = false; throw new Error("synthetic lost read"); }
     const { _kind, ...fields } = o; return response(fields, _kind);
   };
-  const port = new NativeProvider(provider, { use: async (_g, fn) => fn({ accessToken: "synthetic", clientId: "synthetic", clientSecret: "synthetic" }) }, store, fetcher);
+  const port = new NativeProvider(provider, { useReadOnly: async (_g, guard, fn) => { await guard(); return fn({ accessToken: "synthetic", clientId: "synthetic", clientSecret: "synthetic", expiresAt: Date.now()+60000, scopes: ["read"] }); }, use: async (_g, fn) => fn({ accessToken: "synthetic", clientId: "synthetic", clientSecret: "synthetic" }) }, store, fetcher);
   return { ...fixture, state, port, store, close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 for (const provider of ["meta", "linkedin"] as const) test(`${provider} every offered combination has full native initial readback, repeat activation and read-only recovery`, async () => {
@@ -559,7 +559,7 @@ test("Meta v1/v2/v3 receipts retain exact inspection digests and safety pause, n
 test("Meta daily remains denied by native prepare/activate despite exact account evidence; v4 does not qualify REACH normalization", async () => {
   const t = await native("meta");
   try {
-    t.c.material.advertisingBudget = { lifetime: t.c.material.budget, daily: { currency: "USD", minor: 3000 } };
+    t.c.material.advertisingBudget = { lifetime: t.c.material.budget!, daily: { currency: "USD", minor: 3000 } };
     eligible(t.c, t.g);
     // Planning can represent a denied daily request; no budget rewrite or new cap is inferred.
     const plan: any = t.port.plan(t.c, t.g, [t.a]);
@@ -614,7 +614,7 @@ test("Meta v4 SQL operation retains unknown HTTP effects, forbids retry replay a
     assert.equal(t.state.writes, writes);
     // The same headless live service continues to deny daily preparation at dispatch.
     const daily = { ...t.c, id: "daily", material: { ...t.c.material,
-      advertisingBudget: { lifetime: t.c.material.budget, daily: { currency: "USD", minor: 3000 } } } };
+      advertisingBudget: { lifetime: t.c.material.budget!, daily: { currency: "USD", minor: 3000 } } } };
     await t.store.put("p", "asset", t.a.id, { ...t.a, campaignId: daily.id });
     eligible(daily, t.g); await t.store.put("p", "grant", t.g.id, t.g); await t.store.put("p", "campaign", daily.id, daily);
     const denied = await server.call(principal, "p", "prepare", { campaignId: daily.id, requestKey: "daily" });
@@ -622,4 +622,52 @@ test("Meta v4 SQL operation retains unknown HTTP effects, forbids retry replay a
     assert.equal(blocked.state, "blocked"); assert.equal(blocked.reason, "meta_daily_budget_semantics_unverified");
     assert.equal(t.state.writes, writes);
   } finally { await t.close(); }
+});
+
+for (const name of ['meta','linkedin'] as const) test(`${name} read-only inspection preserves daily-only open schedules and rejects invented caps/end dates`,async()=>{
+  const t=await native(name);try {
+    eligible(t.c,t.g);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],'original',()=>{},()=>{});
+    const keys=name==='meta'?['campaign','adset','creative','ad','image']:['group','campaign','creative','image'];
+    const ids=Object.fromEntries(keys.map(k=>[k,receipt.ids[k]!]));
+    t.c.material.budget=null;t.c.material.endAt=null;t.c.material.advertisingBudget={daily:{currency:'USD',minor:500}};
+    if(name==='meta'){
+      const row=t.state.objects.get(ids.adset!);delete row.lifetime_budget;delete row.end_time;row.daily_budget='500';
+      delete t.state.objects.get(ids.campaign!).spend_cap;
+    }else{
+      const group=t.state.objects.get(ids.group!),campaign=t.state.objects.get(ids.campaign!);
+      delete group.totalBudget;delete group.runSchedule.end;delete campaign.runSchedule.end;
+      campaign.dailyBudget={amount:'5.00',currencyCode:'USD'};
+    }
+    const writes=t.state.writes;
+    const actual=await t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}).catch(error=>{ throw new Error(`${error.code}: ${JSON.stringify(t.state.requests.slice(-8))}`,{cause:error}); });
+    assert.equal(actual.candidateReceipt.intent,'paused');assert.equal(t.state.writes,writes);
+    for(const [key,id] of Object.entries(ids))assert.equal(actual.candidateReceipt.ids[key],id);
+    if(name==='meta'){
+      const row=t.state.objects.get(ids.adset!);row.end_time='2026-12-01T00:00:00Z';
+      await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/unexpected_provider_end_time/);delete row.end_time;
+      t.state.objects.get(ids.campaign!).spend_cap='50000';
+      await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/unexpected_provider_spend_cap/);
+    }else{
+      t.state.objects.get(ids.campaign!).runSchedule.end=Date.parse('2026-12-01T00:00:00Z');
+      await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_effective_material_mismatch/);
+    }
+    assert.equal(t.state.writes,writes);
+  }finally{await t.close();}
+});
+
+test('daily-only terms reject missing amounts, mixed currency and conflicting lifetime fields',()=>{
+  const {c,g,a}=sample('meta');c.material.budget=null;c.material.endAt=null;
+  c.material.advertisingBudget={daily:{currency:'USD',minor:500}};
+  const plan:any=providerPlan(c,g,[a]);
+  assert.equal(plan.adset.daily_budget,'500');assert.equal(Object.hasOwn(plan.adset,'end_time'),false);
+  assert.equal(Object.hasOwn(plan.adset,'lifetime_budget'),false);assert.equal(Object.hasOwn(plan.campaign,'spend_cap'),false);
+  for(const mutate of [
+    (x:Campaign)=>{delete x.material.advertisingBudget;},
+    (x:Campaign)=>{x.material.advertisingBudget!.daily!.minor=0;},
+    (x:Campaign)=>{x.material.advertisingBudget!.daily!.currency='EUR';},
+    (x:Campaign)=>{x.material.advertisingBudget!.lifetime={currency:'USD',minor:50000};},
+    (x:Campaign)=>{x.material.endAt='';},
+    (x:Campaign)=>{x.material.advertisingBudget!.campaignLifetimeCeiling={currency:'USD',minor:50000};},
+  ]){const changed=structuredClone(c);mutate(changed);assert.throws(()=>providerPlan(changed,g,[a]));}
 });

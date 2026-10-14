@@ -1,3 +1,4 @@
+import { materialCurrency, materialEndTime } from "../core/index.js";
 import { measurementAccountId } from "./measurement-collectors.js";
 import { saveMeasurementRevision, readMeasurementEvidence } from "./measurement.js";
 import type { AudienceContext, AudienceCommands, AudienceChoice, AudienceSelection, AudienceSearch } from "../core/audience.js";
@@ -538,7 +539,7 @@ export class MarketingServer {
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g);
       requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
-      requireThat(input.material.budget.currency === g.currency && input.material.timezone === g.timezone, "account_currency_or_timezone_mismatch");
+      requireThat(materialCurrency(input.material) === g.currency && input.material.timezone === g.timezone, "account_currency_or_timezone_mismatch");
       const old = input.id ? await this.store.get<Campaign>(project, "campaign", input.id) : null;
       const c: Campaign = { id: old?.id ?? id(), projectId: project, revision: (old?.revision ?? 0) + 1,
         grantId: g.id, creativeSetId: old?.creativeSetId ?? id(), ...(old?.draftOrigin ? { draftOrigin: old.draftOrigin } : {}),
@@ -589,7 +590,7 @@ export class MarketingServer {
       const blockers = capabilityBlockers(input.material, g);
       requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
       requireThat(
-        input.material.budget.currency === g.currency &&
+        materialCurrency(input.material) === g.currency &&
           input.material.timezone === g.timezone,
         "account_currency_or_timezone_mismatch",
       );
@@ -939,7 +940,7 @@ export class MarketingServer {
       await guard();
       const facts = await context.provider.inspectPrerequisites(c, context.g, context.assets, context.authority.account!, context.authority.identities, guard);
       await guard();
-      const expires = Math.min(Date.parse(attempt.createdAt) + 120000, context.authority.expiresAt, facts.expiresAt, session.expiresAt, Date.parse(c.material.endAt));
+      const expires = Math.min(Date.parse(attempt.createdAt) + 120000, context.authority.expiresAt, facts.expiresAt, session.expiresAt, materialEndTime(c.material));
       requireThat(expires > this.now(), "campaign_prerequisites_expired");
       return await this.connections.sessionAuthority.withLiveSessions(context.authority.sessions, () => this.tracking.withCampaignConfiguration(context.tracking, () => this.store.transaction(async () => {
         await guard();
@@ -1035,7 +1036,7 @@ export class MarketingServer {
       const expires = Math.min(
         this.now() + 15 * 60000,
         Date.parse(g.expiresAt),
-        Date.parse(c.material.endAt),
+        materialEndTime(c.material),
       );
       requireThat(expires > this.now(), "delivery_window_ended");
       const tracking = await this.packetTracking(project, c);
@@ -2125,7 +2126,7 @@ export class MarketingServer {
     // Report-authorized network reads never hold database/session locks.
     const values = await this.providers[g.provider].metrics(c, g, input.from, input.until);
     return this.reportGuard(p, session, true, async () => {
-      requireThat(values.currency === c.material.budget.currency && values.timezone === c.material.timezone && values.from === input.from && values.until === input.until, "metrics_scope_mismatch");
+      requireThat(values.currency === materialCurrency(c.material) && values.timezone === c.material.timezone && values.from === input.from && values.until === input.until, "metrics_scope_mismatch");
       const currentGrant = await this.grant(project, g.id, "report");
       requireThat(digest(currentGrant) === digest(g) && (await this.store.get<Campaign>(project, "campaign", c.id)).revision === c.revision, "metrics_scope_changed");
       const { measurement, ...metrics } = values;
@@ -2155,7 +2156,7 @@ export class MarketingServer {
         "campaign",
         input.campaignId,
       );
-      const currency = c.material.budget.currency;
+      const currency = materialCurrency(c.material);
       const snap = (await this.store.list<Metrics>(project, "metrics"))
         .filter(
           (m) =>

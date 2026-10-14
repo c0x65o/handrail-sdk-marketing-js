@@ -272,7 +272,7 @@ test("provider-specific mappings: no silent targeting translation; hard total bu
       ...c,
       material: {
         ...c.material,
-        advertisingBudget: { lifetime: c.material.budget, daily: { currency: "USD", minor: 3000 } },
+        advertisingBudget: { lifetime: c.material.budget!, daily: { currency: "USD", minor: 3000 } },
         audience: {
           provider: "linkedin",
           locations: ["urn:li:geo:103644278"],

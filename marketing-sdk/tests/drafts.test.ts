@@ -156,3 +156,15 @@ test("public HTTP client authenticates draft save/read/edit; session revocation 
     await f.store.close(); rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+test('draft persistence preserves explicitly absent lifetime caps and end dates',async()=>{
+  const f=await fixture();try{
+    const service=MarketingServer.unconnected(f.store);
+    const material={name:'Original daily-only terms',budget:null,endAt:null,advertisingBudget:{daily:{currency:'USD',minor:500}}};
+    const saved=await service.call(f.principal,'p','saveDraft',{requestKey:'open-original',material});
+    assert.deepEqual(saved.material,material);
+    const workspace=await service.call(f.principal,'p','workspace',{});
+    assert.deepEqual(workspace.drafts.find(d=>d.id===saved.id)?.material,material);
+    assert.equal(workspace.grants.length,0);assert.equal(workspace.campaigns.length,0);
+  }finally{await f.store.close();rmSync(f.dir,{recursive:true,force:true});}
+});

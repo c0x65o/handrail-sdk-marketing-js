@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { defaultCampaignSchedule, completedCampaignWindow } from "../react/schedule.js";
 
+test('open-ended campaigns report only completed provider days through the actual current date',()=>{
+  assert.deepEqual(completedCampaignWindow('2026-10-01T05:00:00Z',null,'America/Chicago',new Date('2026-10-14T23:00:00Z')),
+    {from:'2026-10-01T05:00:00.000Z',until:'2026-10-14T05:00:00.000Z'});
+});
+
 for (const [name, zone, now, startAt, endAt] of [
   ["staging UTC/local rollover", "America/Chicago", "2026-09-27T03:50:00Z", "2026-09-27T05:00:00.000Z", "2026-10-04T05:00:00.000Z"],
   ["positive offset and year rollover", "Asia/Tokyo", "2026-12-31T03:50:00Z", "2026-12-31T15:00:00.000Z", "2027-01-07T15:00:00.000Z"],

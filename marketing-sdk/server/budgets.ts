@@ -1,3 +1,4 @@
+import { materialCurrency, materialEndTime } from "../core/index.js";
 import { dailyExposureMinor } from "../core/index.js";
 import type { Campaign, Operation } from "../core/index.js";
 import { Store, digest, requireThat } from "./store.js";
@@ -98,16 +99,17 @@ export class AdvertisingBudgets {
   private async check(p: AdvertisingBudgetPolicy, c: Campaign, own?: AdvertisingBudgetReservation) {
     const at = this.now(), daily = c.material.advertisingBudget?.daily;
     requireThat(at >= Date.parse(p.from) && at < Date.parse(p.until), "budget_period_not_current");
-    requireThat(Date.parse(c.material.startAt) >= Date.parse(p.from) && Date.parse(c.material.endAt) <= Date.parse(p.until), "campaign_outside_budget_period");
-    requireThat(daily && daily.currency === p.currency && c.material.budget.currency === p.currency &&
+    requireThat(Date.parse(c.material.startAt) >= Date.parse(p.from) && materialEndTime(c.material) <= Date.parse(p.until), "campaign_outside_budget_period");
+    requireThat(daily && daily.currency === p.currency && materialCurrency(c.material) === p.currency &&
       c.material.timezone === p.timezone, "explicit_daily_budget_required");
     if (this.evidence === "provider") {
       requireThat(c.material.audience.provider !== "meta", "meta_daily_budget_semantics_unverified");
       requireThat(c.material.audience.provider !== "linkedin" || c.material.timezone === "UTC", "linkedin_utc_required");
     }
     advertisingBudget(c.material.advertisingBudget!);
+    requireThat(c.material.budget && c.material.advertisingBudget!.lifetime, "bounded_lifetime_authority_required");
     requireThat(c.material.advertisingBudget!.lifetime.minor === c.material.budget.minor &&
-      c.material.advertisingBudget!.lifetime.currency === c.material.budget.currency, "legacy_lifetime_budget_mismatch");
+      c.material.advertisingBudget!.lifetime.currency === materialCurrency(c.material), "legacy_lifetime_budget_mismatch");
     // Fixtures can exercise SQL arithmetic, never qualify native budget semantics.
     const exposure = dailyExposureMinor(c.material) ?? (this.evidence === "fixture" ? daily.minor : null);
     requireThat(exposure !== null, "daily_exposure_unverified");

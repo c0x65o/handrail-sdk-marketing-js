@@ -39,9 +39,9 @@ export function defaultCampaignSchedule(timezone: string, now = new Date()) {
   return { startAt: startOfDay(tomorrow), endAt: startOfDay(tomorrow + 7 * 86400000) };
 }
 /** Exact completed local days contained in the campaign window; never widen it. */
-export function completedCampaignWindow(from: string, until: string, timezone: string, now = new Date()) {
+export function completedCampaignWindow(from: string, until: string | null, timezone: string, now = new Date()) {
   const { calendarDate, startOfDay } = calendar(timezone);
-  const start = parseInstant(from), end = Math.min(parseInstant(until), now.getTime());
+  const start = parseInstant(from), end = Math.min(until === null ? Infinity : parseInstant(until), now.getTime());
   if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return null;
   let first = startOfDay(calendarDate(start));
   if (Date.parse(first) < start) {
@@ -68,7 +68,7 @@ export function dateAtInstant(value: string, timezone: string): string {
   return new Date(calendar(timezone).calendarDate(instant)).toISOString().slice(0, 10);
 }
 /** Reject invalid/custom windows, including historical non-UTC LinkedIn grants. */
-export function selectedCompletedWindow(fromDate: string, untilDate: string, start: string, end: string, timezone: string, provider: string, now = new Date()) {
+export function selectedCompletedWindow(fromDate: string, untilDate: string, start: string, end: string | null, timezone: string, provider: string, now = new Date()) {
   if (provider === "linkedin" && timezone !== "UTC") throw new Error("LinkedIn provider reports require UTC. Historical non-UTC material is not relabeled.");
   const available = completedCampaignWindow(start, end, timezone, now);
   const from = instantAtDate(fromDate, timezone), until = instantAtDate(untilDate, timezone);
