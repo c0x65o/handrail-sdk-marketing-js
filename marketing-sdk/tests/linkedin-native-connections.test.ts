@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { connectionFixture } from "./connection-fixture.js";
 import { fixtureEligibility, fixtureSettings } from "./capability-fixtures.js";
 import { byteDigest } from "../server/store.js";
+import { MarketingServer } from "../server/index.js";
+import { trackingFixture } from "./tracking-fixture.js";
 import { LinkedInMarketingClient } from "../support/owner-marketing/linkedin-client.js";
 import type { Asset, Campaign, Grant } from "../core/index.js";
 
@@ -19,6 +21,12 @@ function changeResponse(f: Fixture, change: (url: URL, body: any) => any) {
     Response.json(change(new URL(String(input)), await (await original(input, init)).json()));
 }
 async function campaign(f: Fixture, g: Grant) {
+  const transport = nativeTransport(f);
+  const tracking = await trackingFixture(f.store, "https://example.com");
+  const server = new MarketingServer(f.store, f.server.providers, f.server.generation, f.server.agent,
+    "fixture", undefined, undefined, { connections: f.connections, tracking: tracking.options });
+  const destination = tracking.source.destinations[0]!.url;
+  const captured = await server.call(f.principal, "p", "captureDestination", { url: destination });
   const bytes = readFileSync(new URL("../../marketing-sdk/tests/fixtures/test-pattern.png", import.meta.url)), hash = byteDigest(bytes);
   await f.store.db.prepare("INSERT INTO blobs VALUES(?,?,?)").run("p", hash, bytes);
   const asset: Asset = { id: "a", projectId: "p", campaignId: "c", version: 1, kind: "image", digest: hash, mime: "image/png", width: 320, height: 180,
@@ -26,11 +34,22 @@ async function campaign(f: Fixture, g: Grant) {
   await f.store.put("p", "asset", asset.id, asset);
   const c: Campaign = { id: "c", projectId: "p", revision: 1, grantId: g.id, creativeSetId: "cs", state: "draft", receipt: null,
     material: { settings: fixtureSettings("linkedin", "2041", "555"), purpose: "acquisition", name: "Fixture", headline: "Headline", body: "Body",
-      destination: "https://example.com/kit", destinationDigest: "a".repeat(64), assetIds: ["a"], audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false },
+      destination, destinationDigest: captured.digest, assetIds: ["a"], audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false },
       budget: { currency: "USD", minor: 42000 }, advertisingBudget: { lifetime: { currency: "USD", minor: 42000 }, daily: { currency: "USD", minor: 3000 } },
-      startAt: "2026-10-08T00:00:00Z", endAt: "2026-10-15T00:00:00Z", timezone: "UTC" } };
+      startAt: new Date(Math.floor(Date.now() / 86400000) * 86400000 + 86400000).toISOString(),
+      endAt: new Date(Math.floor(Date.now() / 86400000) * 86400000 + 8 * 86400000).toISOString(), timezone: "UTC" } };
   g.targetingOptions = [{ kind: "locations", id: "urn:li:geo:1", label: "United States" }]; fixtureEligibility(c, g);
-  return { c, asset };
+  await f.store.put("p", "grant", g.id, g);
+  await f.store.put("p", "campaign", c.id, c);
+  if (g.permissions.includes("prepare")) {
+    await server.call(f.principal, "p", "bindTracking", { owner: { kind: "campaign", id: c.id }, expectedRevision: c.revision,
+      expectedBindingRevision: 0, sourceId: "site", sourceRevision: "1", destinationId: "tour", outcome: "inquiry", refundTreatment: null, requestKey: "tracking" });
+    const check = await server.call(f.principal, "p", "checkCampaign", { campaignId: c.id, expectedRevision: c.revision,
+      expectedGrantRevision: g.revision, requestKey: "preparation-check" });
+    assert.equal(check.state, "ready", JSON.stringify(check.reasons));
+    assert.equal(transport.writes(), 0, "Prerequisite checks must not write to LinkedIn");
+  }
+  return { c, asset, transport, server };
 }
 function nativeTransport(f: Fixture) {
   const original = f.connections.discovery.fetcher, objects = new Map<string, any>();
@@ -60,7 +79,7 @@ function nativeTransport(f: Fixture) {
 test("NEW reporting Connection uses actual NativeProvider/client verification and persisted metrics with r_ads only", async () => {
   const f = await connectionFixture("linkedin");
   try {
-    const g = await connected(f); nativeTransport(f);
+    const g = await connected(f);
     assert.deepEqual((await f.native.verify(g)).permissions, ["setup", "report"]);
     const { c } = await campaign(f, g);
     c.receipt = { ids: { campaign: "102" }, payloadDigest: "historical", intent: "paused", delivery: "unverified", observedAt: new Date().toISOString(), evidence: "provider", providerRequestId: null };
@@ -77,7 +96,7 @@ for (const role of ["CAMPAIGN_MANAGER", "ACCOUNT_MANAGER", "ACCOUNT_BILLING_ADMI
   const f = await connectionFixture("linkedin", true);
   try {
     changeResponse(f, (u, b) => { if (u.pathname.endsWith("adAccountUsers")) b.elements[0].role = role; if (u.pathname.endsWith("organizationAcls")) b.elements[0].role = pageRole; return b; });
-    const g = await connected(f), transport = nativeTransport(f), { c, asset } = await campaign(f, g);
+    const g = await connected(f), { c, asset, transport } = await campaign(f, g);
     assert.ok((await f.native.verify(g, c, [asset], "prepare")).permissions.includes("prepare"));
     const receipt = await f.native.prepare(c, g, [asset], "fixture", () => {}, () => {});
     assert.ok(receipt.ids.readbackDigest); assert.equal(receipt.intent, "paused");
@@ -88,7 +107,7 @@ for (const role of ["CAMPAIGN_MANAGER", "ACCOUNT_MANAGER", "ACCOUNT_BILLING_ADMI
 for (const denied of ["VIEWER", "CREATIVE_MANAGER", "CONTENT_ADMIN", "CONTENT_ADMINISTRATOR", "wrong-member", "wrong-org", "conflicting-org", "conflicting-state", "missing-admin-scope", "missing-read-scope"]) test(`native boundary denies ${denied} after a valid Connection while retaining reporting`, async () => {
   const f = await connectionFixture("linkedin", true);
   try {
-    const g = await connected(f), { c, asset } = await campaign(f, g), transport = nativeTransport(f);
+    const g = await connected(f), { c, asset, transport } = await campaign(f, g);
     changeResponse(f, (u, b) => {
       if (u.pathname.endsWith("adAccountUsers") && ["VIEWER", "CREATIVE_MANAGER"].includes(denied)) b.elements[0].role = denied;
       if (u.pathname.endsWith("organizationAcls")) {
@@ -124,7 +143,7 @@ for (const kind of ["scope-loss", "inactive", "expired", "wrong-client", "missin
 test("native preparation retains lost-ack identity, reconciles read-only, and rejects a conflicting post author", async () => {
   const f = await connectionFixture("linkedin", true);
   try {
-    const g = await connected(f), { c, asset } = await campaign(f, g), transport = nativeTransport(f);
+    const g = await connected(f), { c, asset, transport } = await campaign(f, g);
     let ids: Record<string, string> = {}; transport.loseRead();
     await assert.rejects(f.native.prepare(c, g, [asset], "lost-ack", value => { ids = { ...value }; }, () => {}));
     assert.ok(ids.campaign && ids.creative);
@@ -133,6 +152,38 @@ test("native preparation retains lost-ack identity, reconciles read-only, and re
     assert.equal(transport.writes(), count); assert.ok(receipt?.ids.readbackDigest);
     transport.conflict();
     await assert.rejects(f.native.prepare(c, g, [asset], "post-conflict", () => {}, () => {}), /provider_effective_material_mismatch/);
+  } finally { await f.close(); }
+});
+test("LinkedIn prerequisite receipts replay without provider reads and stale material cannot reach a write", async () => {
+  const f = await connectionFixture("linkedin", true);
+  try {
+    const g = await connected(f), { c, asset, transport, server } = await campaign(f, g);
+    const reads = f.calls.length;
+    const checked = await server.call(f.principal, "p", "checkCampaign", { campaignId: c.id, expectedRevision: c.revision,
+      expectedGrantRevision: g.revision, requestKey: "preparation-check" });
+    assert.equal(checked.state, "ready"); assert.equal(f.calls.length, reads);
+    const saved = await f.store.get<Campaign>("p", "campaign", c.id);
+    saved.material.headline = "Changed since prerequisite check";
+    await f.store.put("p", "campaign", c.id, saved);
+    await assert.rejects(f.native.prepare(c, g, [asset], "stale", () => {}, () => {}), /campaign_prerequisites_stale/);
+    assert.equal(transport.writes(), 0);
+  } finally { await f.close(); }
+});
+for (const change of ["page-role", "account-status", "scope"] as const)
+test(`LinkedIn prerequisite refresh refuses changed ${change} without advertising writes`, async () => {
+  const f = await connectionFixture("linkedin", true);
+  try {
+    const g = await connected(f), { c, transport, server } = await campaign(f, g);
+    changeResponse(f, (u, b) => {
+      if (change === "page-role" && u.pathname.endsWith("organizationAcls")) b.elements[0].role = "CONTENT_ADMIN";
+      if (change === "account-status" && u.pathname.endsWith("adAccounts/2041")) b.status = "CANCELED";
+      if (change === "scope" && u.pathname.endsWith("introspectToken")) b.scope = "r_ads r_ads_reporting";
+      return b;
+    });
+    const checked = await server.call(f.principal, "p", "checkCampaign", { campaignId: c.id, expectedRevision: c.revision,
+      expectedGrantRevision: g.revision, requestKey: "refresh-after-change" });
+    assert.notEqual(checked.state, "ready"); assert.ok(checked.reasons.length); assert.equal(transport.writes(), 0);
+    assert.notEqual((await server.call(f.principal, "p", "campaignCheck", { campaignId: c.id }))?.state, "ready");
   } finally { await f.close(); }
 });
 test("native role reads consume empty continuation pages and reject an arbitrary pagination URL before any write", async () => {
@@ -155,7 +206,7 @@ test("native role reads consume empty continuation pages and reject an arbitrary
 test("local membership loss during native ACL await fences the first write", async () => {
   const f = await connectionFixture("linkedin", true);
   try {
-    const g = await connected(f), { c, asset } = await campaign(f, g), transport = nativeTransport(f);
+    const g = await connected(f), { c, asset, transport } = await campaign(f, g);
     f.boundary(async u => { if (u.pathname.endsWith("organizationAcls")) await f.store.db.prepare("DELETE FROM memberships WHERE user_id=? AND project_id=?").run(f.alice, "p"); });
     await assert.rejects(f.native.prepare(c, g, [asset], "late-loss", () => {}, async () => { await f.store.authorize(f.principal, "p", ["admin"]); }));
     assert.equal(transport.writes(), 0);

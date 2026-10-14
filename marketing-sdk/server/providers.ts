@@ -411,14 +411,15 @@ export class NativeProvider implements ProviderPort {
     }
     return result;
   }
-  /** SDK-owned read-only producer. It intentionally does not call verify(), which
-   * consumes existing proof. Only the qualified ordinary Meta tuple is produced. */
+  /** SDK-owned read-only producer. It does not call verify(), which consumes
+   * existing proof. Each provider verifies its supported material and authority. */
   async inspectPrerequisites(c: Campaign, g: Grant, assets: Asset[], account: DiscoveredAccount,
     identities: DiscoveredIdentity[], guard: () => Promise<void>) {
     this.plan(c, g, assets);
     const blockers = providerBudgetBlockers(c.material);
     requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified", 422);
     const s = c.material.settings;
+    if (s?.provider === "linkedin") return this.inspectLinkedInPrerequisites(c, g, account, identities, guard);
     requireThat(s?.provider === "meta" && s.delivery === "ordinary" && s.objective === "OUTCOME_TRAFFIC" && s.optimization === "LINK_CLICKS",
       "campaign_prerequisite_tuple_unqualified", 422);
     requireThat(!s.targeting.languages.length, "targeting_catalogue_required", 422);
@@ -451,6 +452,41 @@ export class NativeProvider implements ProviderPort {
             timezone: discovered.timezone, role: discovered.roleSummary, permissions: discovered.permissions,
             requiredScopes: connectionScopes("meta", ["prepare"]), accountStatus: v.account.accountStatus, disableReason: v.account.disableReason,
             fundingSourceObserved: v.fundingSourceObserved, pageId: v.assets.page.id, instagramUserId: s.identity.instagramUserId ?? null,
+            acceptance: "prerequisites_only", uploads: 0, advertisingWrites: 0 }, account: discovered };
+      });
+    } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("provider_prerequisite_read_unavailable", 502); }
+  }
+  private async inspectLinkedInPrerequisites(c: Campaign, g: Grant, account: DiscoveredAccount,
+    identities: DiscoveredIdentity[], guard: () => Promise<void>) {
+    requireThat(this.name === "linkedin" && g.provider === "linkedin" && g.timezone === "UTC", "linkedin_utc_required", 422);
+    requireThat(this.vault.useReadOnly, "read_only_credential_custody_required");
+    const guardedFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const read = url.origin === "https://api.linkedin.com" && url.pathname.startsWith("/rest/") &&
+        (!init?.method || init.method === "GET");
+      const introspection = url.origin === "https://www.linkedin.com" && url.pathname === "/oauth/v2/introspectToken" && init?.method === "POST";
+      requireThat((read || introspection) && init?.redirect === "error", "prerequisite_read_only_boundary");
+      await guard(); const response = await this.fetcher(input, init); await guard(); return response;
+    };
+    try {
+      return await this.vault.useReadOnly(g, guard, async credentials => {
+        requireThat(connectionScopes("linkedin", ["prepare"]).every(x => credentials.scopes.includes(x)), "provider_scope_missing");
+        const discovered = await new ConnectionDiscovery(guardedFetch).verify("linkedin", credentials, account, identities, ["prepare"], guard);
+        const client = new LinkedInMarketingClient({ ...credentials, apiVersion: "202609", fetchImpl: guardedFetch });
+        await this.verifySettings(client, c, g);
+        const v = await client.verifyConnection({ adAccountId: g.accountId, organizationId: g.organizationId });
+        requireThat(v.account.id === g.accountId && v.account.currency === g.currency && v.account.timezoneName === g.timezone,
+          "provider_account_context_changed");
+        requireThat(v.paymentReady && v.permissions.adsManagement && v.assets.organization.matchesAccountReference,
+          "provider_account_status_or_billing_unverified");
+        await guard();
+        return { expiresAt: credentials.expiresAt, facts: ["Current account membership and campaign role checked", "Current token scopes checked",
+          "Selected account-associated Page and member role checked", "Account status and serving readiness checked",
+          "Account currency and UTC reporting policy checked", "Selected targeting and exact campaign material checked"],
+          checkedFacts: { provider: "linkedin", apiVersion: "202609", accountId: discovered.id, currency: discovered.currency,
+            timezone: discovered.timezone, role: discovered.roleSummary, permissions: discovered.permissions,
+            requiredScopes: connectionScopes("linkedin", ["prepare"]), accountStatus: v.account.status,
+            servingStatuses: v.account.servingStatuses, organizationId: g.organizationId,
             acceptance: "prerequisites_only", uploads: 0, advertisingWrites: 0 }, account: discovered };
       });
     } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("provider_prerequisite_read_unavailable", 502); }

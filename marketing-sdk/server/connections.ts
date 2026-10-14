@@ -170,7 +170,9 @@ export class MarketingConnectionsService {
     requireThat(policy && policy.allowedOperations.includes("prepare") && c.configuration === this.configuration(g.provider, policy, operations(c)), "connection_configuration_changed");
     requireThat(c.view.phase === "verified" && c.grantRevision === g.revision && c.secretRef === g.secretRef &&
       c.account?.id === g.accountId && c.account.currency === g.currency && c.account.timezone === g.timezone &&
-      c.identities.some(i => i.kind === "meta_page" && i.id === g.pageId) && g.permissions.includes("prepare"), "campaign_connection_changed");
+      (g.provider === "meta" ? c.identities.some(i => i.kind === "meta_page" && i.id === g.pageId)
+        : g.provider === "linkedin" && c.identities.some(i => i.kind === "linkedin_organization" && i.id === g.organizationId)) &&
+      g.permissions.includes("prepare"), "campaign_connection_changed");
     requireThat(this.options.custody, "credential_custody_unavailable");
     const accessExpiry = observedCredentialExpiry ?? await this.options.custody.useReadOnly(g, async () => {}, async credentials => credentials.expiresAt);
     // Native credential use requires a one-minute remaining-use margin. A read-only

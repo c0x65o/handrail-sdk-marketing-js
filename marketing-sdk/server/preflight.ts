@@ -2,7 +2,7 @@ import type { Campaign, CampaignCheck, Grant, Asset } from "../core/index.js";
 import { Store, digest, byteDigest, requireThat } from "./store.js";
 import type { SessionInspection } from "./session-authority.js";
 
-export const NATIVE_PREREQUISITE_CONTRACT = "meta-v26.0-ordinary-traffic-prerequisites-3";
+export const NATIVE_PREREQUISITE_CONTRACT = "marketing-provider-prerequisites-4";
 export interface PrerequisiteRecord {
   id: string; projectId: string; campaignId: string; generation: number;
   action: "prepare"; contract: string; actorId: string;

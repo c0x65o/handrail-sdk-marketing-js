@@ -847,7 +847,7 @@ export class MarketingServer {
     await this.auth(p, project, true);
     const c = await this.store.get<Campaign>(project, "campaign", campaignId);
     const g = await this.grant(project, c.grantId, "prepare");
-    requireThat(g.provider === "meta", "campaign_prerequisite_tuple_unqualified", 422);
+    requireThat(g.provider === "meta" || g.provider === "linkedin", "campaign_prerequisite_tuple_unqualified", 422);
     const authority = await this.connections.campaignAuthority(p, g, credentialExpiry);
     const tracking = await this.tracking.campaignConfiguration(p, project, c.id);
     const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(project, "asset", id)));
@@ -940,6 +940,7 @@ export class MarketingServer {
         attempt.credentialExpiresAt = context.authority.credentialExpiresAt; attempt.binding = context.binding; attempt.authority = context.authority.digest; attempt.sessions = context.authority.sessions;
         attempt.scope = { projectId: project, campaignId: c.id, campaignRevision: c.revision, action: "prepare",
           grantId: context.g.id, grantRevision: context.g.revision, accountId: context.g.accountId, pageId: context.g.pageId,
+          organizationId: context.g.organizationId ?? null,
           instagramUserId: context.g.instagramUserId ?? null, materialDigest: digest(c.material), planDigest: digest(context.plan),
           selectedMedia: context.assets.map(a => ({ id: a.id, digest: a.digest, mime: a.mime })),
           destination: c.material.destination, destinationDigest: c.material.destinationDigest, purpose: c.material.purpose,

@@ -1,5 +1,34 @@
 # Measurement qualification, 2026-10-14
 
+## Execution follow-up — 2026-10-14
+
+The subsequent execution goal repaired the LinkedIn prerequisite producer and
+the native execution fixture. A real connected LinkedIn account can now obtain
+durable prerequisite evidence through `checkCampaign`; exact grant/organization,
+current account role, Page role, scopes, serving status, targeting, material and
+tracking configuration remain checked. Checks allow only provider REST reads and
+the token introspection POST; they perform no advertising writes or token refresh.
+The prerequisite contract revision invalidates older proofs and requires a fresh
+check before execution. No campaign spending approval is granted by a check.
+
+All 30 LinkedIn native connection/execution tests pass on disposable PostgreSQL,
+including the previously failing preparation/readback and lost-ack reconciliation
+cases. Added tests cover durable retry replay, stale material, and changed Page
+role/account status/scopes. All 36 existing Meta prerequisite tests also pass.
+Fixtures now retain campaign/destination/tracking and obtain checks through the
+actual service instead of bypassing the prerequisite contract. Native write guards
+were preserved. The normal SDK build (including TypeScript compilation) passes.
+
+LinkedIn role/scope behavior was checked against the official account access and
+marketing concepts references:
+https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/account-access-controls
+https://learn.microsoft.com/en-us/linkedin/marketing/getting-started
+
+These tests intercept external provider HTTP; live Handrail execution, historical
+adoption, recruitment tracking, placement expansion and full cutover still need
+their separate implementation and verification. The historical measurement-only
+qualification record below is retained.
+
 The measurement change is scoped to provider reporting, durable evidence and the
 existing reporting service. It grants no provider write authority and does not
 qualify campaign publication or browser verification.
