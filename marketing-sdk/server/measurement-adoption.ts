@@ -2,6 +2,7 @@ import type { Campaign, Grant } from "../core/index.js";
 import type { MeasurementInput } from "../core/measurement.js";
 import type { ExecutionAdoptionReceipt } from "./execution-adoption.js";
 import { readHistoricalCampaignSnapshot } from "./adoption.js";
+import { readHistoricalPurposeResolution } from "./historical-purpose.js";
 import { measurementAccountId } from "./measurement-collectors.js";
 import { readLatestMeasurementEvidence } from "./measurement.js";
 import { requireThat, type Store } from "./store.js";
@@ -21,6 +22,10 @@ export async function bindAdoptedMeasurementIdentity(store: Store, input: Measur
     const campaign = await store.get<Campaign>(project, "campaign", receipt.sdkCampaignId);
     const grant = await store.get<Grant>(project, "grant", campaign.grantId);
     const history = await readHistoricalCampaignSnapshot(store, project, receipt.historyImportId);
+    if(receipt.purposeResolutionId){
+      const assessment=await readHistoricalPurposeResolution(store,project,receipt.historyImportId,receipt.purposeResolutionId);
+      requireThat(assessment?.current&&assessment.resolution.purpose===campaign.material.purpose,'measurement_adoption_purpose_mismatch');
+    }
     requireThat(receipt.id === owner.receiptId && receipt.projectId === project && receipt.nativeCampaignId === identity.nativeCampaignId &&
       receipt.executionOwner === "sdk" && campaign.projectId === project && campaign.id === receipt.sdkCampaignId &&
       campaign.adoptionOrigin?.receiptId === receipt.id && campaign.adoptionOrigin.nativeCampaignId === identity.nativeCampaignId &&
@@ -43,7 +48,8 @@ export async function bindAdoptedMeasurementIdentity(store: Store, input: Measur
     identity.sdkCampaignId = campaign.id;
     // The enriched identity starts its own revision chain; retain an explicit
     // link to the old identity's head without rewriting its facts or digest.
-    frozen.source.receiptIds = [...new Set([...frozen.source.receiptIds, receipt.id, receipt.historyImportId, ...(preceding ? [preceding.id] : [])])];
+    frozen.source.receiptIds = [...new Set([...frozen.source.receiptIds, receipt.id, receipt.historyImportId,
+      ...(receipt.purposeResolutionId?[receipt.purposeResolutionId]:[]), ...(preceding ? [preceding.id] : [])])];
     return frozen;
   });
 }

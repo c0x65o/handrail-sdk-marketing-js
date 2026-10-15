@@ -290,6 +290,17 @@ transfer. This is representation of incomplete history, not a byte-match claim.
 
 ## Existing Meta acquisition material
 
+Historical campaign purpose may be reconciled with `HistoricalPurposeResolutions`.
+An authorized human/agent supplies an explicit acquisition/recruitment assessment,
+rationale and retained evidence record IDs; no keyword, URL or event-name inference
+is used. The immutable receipt names the assessor, original unknown purpose and
+source digest. Corrections require the current receipt ID and preserve predecessors.
+History, approval, budget and unsettled-effect records are unchanged. Paused adoption
+checks the current assessment throughout inspection/commit and retains its ID;
+new reporting evidence links that assessment. Already explicit historical purpose
+cannot be replaced by this path, and an adopted campaign cannot be reclassified
+behind its execution owner. Classification grants no spending or launch authority.
+
 `NativeProvider.captureExistingMetaMaterial` uses read-only custody for the exact
 account, campaign, ad set and creative. The host supplies original identity,
 copy, conversion and policy facts bound to retained history. Current provider

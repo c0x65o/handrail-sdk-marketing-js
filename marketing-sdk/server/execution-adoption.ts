@@ -1,6 +1,7 @@
 import type { Asset, Campaign, Grant, Material, Receipt } from "../core/index.js";
 import type { HistoricalRecord } from "../core/adoption.js";
 import { readHistoricalCampaignSnapshot } from "./adoption.js";
+import { readHistoricalPurposeResolution } from "./historical-purpose.js";
 import type { ProviderPort, ExistingMetaImageInspection } from "./ports.js";
 import type { SessionAuthority } from "./session-authority.js";
 import { sessionBinding, assertSessionInspection, inspectLiveSessions } from "./session-authority.js";
@@ -15,6 +16,7 @@ export interface ExecutionAdoptionCandidate {
   nativeCampaignId: string;
   historyImportId: string;
   sourceRevision: string;
+  purposeResolutionId?:string;
   grantId: string;
   material: Material;
   providerIds: Record<string, string>;
@@ -33,6 +35,7 @@ export interface ExecutionAdoptionReceipt {
   grantId: string; grantRevision: number; providerReceipt: Receipt;
   retirementReceiptRefs: string[]; settlementReceiptRefs: string[];
   mediaRecordIds: string[]; mediaAssetsDigest: string; adoptedAt: string; adoptedBy: string;
+  purposeResolutionId?:string;
   mediaProvenance?: {assetId:string; sourceDigest:string; uploadedDigest:string|null;
     originalUploadBytesVerified:boolean; missingReason:string|null; providerImage:ExistingMetaImageInspection|null}[];
   executionOwner: "sdk"; state: "paused"; spendingAuthorityGranted: false;
@@ -117,7 +120,15 @@ export class CampaignExecutionAdoptions {
       measurementAccountId(providerName, snapshot.accountId) === measurementAccountId(providerName, grant.accountId) &&
       snapshot.providerCampaignIds.length === 1 && snapshot.providerCampaignIds[0] === candidate.providerIds.campaign,
       "adoption_history_identity_mismatch");
-    requireThat(snapshot.purpose !== "unknown" && snapshot.purpose === candidate.material.purpose, "adoption_purpose_unverified");
+    const assertPurpose=async()=>{
+      if(snapshot.purpose!=='unknown')requireThat(!candidate.purposeResolutionId&&snapshot.purpose===candidate.material.purpose,'adoption_purpose_unverified');
+      else {
+        requireThat(candidate.purposeResolutionId,'adoption_purpose_unverified');
+        const assessed=await readHistoricalPurposeResolution(this.store,project,history.id,candidate.purposeResolutionId);
+        requireThat(assessed?.current&&assessed.resolution.purpose===candidate.material.purpose,'adoption_purpose_unverified');
+      }
+    };
+    await assertPurpose();
     const unsettled = new Set(history.unsettledOperationIds);
     requireThat(Array.isArray(candidate.settlements) && candidate.settlements.length === unsettled.size &&
       new Set(candidate.settlements.map(x => x.operationId)).size === unsettled.size &&
@@ -177,6 +188,7 @@ export class CampaignExecutionAdoptions {
       await inspectLiveSessions(this.sessions, [session]);
       await this.store.authorize(principal, project, ["admin", "editor"]);
       await this.source.assertCurrent(principal, candidate);
+      await assertPurpose();
       const currentMedia = await this.source.readMedia(principal, candidate);
       requireThat(currentMedia.length === originalMedia.length && currentMedia.every((item, index) =>
         byteDigest(item.bytes) === assets[index]!.digest), "adoption_media_bytes_changed");
@@ -208,6 +220,7 @@ export class CampaignExecutionAdoptions {
     const receipt: ExecutionAdoptionReceipt = { id: `adoption_${digest([project, nativeCampaignId, candidateDigest])}`, projectId: project,
       nativeCampaignId, sdkCampaignId: campaign.id, historyImportId: history.id, sourceRevision: candidate.sourceRevision, candidateDigest,
       grantId: grant.id, grantRevision: grant.revision, providerReceipt: inspection.candidateReceipt,
+      ...(candidate.purposeResolutionId?{purposeResolutionId:candidate.purposeResolutionId}:{}),
       retirementReceiptRefs: candidate.retirement.receiptRefs, settlementReceiptRefs: candidate.settlements.flatMap(x => x.receiptRefs),
       mediaRecordIds: candidate.media.flatMap(x => [x.historyRecordId,...(x.original?[x.original.historyRecordId]:[]),...(x.retainedSource?[x.retainedSource.historyRecordId]:[])]),
       mediaProvenance:[{assetId:asset.id,sourceDigest:original?.asset.digest??asset.digest,uploadedDigest:media.uploadedDigest,

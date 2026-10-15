@@ -9,6 +9,7 @@ import { testStore } from './datastore.js';
 import { fixtureSettings } from './capability-fixtures.js';
 import { CampaignExecutionAdoptions, type ExecutionAdoptionCandidate, type ExecutionAdoptionSource, type ExecutionAdoptionMedia } from '../server/execution-adoption.js';
 import { HistoricalCampaignImports } from '../server/adoption.js';
+import { HistoricalPurposeResolutions } from '../server/historical-purpose.js';
 import { MarketingServer } from '../server/service.js';
 import { DomainError } from '../server/store.js';
 import type { ExecutionAuthority } from '../server/execution-authority.js';
@@ -21,7 +22,7 @@ import type { Asset, Campaign, Grant, Material, Receipt } from '../core/index.js
 import type { HistoricalCampaignSnapshot, HistoricalRecord } from '../core/adoption.js';
 import type { ProviderPort } from '../server/ports.js';
 
-async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=false) {
+async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=false, unknownPurpose=false) {
   const dir = mkdtempSync(join(tmpdir(), 'sdk-execution-adoption-')), path = join(dir, 'db');
   const store = await testStore(path);
   await store.db.prepare('INSERT INTO projects VALUES(?,?)').run('p', 'Adoption');
@@ -52,6 +53,7 @@ async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=
       row('operation', 'historical-unknown', { status: 'unknown' }), row('event', 'original-conversion', { attribution: 'original-attribution' })],
     expectedCounts: { campaign: 1, provider_object: 1, operation: 1, event: 1 }, totals: [], unsettledOperationIds: ['historical-unknown'] };
   if(withOriginal){snapshot.records.push(row('material','source-asset',{digest:byteDigest(sourceBytes!)}));snapshot.expectedCounts.material=1;}
+  if(unknownPurpose){snapshot.purpose='unknown';snapshot.purposeReason='native_purpose_not_recorded';}
   const historical = new HistoricalCampaignImports(store, { authorize: async () => {}, capture: async () => snapshot,
     assertCurrent: async () => {}, withCurrentSnapshot: async (_p, _s, commit) => commit() });
   const history = await historical.stage(principal, 'p', 'native', 'history');
@@ -88,6 +90,56 @@ async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=
     deny: () => { denied = true; }, fail: () => { failCommit = true; }, reads: () => reads,
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
+
+test('explicit purpose assessment preserves unknown history, records evidence, survives correction/replay and binds paused adoption',async()=>{
+  const f=await fixture('meta',false,true);try{
+    const service=new HistoricalPurposeResolutions(f.store,f.sessions,f.source.authorize);
+    const input={historyImportId:f.history.id,purpose:'acquisition' as const,rationale:'The retained material describes a customer software offer.',
+      evidenceRecordIds:[f.history.recordRefs.find(r=>r.kind==='campaign')!.digest],previousResolutionId:null,requestKey:'purpose-1'};
+    const first=await service.resolve(f.principal,'p',input);
+    assert.equal(first.originalPurpose,'unknown');assert.equal(first.basis,'recorded_assessment');assert.equal(first.spendingAuthorityGranted,false);
+    assert.deepEqual(await service.resolve(f.principal,'p',input),first);
+    assert.equal((await service.readRequest(f.principal,'p',input.requestKey))!.resolution.id,first.id);
+    await assert.rejects(service.resolve(f.principal,'p',{...input,rationale:'Changed'}),/historical_purpose_request_conflict/);
+    await assert.rejects(service.resolve(f.principal,'p',{...input,requestKey:'race'}),/historical_purpose_revision_conflict/);
+    const second=await service.resolve(f.principal,'p',{...input,previousResolutionId:first.id,requestKey:'purpose-2',rationale:'Rechecked the original customer offer and recorded source.'});
+    assert.equal((await service.read(f.principal,'p',f.history.id,first.id))!.current,false);
+    assert.deepEqual((await service.read(f.principal,'p',f.history.id))!.resolution,second);
+    assert.equal((await f.historical.read(f.principal,'p',f.history.id)).snapshot.purpose,'unknown');
+    for(const kind of ['campaign','grant','operation','decision','advertisingBudgetReservation'])assert.equal((await f.store.list('p',kind)).length,kind==='grant'?1:0);
+    f.candidate.purposeResolutionId=first.id;
+    await assert.rejects(f.service.adopt(f.principal,'p','native','old-assessment'),/adoption_purpose_unverified/);
+    f.candidate.purposeResolutionId=second.id;
+    const adoption=await f.service.adopt(f.principal,'p','native','assessed-adoption');assert.equal(adoption.purposeResolutionId,second.id);
+    await assert.rejects(service.resolve(f.principal,'p',{...input,previousResolutionId:second.id,requestKey:'after-adoption'}),/historical_purpose_already_adopted/);
+    const reopened=await testStore(f.path);try{
+      const read=new HistoricalPurposeResolutions(reopened,createStoreSessionAuthority(reopened),f.source.authorize);
+      assert.deepEqual((await read.read(f.principal,'p',f.history.id,first.id))!.resolution,first);
+    }finally{await reopened.close();}
+  }finally{await f.close();}
+});
+for(const mode of ['wrong-record','duplicate-record','no-reason','unknown-purpose','wrong-history','revoked','wrong-material','changed-during-read'])test(`purpose assessment rejects ${mode} without inventing original intent or approval`,async()=>{
+  const f=await fixture('meta',false,true);try{
+    const service=new HistoricalPurposeResolutions(f.store,f.sessions,f.source.authorize);
+    const input:any={historyImportId:f.history.id,purpose:'acquisition',rationale:'Customer offer in retained evidence.',
+      evidenceRecordIds:[f.history.recordRefs.find(r=>r.kind==='campaign')!.digest],previousResolutionId:null,requestKey:'purpose'};
+    if(mode==='wrong-record')input.evidenceRecordIds=[f.history.recordRefs.find(r=>r.kind==='event')!.digest];
+    if(mode==='duplicate-record')input.evidenceRecordIds.push(input.evidenceRecordIds[0]);
+    if(mode==='no-reason')input.rationale='';
+    if(mode==='unknown-purpose')input.purpose='unknown';
+    if(mode==='wrong-history')input.historyImportId='other';
+    if(mode==='revoked')f.deny();
+    if(['wrong-material','changed-during-read'].includes(mode)){
+      const first=await service.resolve(f.principal,'p',input);f.candidate.purposeResolutionId=first.id;
+      if(mode==='wrong-material')f.candidate.material.purpose='recruitment';
+      else {const inspect=f.provider.inspectExistingCampaign!;f.provider.inspectExistingCampaign=async(...args)=>{
+        const observed=await inspect(...args);await service.resolve(f.principal,'p',{...input,previousResolutionId:first.id,requestKey:'changed',rationale:'New assessment.'});return observed;};}
+      await assert.rejects(f.service.adopt(f.principal,'p','native','reject-purpose'));
+    }else await assert.rejects(service.resolve(f.principal,'p',input));
+    assert.equal((await f.store.list('p','campaign')).length,0);assert.equal((await f.store.list('p','decision')).length,0);
+    assert.equal((await f.store.get<any>('p','historicalSnapshot',f.history.id)).purpose,'unknown');
+  }finally{await f.close();}
+});
 
 async function unknownUploadFixture() {
   const f=await fixture('meta',true),original=f.nativeMedia[0]!.original!;
@@ -149,6 +201,18 @@ for(const failure of ['no-source','source-digest','source-history','bytes','miss
     await assert.rejects(f.service.adopt(f.principal,'p','native','reject-unknown-upload'));
     for(const kind of ['campaign','asset','campaignExecutionOwner','providerExecutionOwner','executionAdoption'])assert.equal((await f.store.list('p',kind)).length,0);
     assert.deepEqual((await f.historical.read(f.principal,'p',f.history.id)).receipt,f.history);
+  }finally{await f.close();}
+});
+
+for(const mode of ['explicit-history','revoked-before-commit'])test(`purpose assessment preserves original records on ${mode}`,async()=>{
+  const f=await fixture('meta',false,mode!=='explicit-history');try{
+    let checks=0;
+    const service=new HistoricalPurposeResolutions(f.store,f.sessions,async(...args)=>{
+      if(mode==='revoked-before-commit'&&++checks===2)f.deny();await f.source.authorize(...args);
+    });
+    await assert.rejects(service.resolve(f.principal,'p',{historyImportId:f.history.id,purpose:'recruitment',rationale:'Assessment fixture.',
+      evidenceRecordIds:[f.history.recordRefs.find(r=>r.kind==='campaign')!.digest],previousResolutionId:null,requestKey:'reject'}));
+    for(const kind of ['historicalPurposeResolution','historicalPurposeCurrent','historicalPurposeRequest'])assert.equal((await f.store.list('p',kind)).length,0);
   }finally{await f.close();}
 });
 

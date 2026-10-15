@@ -61,6 +61,16 @@ and source authorization; project/campaign request namespaces stay separate.
 
 ## Existing-provider execution adoption
 
+Unknown historical purpose is preserved as unknown. `HistoricalPurposeResolutions`
+records a separate explicit human/agent assessment, with rationale, original record
+references, source digest, actor and timestamp. It validates current session/source
+access, evidence membership, request replay and correction predecessor. It does not
+infer purpose from prose or change historical records. The current assessment ID
+can bind the adoption material's purpose, is rechecked around provider reads and
+commit, and is linked in subsequent measurement evidence. Corrections after an
+execution owner exists require that owner's ordinary workflow; this importer cannot
+reclassify an adopted campaign. No approval, grant or provider request is created.
+
 `CampaignExecutionAdoptions` is the server transition from reconciled native
 history to one paused SDK execution campaign. Its only action inputs are native
 campaign identity and request key. A trusted host source supplies current material,

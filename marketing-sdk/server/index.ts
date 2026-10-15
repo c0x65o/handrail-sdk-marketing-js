@@ -37,6 +37,7 @@ export * from "./execution-authority.js";
 export * from "./measurement-collectors.js";
 export * from "./adoption.js";
 export * from "./execution-adoption.js";
+export * from "./historical-purpose.js";
 export type { ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
 
 // Native adoption binds a real public destination snapshot, never a URL hash.
