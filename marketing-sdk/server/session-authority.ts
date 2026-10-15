@@ -5,11 +5,32 @@ import { Store, type Principal, digest, requireThat } from "./store.js";
 export interface SessionBinding {
   issuer: string; subject: string; userId: string; sessionRef: string;
 }
-export interface SessionInspection {
-  binding: SessionBinding; projectId: string; role: Role; kind: "human" | "agent";
-  expiresAt: number;
+interface SessionInspectionBase {
+  binding: SessionBinding; projectId: string; role: Role;
   /** Changes with user/session/project rights or host authorization configuration. */
   revision: string;
+}
+/** Browser/token sessions have their actual expiry. An invocation is an agent's
+ * current host action, not a login: the host must inspect its real running state
+ * and guard termination/revocation through every SDK local commit. No synthetic
+ * expiry is persisted. Invocation authority cannot serve as human approval. */
+export type SessionInspection = SessionInspectionBase & (
+  | { kind: "human" | "agent"; expiresAt: number; lifetime?: never }
+  | { kind: "agent"; expiresAt: null; lifetime: { kind: "invocation"; invocationRef: string } }
+);
+/** A calculation bound only, never an authority receipt or persisted deadline.
+ * Grant, credential, check and billing expiry remain finite and independently
+ * enforced. This does not replace inspectSession/withLiveSessions. */
+export function sessionExpiryBound(session: SessionInspection): number {
+  if (session.expiresAt === null) {
+    requireThat(session.kind === "agent" && session.binding.issuer !== "marketing:store" &&
+      session.lifetime?.kind === "invocation" && typeof session.lifetime.invocationRef === "string" &&
+      session.lifetime.invocationRef.length > 0 && session.lifetime.invocationRef.length <= 500 &&
+      session.lifetime.invocationRef === session.binding.sessionRef, "session_authority_changed", 401);
+    return Infinity;
+  }
+  requireThat(session.lifetime === undefined && Number.isFinite(session.expiresAt), "session_authority_changed", 401);
+  return session.expiresAt;
 }
 /** Host revocation guard -> SDK Store transaction -> record CAS. Never hold over
  * provider HTTP. All host revoke/disable/role/config writers must share this guard.
@@ -34,7 +55,7 @@ export function sessionBinding(principal: Principal): SessionBinding {
 export function assertSessionInspection(actual: SessionInspection, binding: SessionBinding, project: string) {
   requireThat(actual && digest(actual.binding) === digest(binding) && actual.projectId === project &&
     typeof actual.revision === "string" && actual.revision.length > 0 && actual.revision.length <= 500 &&
-    Number.isFinite(actual.expiresAt) && actual.expiresAt > Date.now() &&
+    sessionExpiryBound(actual) > Date.now() &&
     ["human", "agent"].includes(actual.kind) && ["admin", "editor", "approver", "analyst", "sales", "collector"].includes(actual.role), "session_authority_changed", 401);
 }
 export async function inspectLiveSessions(authority: SessionAuthority, expected: readonly SessionInspection[]) {

@@ -9,7 +9,7 @@ export interface ExistingHostSessions {
   authenticate(request: Request): Promise<{ issuer: string; subject: string; sessionRef: string }>;
   /** Fresh authoritative user, session, membership and authorization-config facts.
    * Return null for missing/disabled/revoked/expired/no membership. No side effects. */
-  inspect(binding: SessionBinding, projectId: string): Promise<Omit<SessionInspection, "binding" | "projectId"> | null>;
+  inspect(binding: SessionBinding, projectId: string): Promise<Omit<Extract<SessionInspection, { expiresAt: number }>, "binding" | "projectId"> | null>;
   /** Serialize with every host logout/user/role/password/config writer. Acquire
    * host locks in deterministic identity/session order BEFORE any SDK Store lock.
    * Hold through local's commit acknowledgement. Bounded local operations only. */

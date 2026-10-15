@@ -50,6 +50,26 @@ Inspect both sessions before/after every provider boundary; final authority-bear
 transitions additionally use the guard. Restricted encrypted exchange outcomes may
 be retained after revocation for recovery, but cannot promote authority.
 
+## Host agent invocations
+
+`SessionInspection` also accepts an explicit agent invocation lifetime:
+`kind: "agent"`, `expiresAt: null`, and
+`lifetime: { kind: "invocation", invocationRef: binding.sessionRef }`.
+The trusted host supplies the real action reference and verifies that the action,
+run, actor and scope are still current. It must serialize termination/revocation
+with the same guard through SDK commit acknowledgement. This is not an unlimited
+login or a time-based lease; no synthetic deadline or browser session is minted.
+Store sessions and human sessions still require their real finite expiration.
+
+`sessionExpiryBound` returns Infinity only as an in-memory calculation bound for
+an invocation. Campaign grants, provider credentials, prerequisite checks and
+billing quotes retain their own finite expiry and separate authority. The bound
+must never be persisted as a grant deadline. Current invocation checks still run
+before/after provider boundaries and around local commits. Human approval checks
+remain human-only. A new invocation can inspect retained history under current
+rights; it cannot impersonate the original action or silently inherit its
+connection decisions, credentials or unsettled effects.
+
 ## Initiation, independent browser claim and return
 
 The existing start/review/approve commands retain exact project, provider/app,

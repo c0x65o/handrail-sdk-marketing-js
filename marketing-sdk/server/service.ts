@@ -9,7 +9,7 @@ import { HostAgent } from "./agent.js";
 import { NativeProvider } from "./providers.js";
 import { prerequisiteBinding, currentPrerequisite, NATIVE_PREREQUISITE_CONTRACT, type PrerequisiteRecord } from "./preflight.js";
 import type { CampaignCheckCommands } from "../core/preflight.js";
-import { sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionInspection } from "./session-authority.js";
+import { sessionExpiryBound, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionInspection } from "./session-authority.js";
 import { MarketingTracking, trackingCommandFields, type TrackingOptions, type ValidatedCoverage } from "./tracking.js";
 import type { TrackingCommands } from "../core/tracking.js";
 import { CampaignStudio, studioCommandFields, type StudioOptions } from "./studio.js";
@@ -131,7 +131,7 @@ export class MarketingServer {
       access.expiresAt <= access.credentialExpiresAt && access.expiresAt <= Date.parse(g.expiresAt) &&
       Array.isArray(access.sessions) && access.sessions.length > 0 &&
       access.sessions.some(s => s.projectId === g.projectId && digest(s.binding) === digest(sessionBinding(p))) &&
-      access.sessions.every(s => s.projectId === g.projectId && s.expiresAt >= access.expiresAt) &&
+      access.sessions.every(s => s.projectId === g.projectId && sessionExpiryBound(s) >= access.expiresAt) &&
       access.account?.id === g.accountId && access.account.currency === g.currency && access.account.timezone === g.timezone &&
       access.account.permissions.includes('prepare') && g.permissions.includes('prepare') &&
       Array.isArray(access.identities) && (g.provider === 'meta'
@@ -984,7 +984,7 @@ export class MarketingServer {
       await guard();
       const facts = await context.provider.inspectPrerequisites(c, context.g, context.assets, context.authority.account!, context.authority.identities, guard);
       await guard();
-      const expires = Math.min(Date.parse(attempt.createdAt) + 120000, context.authority.expiresAt, facts.expiresAt, session.expiresAt, materialEndTime(c.material));
+      const expires = Math.min(Date.parse(attempt.createdAt) + 120000, context.authority.expiresAt, facts.expiresAt, sessionExpiryBound(session), materialEndTime(c.material));
       requireThat(expires > this.now(), "campaign_prerequisites_expired");
       return await this.campaignAccess.withCampaignAuthority(p, context.g, context.authority, () => this.tracking.withCampaignConfiguration(context.tracking, () => this.store.transaction(async () => {
         await guard();

@@ -1,6 +1,6 @@
 import type { TextPlanningCommands, TextPlanningConnection, TextPlanningReview, PlanningRequest, PlanningUsage, StudioDraft, CampaignOption } from '../core/index.js';
 import { Store, digest, id, requireThat, type Principal } from './store.js';
-import { sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from './session-authority.js';
+import { sessionExpiryBound, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from './session-authority.js';
 import { EncryptedCredentialCustody } from './credential-custody.js';
 import { BoundTextPlanningBilling, type TextPlanningBilling } from './billing.js';
 import { CAMPAIGN_OPTIONS_SCHEMA, PLANNING_PROMPT, PLANNING_VERSION, unknownUsage, validatePlanningOutput, type PlanningResponsesBody } from './planning.js';
@@ -168,7 +168,7 @@ export class NativeTextPlanning {
     keys(quote,['receipt','operationId','requestDigest','connectionDigest','projectId','environment','provider','model','pricingRevision','currency','ceilingMinor','expiresAt','inputTokenUpperBound','meteringBasis','maxOutputTokens','maxAttempts']);
     requireThat(quote.operationId===reviewId && quote.projectId===project && quote.environment===this.options.environment && quote.provider===a.connection.provider && quote.model===a.connection.model && quote.connectionDigest===connectionDigest && quote.requestDigest===requestDigest &&
       quote.maxOutputTokens===i.maxOutputTokens && quote.maxAttempts===1 && finite(quote.inputTokenUpperBound,1000000) && quote.inputTokenUpperBound>0 &&
-      finite(quote.ceilingMinor,Number.MAX_SAFE_INTEGER) && quote.ceilingMinor>0 && /^[A-Z]{3}$/.test(quote.currency) && current(quote.expiresAt) && Date.parse(quote.expiresAt)<=Math.min(a.session.expiresAt,Date.parse(a.connection.expiresAt)) &&
+      finite(quote.ceilingMinor,Number.MAX_SAFE_INTEGER) && quote.ceilingMinor>0 && /^[A-Z]{3}$/.test(quote.currency) && current(quote.expiresAt) && Date.parse(quote.expiresAt)<=Math.min(sessionExpiryBound(a.session),Date.parse(a.connection.expiresAt)) &&
       [quote.receipt,quote.pricingRevision,quote.meteringBasis].every(x=>typeof x==='string'&&x.length>0&&x.length<=500),'planning_quote_scope_or_bounds_invalid');
     const review: TextPlanningReview = {id:reviewId,draftId:d.id,draftRevision:d.revision,brief:d.studio.brief,connection:this.safeConnection(a.connection),requestDigest,reviewDigest:'',prompt:PLANNING_PROMPT,schemaDigest:digest(CAMPAIGN_OPTIONS_SCHEMA),requestBytes:Buffer.byteLength(JSON.stringify(body)),requestBody:structuredClone(body),quote:structuredClone(quote),evidence:this.evidence,state:'review'};
     review.reviewDigest=digest(review);

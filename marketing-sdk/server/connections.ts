@@ -1,5 +1,5 @@
 import { classifyConnectionRoute, privatePage, callbackLanding, escapeHtml, safeLocalPath, readPrivateJson, privateMutationHeaders, scriptJson, type PrivateMutationHeaders } from "./handoff-http.js";
-import { createStoreSessionAuthority, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from "./session-authority.js";
+import { sessionExpiryBound, createStoreSessionAuthority, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from "./session-authority.js";
 import type { CreativeConnections } from "./creative-connections.js";
 import type { CampaignAccess, CampaignAccessSnapshot } from './campaign-access.js';
 import type {
@@ -179,7 +179,7 @@ export class MarketingConnectionsService implements CampaignAccess {
     // Native credential use requires a one-minute remaining-use margin. A read-only
     // check must not label credentials ready when ordinary use would need refresh.
     const expiresAt = Math.min(Date.parse(g.expiresAt), Date.parse(c.expiresAt), Date.parse(c.retainUntil),
-      Date.parse(c.view.providerAuthorized.expiresAt ?? ""), accessExpiry - 60000, ...sessions.map(s => s.expiresAt));
+      Date.parse(c.view.providerAuthorized.expiresAt ?? ""), accessExpiry - 60000, ...sessions.map(sessionExpiryBound));
     requireThat(Number.isFinite(expiresAt) && expiresAt > Date.now(), "connection_access_expired");
     const sealed = await this.store.get(g.projectId, "vault", g.secretRef);
     return { digest: digest({ c, policy, configuration: this.configuration(g.provider, policy, operations(c)), sealed, sessions }),

@@ -1,6 +1,6 @@
 import {materialCurrency, capabilityBlockers, type Campaign, type Grant, type Operation} from '../core/index.js';
 import {Store, digest, id, requireThat, type Principal} from './store.js';
-import {sessionBinding, assertSessionInspection, type SessionAuthority, type SessionInspection} from './session-authority.js';
+import {sessionExpiryBound,sessionBinding, assertSessionInspection, type SessionAuthority, type SessionInspection} from './session-authority.js';
 import {keys, text, instant, material} from './validation.js';
 
 export interface CampaignExecutionConnectionInput {
@@ -103,7 +103,7 @@ export class CampaignExecutionConnections {
       requireThat(digest(await this.store.get(project,'grant',planning.id))===digest(planning)&&planning.revision===input.expectedGrantRevision&&
         planning.projectId===project&&!planning.campaignId&&!planning.revokedAt&&Date.parse(planning.expiresAt)>Date.now()&&planning.permissions.length===0,
         'planning_grant_changed');
-      requireThat(g.id!==planning.id&&g.secretRef!==planning.secretRef&&Date.parse(g.expiresAt)>Date.now()&&Date.parse(g.expiresAt)<=session.expiresAt,
+      requireThat(g.id!==planning.id&&g.secretRef!==planning.secretRef&&Date.parse(g.expiresAt)>Date.now()&&Date.parse(g.expiresAt)<=sessionExpiryBound(session),
         'invalid_campaign_execution_grant');
       requireThat(['provider','accountId','currency','timezone','pageId','instagramUserId','organizationId'].every(key=>
         (g[key as keyof Grant]??null)===(planning[key as keyof Grant]??null))&&c.draftOrigin.accountId===g.accountId,
