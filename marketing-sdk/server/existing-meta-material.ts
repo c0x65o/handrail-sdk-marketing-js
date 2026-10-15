@@ -13,18 +13,49 @@ export interface ExistingMetaMaterialSource {
   conversion?: NonNullable<MetaSettings["conversion"]>;
   retainedProviderTerms: { campaign: Record<string, unknown>; adset: Record<string, unknown>; creative: Record<string, unknown> };
 }
-export interface ReconciledMetaMaterialSource extends Omit<ExistingMetaMaterialSource,'retainedProviderTerms'> {
+export interface RetainedMetaImageCandidate {assetId:string;providerImageId:string;historyRecordId:string}
+export interface ReconciledMetaMaterialSource extends Omit<ExistingMetaMaterialSource,'retainedProviderTerms'|'assetId'> {
+  assetId?:string;
+  imageCandidates?:RetainedMetaImageCandidate[];
+  conversionMissingReason?:'historical_conversion_not_retained';
   retainedObservations:RetainedMetaObservation[];
 }
 export function reconcileExistingMetaMaterial(source:ReconciledMetaMaterialSource,grant:Grant,
-  ids:{campaign:string;adset:string;creative:string;image:string},observed:{campaign:any;adset:any;creative:any}) {
-  const result=materialFromObservation(source,grant,ids,observed);
-  return {...result,materialReconciliation:reconcileMetaObservations(source.retainedObservations,observed,existingMetaTerms(observed),result.material)};
+  ids:{campaign:string;adset:string;creative:string;image?:string},observed:{campaign:any;adset:any;creative:any}) {
+  let selectedImage:RetainedMetaImageCandidate|undefined;
+  if(source.imageCandidates!==undefined){
+    const candidates=source.imageCandidates;
+    requireThat(source.assetId===undefined&&ids.image===undefined&&Array.isArray(candidates)&&candidates.length>0&&
+      candidates.every(x=>x&&typeof x.assetId==='string'&&x.assetId.length>0&&/^[a-f0-9]{32}$/.test(x.providerImageId)&&/^[a-f0-9]{64}$/.test(x.historyRecordId))&&
+      new Set(candidates.map(x=>x.providerImageId)).size===candidates.length&&new Set(candidates.map(x=>x.assetId)).size===candidates.length,
+      'existing_material_image_candidates_invalid');
+    const hash=observed.creative.object_story_spec?.link_data?.image_hash;
+    selectedImage=candidates.find(x=>x.providerImageId===hash);
+    requireThat(selectedImage,'existing_material_image_not_retained');
+  }else requireThat(typeof source.assetId==='string'&&source.assetId.length>0&&typeof ids.image==='string'&&/^[a-f0-9]{32}$/.test(ids.image),
+    'existing_material_image_binding_missing');
+  let conversion=source.conversion;
+  if(source.conversionMissingReason!==undefined){
+    requireThat(source.conversionMissingReason==='historical_conversion_not_retained'&&conversion===undefined&&
+      !source.retainedObservations.some(x=>x.key==='adset.promotedObject')&&observed.campaign.objective==='OUTCOME_LEADS',
+      'existing_material_conversion_provenance_invalid');
+    const promoted=observed.adset.promoted_object;
+    requireThat(promoted?.custom_event_type==='LEAD'&&typeof promoted.pixel_id==='string'&&/^\d+$/.test(promoted.pixel_id),
+      'existing_material_conversion_mismatch');
+    conversion={pixelId:promoted.pixel_id,event:'Lead'};
+  }
+  // Current provider selection supplies execution representation only. Original
+  // missing fields remain absent from the immutable historical comparisons.
+  const bound={...source,assetId:selectedImage?.assetId??source.assetId!,...(conversion?{conversion}:{})};
+  const boundIds={...ids,image:selectedImage?.providerImageId??ids.image!};
+  const result=materialFromObservation(bound,grant,boundIds,observed);
+  return {...result,...(selectedImage?{selectedImage:structuredClone(selectedImage)}:{}),
+    materialReconciliation:reconcileMetaObservations(source.retainedObservations,observed,existingMetaTerms(observed),result.material)};
 }
 export const META_EXISTING_FIELDS = {
   campaign: "id,account_id,objective,special_ad_categories,special_ad_category_country,is_adset_budget_sharing_enabled,spend_cap,status,effective_status",
   adset: "id,account_id,campaign_id,billing_event,optimization_goal,bid_strategy,daily_budget,lifetime_budget,start_time,end_time,targeting,destination_type,promoted_object,targeting_optimization_types,attribution_spec,status,effective_status",
-  creative: "id,account_id,object_story_spec,url_tags,degrees_of_freedom_spec",
+  creative: "id,account_id,object_story_spec,url_tags,degrees_of_freedom_spec,asset_feed_spec",
 } as const;
 
 /** Preserve complete requested material, including absence, rather than silently
@@ -110,6 +141,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const bits=Object.fromEntries(expansionEntries.map((x:any)=>[x.key,x.value]));
   requireThat([bits.detailed_targeting,bits.lookalike].every(x=>x===0||x===1) && metaExpansionMatches(adset.targeting_optimization_types,bits as any),"existing_material_expansion_unknown");
   if(!lead)requireThat(metaExpansionOff(adset.targeting_optimization_types),"existing_material_expansion_unknown");
+  requireThat(creative.asset_feed_spec==null,"existing_material_asset_feed_unsupported");
   const story=creative.object_story_spec, link=story?.link_data;
   requireThat(story?.page_id===grant.pageId && link?.image_hash===ids.image && link?.name===source.headline && link?.message===source.body &&
     link?.link===source.destination && exactTargeting(link?.call_to_action,{type:"LEARN_MORE",value:{link:source.destination}}),"existing_material_original_creative_mismatch");

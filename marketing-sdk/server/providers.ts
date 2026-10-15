@@ -417,14 +417,14 @@ export class NativeProvider implements ProviderPort {
   async captureExistingMetaMaterial(g: Grant, ids: {campaign:string; adset:string; creative:string; image:string}, source: ExistingMetaMaterialSource, guard: () => Promise<void>) {
     return this.captureMetaMaterial(g,ids,source,guard,observed=>existingMetaMaterial(source,g,ids,observed));
   }
-  async reconcileExistingMetaMaterial(g:Grant,ids:{campaign:string;adset:string;creative:string;image:string},source:ReconciledMetaMaterialSource,guard:()=>Promise<void>){
+  async reconcileExistingMetaMaterial(g:Grant,ids:{campaign:string;adset:string;creative:string;image?:string},source:ReconciledMetaMaterialSource,guard:()=>Promise<void>){
     return this.captureMetaMaterial(g,ids,source,guard,observed=>reconcileExistingMetaMaterial(source,g,ids,observed));
   }
-  private async captureMetaMaterial<T extends object>(g:Grant,ids:{campaign:string;adset:string;creative:string;image:string},source:unknown,guard:()=>Promise<void>,
+  private async captureMetaMaterial<T extends object>(g:Grant,ids:{campaign:string;adset:string;creative:string;image?:string},source:unknown,guard:()=>Promise<void>,
     build:(observed:{campaign:any;adset:any;creative:any})=>T){
     requireThat(this.name === "meta" && g.provider === "meta" && this.vault.useReadOnly &&
       [ids.campaign,ids.adset,ids.creative].every(x=>typeof x==="string"&&/^\d+$/.test(x)) &&
-      typeof ids.image==="string"&&/^[a-f0-9]{32}$/.test(ids.image), "existing_material_scope_invalid", 403);
+      (ids.image===undefined||typeof ids.image==="string"&&/^[a-f0-9]{32}$/.test(ids.image)), "existing_material_scope_invalid", 403);
     const scope=digest({g,ids,source});
     const current=async()=>{await guard();requireThat(digest({g,ids,source})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
     const paths=[accountPath(g.accountId),ids.campaign,ids.adset,ids.creative].map(x=>`/v26.0/${x}`);
@@ -1184,7 +1184,7 @@ export class NativeProvider implements ProviderPort {
       );
       const creative = await client.getObject(
         ids.creative,
-        explicit ? `id,account_id,object_story_spec${ids.readbackVersion === "5" ? ",url_tags,degrees_of_freedom_spec" : ""}` : "id,object_story_spec",
+        explicit ? `id,account_id,object_story_spec,asset_feed_spec${ids.readbackVersion === "5" ? ",url_tags,degrees_of_freedom_spec" : ""}` : "id,object_story_spec",
       );
       const ad = await client.getObject(ids.ad, explicit ? "id,account_id,adset_id,creative,status" : "id,adset_id,creative,status");
       const statuses = [campaign.status, adset.status, ad.status];
@@ -1325,6 +1325,7 @@ export class NativeProvider implements ProviderPort {
         if (plan.campaign.objective === "OUTCOME_AWARENESS") requireThat(s.adset.destination_type === "UNDEFINED", "awareness_destination_unverified");
         if (plan.adset.promoted_object) requireThat(exactTargeting(s.adset.promoted_object, plan.adset.promoted_object), "promoted_object_mismatch");
         else requireThat(s.adset.promoted_object === undefined || exactTargeting(s.adset.promoted_object, {}), "unexpected_promoted_object");
+        requireThat(s.creative.asset_feed_spec==null,"provider_asset_feed_unsupported");
         requireThat(exactTargeting(s.creative.object_story_spec, {
           page_id: plan.creative.pageId, ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
           link_data: { image_hash: ids.image, link: plan.creative.link, message: plan.creative.message, name: plan.creative.name,

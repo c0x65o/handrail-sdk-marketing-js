@@ -521,3 +521,14 @@ contract. Conversion-less campaigns cannot acquire a Lead binding during adoptio
 An explicit empty attribution list is retained through plans, readback and review;
 missing attribution remains unknown, and Lead capture still requires explicit
 nonempty attribution. Existing approval and budget qualification are unchanged.
+
+Existing Meta reconciliation also accepts retained image candidates with original
+asset/provider/history identities. The SDK selects the current creative's single
+image by exact provider identity, rejecting unknown or ambiguous bindings. Other
+variants stay in host history; this does not claim an asset feed is a single-image
+creative. Capture and readback explicitly reject an unrepresented asset feed.
+When original conversion configuration was not retained, the host can declare
+`historical_conversion_not_retained`; the SDK captures only the supported current
+Lead conversion and keeps the historical promoted-object comparison unknown.
+Known retained conversion bindings still must match. No capture grants approval,
+tracking readiness, execution ownership or spending authority.

@@ -7,7 +7,7 @@ import {GuidedFields} from "../react/guided.js";
 import assert from "node:assert/strict";
 import { NativeProvider, providerPlan, type VaultPort } from "../server/providers.js";
 import { Store } from "../server/store.js";
-import { existingMetaTerms, type ExistingMetaMaterialSource } from "../server/existing-meta-material.js";
+import { existingMetaTerms, type ExistingMetaMaterialSource, type ReconciledMetaMaterialSource } from "../server/existing-meta-material.js";
 import { capabilityStatus, type Grant, type Campaign, type Asset } from "../core/index.js";
 
 function fixture() {
@@ -251,4 +251,45 @@ for(const [objective,optimization] of [['OUTCOME_AWARENESS','REACH'],['OUTCOME_T
 test('existing Lead capture cannot treat empty attribution as unknown or non-conversion',async()=>{
   const f=fixture();f.observed.adset.attribution_spec=[];f.source.retainedProviderTerms=existingMetaTerms(f.observed);
   await assert.rejects(f.capture(),/explicit_attribution_required/);
+});
+
+
+test('current Meta creative selects one retained image without inventing historical conversion evidence',async()=>{
+  const f=fixture(),{retainedProviderTerms,assetId,conversion,...original}=f.source;
+  const source:ReconciledMetaMaterialSource={...original,conversionMissingReason:'historical_conversion_not_retained',
+    imageCandidates:[{assetId:'unused-square',providerImageId:'b'.repeat(32),historyRecordId:'b'.repeat(64)},
+      {assetId:assetId,providerImageId:f.ids.image,historyRecordId:'a'.repeat(64)},
+      {assetId:'unused-story',providerImageId:'c'.repeat(32),historyRecordId:'c'.repeat(64)}],
+    retainedObservations:[{key:'campaign.objective',value:'OUTCOME_LEADS',provenance:'legacy_intent',historyRecordId:'d'.repeat(64)}]};
+  const {image,...ids}=f.ids,before=structuredClone(source);
+  const result=await f.provider.reconcileExistingMetaMaterial(f.grant,ids,source,async()=>{});
+  assert.deepEqual(result.selectedImage,source.imageCandidates![1]);assert.deepEqual(result.material.assetIds,[assetId]);
+  if(result.material.settings?.provider!=='meta')throw Error('Meta required');
+  assert.deepEqual(result.material.settings.conversion,conversion);
+  assert.equal(result.materialReconciliation.comparisons.find(x=>x.key==='adset.promotedObject')?.status,'unknown_retained');
+  assert.equal(result.materialReconciliation.spendingAuthorityGranted,false);assert.equal(result.executionReady,false);
+  assert.deepEqual(source,before);assert.equal(f.calls.length,4);
+  for(const mutate of [
+    (s:ReconciledMetaMaterialSource)=>{s.imageCandidates![1]!.providerImageId='d'.repeat(32);},
+    (s:ReconciledMetaMaterialSource)=>{s.imageCandidates!.push(s.imageCandidates![1]!);},
+    (s:ReconciledMetaMaterialSource)=>{s.imageCandidates![0]!.assetId=assetId;},
+    (s:ReconciledMetaMaterialSource)=>{s.imageCandidates![0]!.historyRecordId='not-retained';},
+    (s:ReconciledMetaMaterialSource)=>{s.assetId=assetId;},
+    (s:ReconciledMetaMaterialSource)=>{delete s.conversionMissingReason;},
+    (s:ReconciledMetaMaterialSource)=>{s.conversion=conversion;},
+    (s:ReconciledMetaMaterialSource)=>{s.retainedObservations.push({key:'adset.promotedObject',value:retainedProviderTerms.adset.promoted_object,provenance:'legacy_observation',historyRecordId:'a'.repeat(64)});},
+  ]){const changed=structuredClone(source);mutate(changed);await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,ids,changed,async()=>{}));}
+  f.observed.creative.asset_feed_spec={images:[{hash:image},{hash:'b'.repeat(32)}]};
+  await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,ids,source,async()=>{}),/existing_material_asset_feed_unsupported/);
+  delete f.observed.creative.asset_feed_spec;
+  f.afterFetch(()=>{source.imageCandidates![0]!.assetId='changed';});
+  await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,ids,source,async()=>{}),/existing_campaign_scope_changed/);
+});
+
+test('Meta single-image readback detects a provider asset feed added after capture',async()=>{
+  const f=fixture(),r=await f.capture();f.grant.targetingOptions=r.targetingOptions;
+  const c={id:'c',projectId:'p',grantId:'g',material:r.material,state:'paused',receipt:null} as Campaign;
+  const assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  f.observed.creative.asset_feed_spec={images:[{hash:f.ids.image},{hash:'b'.repeat(32)}]};
+  await assert.rejects(f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{}),/provider_asset_feed_unsupported/);
 });

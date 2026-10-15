@@ -43,7 +43,7 @@ export type { ExistingLinkedInMaterialSource } from "./existing-linkedin-materia
 // Native adoption binds a real public destination snapshot, never a URL hash.
 export { capturePublicDestination } from "./destination.js";
 
-export { existingMetaMaterial, existingMetaTerms, reconcileExistingMetaMaterial, type ExistingMetaMaterialSource, type ReconciledMetaMaterialSource } from "./existing-meta-material.js";
+export { existingMetaMaterial, existingMetaTerms, reconcileExistingMetaMaterial, type ExistingMetaMaterialSource, type ReconciledMetaMaterialSource, type RetainedMetaImageCandidate } from "./existing-meta-material.js";
 export {META_OBSERVATION_KEYS,metaMaterialObservations,type RetainedMetaObservation,type MetaMaterialReconciliation} from './meta-material-observations.js';
 export {HistoricalEffectResolutions,readHistoricalEffectResolution,type HistoricalEffectInput,type HistoricalEffectCandidate,type HistoricalEffectResolution,type HistoricalEffectSource} from './historical-effects.js';
 
