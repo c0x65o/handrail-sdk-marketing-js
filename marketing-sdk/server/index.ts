@@ -48,3 +48,4 @@ export {META_OBSERVATION_KEYS,metaMaterialObservations,type RetainedMetaObservat
 export {HistoricalEffectResolutions,readHistoricalEffectResolution,type HistoricalEffectInput,type HistoricalEffectCandidate,type HistoricalEffectResolution,type HistoricalEffectSource} from './historical-effects.js';
 
 export * from "./meta-image.js";
+export {inspectMetaDeliveryInventory,type MetaDeliveryTarget,type MetaDeliveryObject} from './delivery-inventory.js';

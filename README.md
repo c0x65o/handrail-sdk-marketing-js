@@ -488,3 +488,12 @@ validation and read-only provider planning do not manufacture acceptance.
 acceptance; importing paused material creates neither approval nor spend authority.
 `ExistingMetaMaterialSource.policy` retains the acknowledgement observation and
 returns it as `policyEvidence` separately from current provider material.
+
+`inspectMetaDeliveryInventory` is a read-only server API for refreshing exact
+host-owned campaign mappings across one Meta account. It paginates the account's
+campaign/ad-set/ad edges once, checks account/currency/timezone and current Vault
+custody, and returns only the requested campaign hierarchies with collection times
+and a snapshot digest. Newly observed children participate in paused-state checks;
+missing mapped objects/statuses remain unknown. The visibility scope is explicit:
+this does not settle historical requests, prove actual impressions, authorize
+spending, or claim that an unmapped historical campaign never created an object.
