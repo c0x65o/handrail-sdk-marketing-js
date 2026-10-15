@@ -220,6 +220,15 @@ disposable PostgreSQL; live consumer adoption remains separate qualification.
 
 ## Native execution authority
 
+`inspectMetaToken` is a server-only, read-only qualification of native Meta
+custody using the app-authenticated Graph debugger. It verifies the app, token
+validity/type, scopes and both expiry clocks, returning fixed errors without
+credential values or provider bodies. Explicit zero expiry is represented as
+`no_scheduled_expiry`, separately from the host's actual grant/session lifetime;
+missing expiry is unverified. This neither proves account access nor grants
+campaign execution or spending authority. Hosts must bind current native authority
+and independently verify their exact account and identity.
+
 Meta adoption now inventories both campaign child edges through every returned
 page before accepting the saved single-ad-set/single-ad identity. The inspection
 requires matching account, campaign, ad set and creative IDs, explicit configured

@@ -17,6 +17,7 @@ export * from "./session-authority.js";
 export { classifyConnectionRoute, type PrivateMutationHeaders } from "./handoff-http.js";
 
 export * from "./credential-custody.js";
+export * from "./meta-token-inspection.js";
 export * from "./creative-connections.js";
 
 export * from "./studio.js";
