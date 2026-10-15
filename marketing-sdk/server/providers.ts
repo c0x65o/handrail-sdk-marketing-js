@@ -399,6 +399,33 @@ export class NativeProvider implements ProviderPort {
         missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred","meta_daily_budget_semantics_unverified"]};
     }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_campaign_read_unavailable");});
   }
+  /** Account-scoped current provider image metadata. Never claims original binary
+   * upload bytes from a provider hash/name, and never retrieves a signed CDN URL. */
+  async inspectExistingMetaImage(g: Grant, imageId: string, guard: () => Promise<void>) {
+    requireThat(this.name==="meta"&&g.provider==="meta"&&this.vault.useReadOnly&&/^[a-f0-9]{32}$/.test(imageId),"existing_media_scope_invalid",403);
+    const scope=digest({g,imageId}),account=accountPath(g.accountId);
+    const current=async()=>{await guard();requireThat(digest({g,imageId})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
+    const fetcher:typeof fetch=async(input,init)=>{
+      const url=new URL(String(input));
+      requireThat(url.origin==="https://graph.facebook.com"&&[`/v26.0/${account}`,`/v26.0/${account}/adimages`].includes(url.pathname)&&
+        (!init?.method||init.method==="GET")&&init?.redirect==="error","existing_campaign_read_only_boundary",403);
+      if(url.pathname.endsWith('/adimages'))requireThat(url.searchParams.get('hashes')===JSON.stringify([imageId]),"existing_media_scope_invalid",403);
+      await current();const response=await this.fetcher(input,init);await current();return response;
+    };
+    await current();
+    return this.vault.useReadOnly!(g,current,async credentials=>{
+      requireThat(credentials.expiresAt>Date.now(),"provider_access_expired_or_denied",403);
+      const client=new MetaMarketingClient({...credentials,fetchImpl:fetcher});await this.accountContext(client,g);
+      const result=await client.readAllPages(`${account}/adimages`,{hashes:JSON.stringify([imageId]),fields:"id,account_id,hash,name,original_width,original_height,status,updated_time",limit:200});
+      requireThat(result.data.length===1,"existing_media_identity_ambiguous");const row=result.data[0];
+      requireThat(row.hash===imageId&&String(row.account_id)===account.replace(/^act_/,""),"existing_media_identity_mismatch");
+      requireThat(Number.isSafeInteger(row.original_width)&&row.original_width>0&&Number.isSafeInteger(row.original_height)&&row.original_height>0&&
+        typeof row.name==="string"&&typeof row.status==="string","existing_media_metadata_incomplete");
+      const image={accountId:String(row.account_id),hash:row.hash,name:row.name,width:row.original_width,height:row.original_height,status:row.status,updatedAt:row.updated_time??null};
+      await current();return {image,providerSnapshotDigest:digest(image),observedAt:new Date().toISOString(),
+        originalUploadBytesVerified:false as const,providerImageReadbackVerified:true as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_media_read_unavailable");});
+  }
   private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
     try {

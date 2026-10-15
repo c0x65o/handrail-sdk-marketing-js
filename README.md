@@ -419,3 +419,13 @@ These intercepted HTTP and disposable SQL tests do not constitute a live pilot
 or authorize changing any deployed campaign budget. The request shapes follow
 [Meta's AdSet update API](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adset.py)
 and [LinkedIn campaign partial updates](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaigns?view=li-lms-2026-09).
+
+Upload preparation also returns `uploadReceipt`, with an explicit
+`sha256_bytes` encoding, binary checksum, size, MIME and matching provider
+filename. Do not interpret an unlabelled historic filename as a binary checksum:
+Handrail's old uploader hashed a lossy UTF-8 string of the JPEG buffer. Keep that
+value as a legacy observation, with original upload digest unknown.
+`NativeProvider.inspectExistingMetaImage` reads the exact account/image metadata
+through read-only Vault custody and complete pagination. It reports current
+identity, name, original dimensions and status separately from original-byte
+proof; it does not download signed media URLs, mutate images or authorize spend.

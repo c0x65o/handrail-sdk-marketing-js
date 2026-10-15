@@ -21,3 +21,12 @@ test('Meta upload preserves JPEG/PNG and recovers only exact historical WebP tra
   await assert.rejects(prepareMetaImageUpload({bytes:source,mime:'image/png',filename:'mislabelled.png'}),/media_mime_mismatch/);
   await assert.rejects(prepareMetaImageUpload({bytes:Buffer.from('invalid'),mime:'image/jpeg',filename:'invalid.jpg'}));
 });
+
+test('new upload receipts hash binary bytes and retain explicit encoding, not legacy lossy text',async()=>{
+  const source=await sharp({create:{width:40,height:50,channels:4,background:'#ddd8cc80'}}).webp().toBuffer();
+  const result=await prepareMetaImageUpload({bytes:source,mime:'image/webp',filename:'original.webp'});
+  const legacy=byteDigest(Buffer.from(String(result.bytes)));
+  assert.notEqual(legacy,result.uploadDigest);
+  assert.deepEqual(result.uploadReceipt,{content_sha256:byteDigest(result.bytes),content_hash_encoding:'sha256_bytes',filename:`handrail-${result.uploadDigest}.jpg`,byte_size:result.bytes.length,media_type:'image/jpeg'});
+  await assert.rejects(recoverMetaImageUpload({bytes:source,mime:'image/webp',filename:'original.webp'},byteDigest(source),legacy),/meta_original_upload_bytes_unverified/);
+});

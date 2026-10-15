@@ -16,7 +16,9 @@ export async function prepareMetaImageUpload(source: MetaImageSource) {
   const name=source.filename.trim().slice(0,255)||"handrail-creative";
   const filename=transcoded?`${name.replace(/\.[^.]+$/,"")}.jpg`:name;
   return {bytes:output,filename,mime,transcoded,width:decoded.width,height:decoded.height,
-    sourceDigest:byteDigest(bytes),uploadDigest:byteDigest(output)};
+    sourceDigest:byteDigest(bytes),uploadDigest:byteDigest(output),
+    uploadReceipt:{content_sha256:byteDigest(output),content_hash_encoding:"sha256_bytes" as const,
+      filename:`handrail-${byteDigest(output)}.${mime==="image/png"?"png":"jpg"}`,byte_size:output.length,media_type:mime}};
 }
 /** Re-encoding is only a recovery candidate. Equality to the immutable upload
  * receipt digest proves the bytes; codec drift/missing receipts are not success. */
