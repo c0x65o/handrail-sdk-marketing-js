@@ -605,3 +605,21 @@ attests production coverage, provider delivery or independent Ads Manager
 comparison. Hosts without a click verifier remain explicitly unavailable. This
 contract does not add a scheduler, credentials, provider writes or spending
 permission.
+
+### Authenticated no-send test admission
+
+Source servers can call `MarketingTracking.inspectTest(request, {testId,
+interactionUrl})`, or `handleTrackingCollector(tracking, request, 'test')`, before
+retaining a no-send interaction. The collector must explicitly grant `test` and
+implement `withLiveTestAuthority`. This read-only guard rechecks producer authority
+without bypassing `withLiveCollector`'s retained-completion checks.
+
+The typed `CollectorTestAdmission` returns the exact saved destination, owner and
+material revision, source, outcome, test URL and lifetime. The SDK rechecks the
+original human setup session, source access, current binding/material, cancellation
+and expiry under their existing guards. Browser URL parameters cannot assert these
+facts. No session credentials are returned. This read creates no completion,
+readiness, click, coverage, provider operation or spending authority; the source
+still must retain the actual no-send interaction and submit its authenticated
+completion receipt. Unbound hosts remain unavailable. HTTP replies are private and
+no-store. Existing accepted QA receipts and history remain unchanged.

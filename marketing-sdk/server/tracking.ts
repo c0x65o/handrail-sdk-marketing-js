@@ -20,7 +20,18 @@ export interface TrackingSources {
 }
 export interface CollectorInspection {
   id: string; revision: string; expiresAt: number; source: TrackingSource;
-  permissions: readonly ('completion' | 'coverage' | 'click')[];
+  permissions: readonly ('completion' | 'coverage' | 'click' | 'test')[];
+}
+/** Current no-send interaction authority for an authenticated source server.
+ * This read grants no completion, coverage, provider effect or spending authority.
+ * The producer retains the exact result with its actual no-send interaction. */
+export interface CollectorTestAdmission {
+  testId: string; sourceId: string; sourceRevision: string;
+  domain: string; environment: TrackingSource['environment'];
+  bindingId: string; bindingRevision: number; owner: TrackingOwner; ownerRevision: number;
+  materialDigest: string; destinationId: string; destinationUrl: string; interactionUrl: string;
+  purpose: MarketingPurpose; outcome: TrackingOutcome; createdAt: string; expiresAt: string;
+  productionMetricsExcluded: true;
 }
 /** A retained first-party paid-click fact resolved by the authenticated host.
  * URL parameters and browser assertions alone cannot establish these fields.
@@ -62,6 +73,9 @@ export interface TrackingCollector {
   verifyClick?(context: CollectorInspection, sourceReceipt: string): Promise<CollectorClick>;
   verifyCheckpoint(context: CollectorInspection, checkpoint: string): Promise<CollectorCheckpoint>;
   withLiveCollector<T>(expected: CollectorInspection, local: () => Promise<T>): Promise<T>;
+  /** Read-only test admission before a completion fact exists. Recheck current
+   * producer authority without weakening the retained-fact collection guard. */
+  withLiveTestAuthority?<T>(expected: CollectorInspection, local: () => Promise<T>): Promise<T>;
 }
 export interface TrackingOptions { sources?: TrackingSources; collector?: TrackingCollector }
 export interface ValidatedCoverage {
@@ -334,17 +348,47 @@ export class MarketingTracking {
   }
   observeTrackingTest(p:Principal,project:string,i:TrackingCommands['observeTrackingTest']['input']) {return this.mutateTest(p,project,i,false);}
   cancelTrackingTest(p:Principal,project:string,i:TrackingCommands['cancelTrackingTest']['input']) {return this.mutateTest(p,project,i,true);}
-  private async collectorContext(request: Request, permission: 'completion' | 'coverage' | 'click') {
+  private async collectorContext(request: Request, permission: 'completion' | 'coverage' | 'click' | 'test') {
     requireThat(this.options.collector && this.options.sources,'authenticated_collector_unavailable',503);
     const context=await this.options.collector.authenticateRequest(request);
     requireThat(context && context.expiresAt>this.now(),'collector_authority_expired',401);
     requireThat(context.permissions?.includes(permission),'collector_permission_required',403);
     text(context.id,500);text(context.revision,500);this.validateSource(context.source,context.source.projectId);return context;
   }
-  private async collectorGuard<T>(c:CollectorInspection,local:()=>Promise<T>) {
-    return this.options.collector!.withLiveCollector(c,()=>this.withSource(c.source,()=>this.store.transaction(async()=>{
+  private async collectorGuard<T>(c:CollectorInspection,local:()=>Promise<T>,testAdmission=false) {
+    const collector=this.options.collector!;
+    const guard=testAdmission?collector.withLiveTestAuthority:collector.withLiveCollector;
+    requireThat(guard,'collector_test_authority_unavailable',503);
+    return guard.call(collector,c,()=>this.withSource(c.source,()=>this.store.transaction(async()=>{
       requireThat(c.expiresAt>this.now(),'collector_authority_expired',401);const result=await local();requireThat(c.expiresAt>this.now(),'collector_authority_expired',401);return result;
-    })));
+    }))) as Promise<T>;
+  }
+  /** Source-server read of the existing exact no-send test. A URL parameter
+   * alone never establishes its owner, destination, outcome or current authority. */
+  async inspectTest(request: Request, input: { testId: string; interactionUrl: string }): Promise<CollectorTestAdmission> {
+    keys(input,['testId','interactionUrl']);text(input.testId,160);text(input.interactionUrl,4096);
+    const c=await this.collectorContext(request,'test'), project=c.source.projectId;
+    const prepared=await this.store.get<TestRecord>(project,'trackingTest',input.testId);
+    await inspectLiveSessions(this.sessions,[prepared.session]);
+    return this.sessions.withLiveSessions([prepared.session],()=>this.collectorGuard(c,async()=>{
+      const record=await this.store.get<TestRecord>(project,'trackingTest',input.testId);
+      requireThat(digest(record.session)===digest(prepared.session),'session_authority_changed',401);
+      await inspectLiveSessions(this.sessions,[record.session]);
+      requireThat(record.session.kind==='human' && ['admin','editor'].includes(record.session.role),'forbidden',403);
+      requireThat(record.binding.projectId===project && digest(record.binding.source)===digest(c.source)
+        && c.source.collector==='available','tracking_source_changed',403);
+      requireThat(await this.options.sources!.inspectAccess(record.session,c.source),'tracking_source_not_authorized',403);
+      requireThat(!record.test.cancelledAt && Date.parse(record.test.expiresAt)>this.now()
+        && Date.parse(record.test.createdAt)<=this.now(),'tracking_test_closed',409);
+      requireThat(record.test.destinationUrl===input.interactionUrl,'tracking_test_destination_mismatch',422);
+      await this.exact(project,record.binding);
+      const b=record.binding,t=record.test;
+      return {testId:t.id,sourceId:c.source.id,sourceRevision:c.source.revision,domain:c.source.domain,
+        environment:c.source.environment,bindingId:b.id,bindingRevision:b.revision,owner:b.owner,
+        ownerRevision:b.ownerRevision,materialDigest:b.materialDigest,destinationId:b.destinationId,
+        destinationUrl:b.destination,interactionUrl:t.destinationUrl,purpose:b.purpose,outcome:b.outcome,
+        createdAt:t.createdAt,expiresAt:t.expiresAt,productionMetricsExcluded:true} as CollectorTestAdmission;
+    },true));
   }
   /** Server-only receipt admission; never a browser setup command. */
   async acceptClick(request: Request, input: { sourceReceipt: string }) {
@@ -455,12 +499,12 @@ export class MarketingTracking {
 
 /** Mount separately from browser commands. Bounded JSON carries references, never trusted flags; host auth is resolved
  * independently by the server-only acceptance methods. */
-export async function handleTrackingCollector(tracking: MarketingTracking, request: Request, operation: 'receipt' | 'coverage' | 'click'): Promise<Response> {
+export async function handleTrackingCollector(tracking: MarketingTracking, request: Request, operation: 'receipt' | 'coverage' | 'click' | 'test'): Promise<Response> {
   requireThat(request.method==='POST','method_not_allowed',405);requireThat(request.headers.get('content-type')==='application/json','json_required',415);
   const reader=request.body?.getReader();requireThat(reader,'body_required',422);const chunks:Uint8Array[]=[];let size=0,expired=false;
   const timer=setTimeout(()=>{expired=true;void reader.cancel();},5000);
-  try {for(;;){const r=await reader.read();requireThat(!expired,'collector_body_timeout',408);if(r.done)break;size+=r.value.length;requireThat(size<=2048,'collector_body_limit',413);chunks.push(r.value);}}finally{clearTimeout(timer);await reader.cancel();reader.releaseLock();}
+  try {for(;;){const r=await reader.read();requireThat(!expired,'collector_body_timeout',408);if(r.done)break;size+=r.value.length;requireThat(size<=(operation==='test'?6144:2048),'collector_body_limit',413);chunks.push(r.value);}}finally{clearTimeout(timer);await reader.cancel();reader.releaseLock();}
   let input;try{input=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{requireThat(false,'invalid_json',422);}
-  const result=operation==='receipt'?await tracking.acceptReceipt(request,input):operation==='click'?await tracking.acceptClick(request,input):await tracking.attestCoverage(request,input);
+  const result=operation==='test'?await tracking.inspectTest(request,input):operation==='receipt'?await tracking.acceptReceipt(request,input):operation==='click'?await tracking.acceptClick(request,input):await tracking.attestCoverage(request,input);
   return Response.json(result,{headers:{'cache-control':'private, no-store'}});
 }

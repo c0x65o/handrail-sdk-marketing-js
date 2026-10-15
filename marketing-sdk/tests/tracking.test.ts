@@ -20,9 +20,9 @@ async function fixture() {
   let service:MarketingServer,source:Awaited<ReturnType<typeof trackingFixture>>,clock=Date.now(),origin='';
   const server=createServer(async(req,res)=>{try{
     const url=new URL(req.url!,origin);let body='';for await(const b of req)body+=b;
-    if(url.pathname==='/collector'||url.pathname==='/coverage'||url.pathname==='/click') {
+    if(url.pathname==='/collector'||url.pathname==='/coverage'||url.pathname==='/click'||url.pathname==='/test-admission') {
       const request=new Request(origin+'/collector',{method:'POST',headers:{'content-type':'application/json',...req.headers as Record<string,string>},body});
-      const response=await handleTrackingCollector(service.tracking,request,url.pathname==='/coverage'?'coverage':url.pathname==='/click'?'click':'receipt');res.writeHead(response.status,{'content-type':'application/json'});res.end(await response.text());return;
+      const response=await handleTrackingCollector(service.tracking,request,url.pathname==='/test-admission'?'test':url.pathname==='/coverage'?'coverage':url.pathname==='/click'?'click':'receipt');res.writeHead(response.status,Object.fromEntries(response.headers));res.end(await response.text());return;
     }
     assert.equal(url.pathname,'/interact');const input=JSON.parse(body) as {testId:string;outcome:TrackingOutcome;receipt?:string;overrides?:Partial<CollectorCompletion>};
     const receipt=input.receipt??randomUUID();const fact:CollectorCompletion={sourceReceipt:receipt,eventId:'event-'+receipt,domain:'127.0.0.1',environment:'production',destinationId:'tour',outcome:input.outcome,occurredAt:new Date(clock).toISOString(),personId:'opaque-person',consent:{basis:'consent',receipt:'retained-consent'},completionReceipt:'completed-'+receipt,testId:input.testId,qa:true,clickId:null,revenue:input.outcome==='purchase'?{minor:2900,currency:'USD'}:null,refundTreatment:input.outcome==='purchase'?'gross_before_refunds':null,...input.overrides};
@@ -478,5 +478,65 @@ test('completion attribution rejects generic-event clicks and keeps QA clicks ou
     await f.source.retainCompletion({...completion,clickId:click.eventId});
     await assert.rejects(f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:'submission',testId:null}),/attribution_identity_mismatch/);
     assert.equal((await f.store.list('p','trackingReceipt')).length,0);
+  }finally{await f.close();}
+});
+
+
+test('authenticated source resolves an exact no-send test across restart without creating evidence or exposing setup session',async()=>{
+  const f=await fixture();try{
+    const {owner,binding}=await f.bind();
+    const t=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:binding.revision,requestKey:'admission'});
+    f.restart();
+    const response=await fetch(f.origin+'/test-admission',{method:'POST',headers:{'content-type':'application/json','x-fixture-collector':'synthetic-collector-only'},body:JSON.stringify({testId:t.id,interactionUrl:t.destinationUrl})});
+    assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'private, no-store');
+    const value=await response.json();
+    assert.deepEqual(value,{testId:t.id,sourceId:'site',sourceRevision:'1',domain:'127.0.0.1',environment:'production',bindingId:binding.id,bindingRevision:binding.revision,owner,ownerRevision:binding.ownerRevision,materialDigest:binding.materialDigest,destinationId:binding.destinationId,destinationUrl:binding.destination,interactionUrl:t.destinationUrl,purpose:binding.purpose,outcome:binding.outcome,createdAt:t.createdAt,expiresAt:t.expiresAt,productionMetricsExcluded:true});
+    assert.equal(JSON.stringify(value).includes(f.login.sessionRef),false);
+    assert.equal((await f.service.call(f.p,'p','tracking',{owner})).readiness,'pending');
+    for(const kind of ['event','trackingReceipt','trackingDiagnostic','validatedCoverage','operation','grant'])assert.equal((await f.store.list('p',kind)).length,0,kind);
+    const repeat=await f.service.tracking.inspectTest(f.collectorRequest(),{testId:t.id,interactionUrl:t.destinationUrl});assert.deepEqual(repeat,value);
+  }finally{await f.close();}
+});
+test('no-send admission rejects browser assertions, wrong destination, unrelated source and missing permission',async()=>{
+  const f=await fixture();try{
+    const {owner}=await f.bind(),t=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:1,requestKey:'admission'});
+    const input={testId:t.id,interactionUrl:t.destinationUrl};
+    await assert.rejects(f.service.tracking.inspectTest(new Request(f.origin),input),/collector_authentication_required/);
+    for(const extra of [{outcome:'qualified'},{campaignId:'forged'},{productionMetricsExcluded:false}])await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),{...input,...extra}),/unexpected_fields/);
+    await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),{...input,interactionUrl:t.destinationUrl+'&campaign=other'}),/tracking_test_destination_mismatch/);
+    await f.source.saveProducer({...f.source.producer,permissions:['completion']});
+    await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),input),/collector_permission_required/);
+    await f.source.saveProducer(f.source.producer);
+    const testGuard=f.source.options.collector!.withLiveTestAuthority;delete f.source.options.collector!.withLiveTestAuthority;
+    await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),input),/collector_test_authority_unavailable/);
+    f.source.options.collector!.withLiveTestAuthority=testGuard;
+    await f.source.saveSource({...f.source.source,id:'other-source'});
+    await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),input),/tracking_source_changed|source_changed|source_denied/);
+    assert.equal((await f.store.list('p','event')).length,0);
+  }finally{await f.close();}
+});
+test('no-send admission rechecks cancellation, expiry, binding/material, source and original setup authority',async()=>{
+  for(const state of ['cancel','expire','material','binding','source','session','role'] as const){
+    const f=await fixture();try{
+      const {owner,draft}=await f.bind(),t=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:1,requestKey:'admission'});
+      if(state==='cancel')await f.service.call(f.p,'p','cancelTrackingTest',{owner,testId:t.id});
+      if(state==='expire')f.advance(300001);
+      if(state==='material')await f.service.call(f.p,'p','saveBrief',{id:draft.id,expectedRevision:1,requestKey:'change',brief:{...draft.studio.brief,offer:'changed'}});
+      if(state==='binding')await f.service.call(f.p,'p','bindTracking',{owner,expectedRevision:1,expectedBindingRevision:1,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'qualified',refundTreatment:null,requestKey:'rebind'});
+      if(state==='source')await f.source.saveSource({...f.source.source,revision:'2'});
+      if(state==='session')await f.host.revoke(f.login.sessionRef);
+      if(state==='role')await f.host.changeRole('analyst');
+      await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),{testId:t.id,interactionUrl:t.destinationUrl}));
+      assert.equal((await f.store.list('p','event')).length,0,state);
+    }finally{await f.close();}
+  }
+});
+test('no-send admission holds source/collector revocation guards and fails on authority changes during verification',async()=>{
+  const f=await fixture();try{
+    const {owner}=await f.bind(),t=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:1,requestKey:'admission'});
+    const inspect=f.source.options.sources!.inspectAccess;
+    f.source.options.sources!.inspectAccess=async(...args)=>{await f.source.saveProducer({...f.source.producer,active:false});return inspect(...args);};
+    await assert.rejects(f.service.tracking.inspectTest(f.collectorRequest(),{testId:t.id,interactionUrl:t.destinationUrl}),/collector_revoked/);
+    assert.equal((await f.store.list('p','event')).length,0);
   }finally{await f.close();}
 });
