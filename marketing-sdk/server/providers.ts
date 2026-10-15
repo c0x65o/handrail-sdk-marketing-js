@@ -20,6 +20,7 @@ import { buildMeasurementEvidence } from "./measurement.js";
 import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
+import { existingLinkedInMaterial, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
@@ -328,6 +329,40 @@ export class NativeProvider implements ProviderPort {
     readonly store: Store,
     readonly fetcher: typeof fetch = fetch,
   ) {}
+  /** Read the original campaign terms for adoption. No provider write, grant
+   * persistence or capability approval; complete hierarchy inspection follows. */
+  async captureExistingLinkedInMaterial(g: Grant, campaignId: string, source: ExistingLinkedInMaterialSource, guard: () => Promise<void>) {
+    requireThat(this.name === "linkedin" && g.provider === "linkedin" && /^\d+$/.test(campaignId) && this.vault.useReadOnly,
+      "existing_material_scope_invalid", 403);
+    const scope = digest({g,campaignId,source});
+    const current = async () => {
+      await guard();
+      requireThat(digest({g,campaignId,source}) === scope && !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "existing_campaign_scope_changed", 403);
+    };
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      requireThat(url.origin === "https://api.linkedin.com" &&
+        url.pathname === `/rest/adAccounts/${g.accountId}/adCampaigns/${campaignId}` &&
+        (!init?.method || init.method === "GET") && init?.redirect === "error", "existing_campaign_read_only_boundary", 403);
+      await current();
+      const response = await this.fetcher(input, init);
+      await current(); return response;
+    };
+    await current();
+    return this.vault.useReadOnly!(g, current, async credentials => {
+      requireThat(credentials.expiresAt > Date.now(), "provider_access_expired_or_denied", 403);
+      const client = new LinkedInMarketingClient({...credentials,apiVersion:"202609",fetchImpl:fetcher});
+      const campaign = await client.getCampaign(g.accountId,campaignId);
+      requireThat(String(campaign.id) === campaignId && ["PAUSED","DRAFT"].includes(campaign.status), "existing_campaign_not_paused");
+      const result = existingLinkedInMaterial(source,g,campaign);
+      await current();
+      return {...result,providerCampaignDigest:digest(campaign),observedAt:new Date().toISOString(),executionReady:false as const};
+    }).catch(async error => {
+      await current();
+      if (error instanceof DomainError) throw error;
+      throw new DomainError("existing_campaign_read_unavailable");
+    });
+  }
   private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
     try {
