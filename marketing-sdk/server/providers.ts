@@ -1,6 +1,6 @@
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import { countryPage, countryCode } from "./countries.js";
-import { currentPrerequisite } from "./preflight.js";
+import { currentPrerequisite, storedCredentialBinding } from "./preflight.js";
 import { providerBudgetBlockers } from "../core/index.js";
 import type { DiscoveredAccount, DiscoveredIdentity } from "./connection-discovery.js";
 import { selectedOptions } from "../core/index.js";
@@ -45,6 +45,11 @@ export interface Credentials {
   loginCustomerId?: string;
 }
 export interface VaultPort {
+  /** Trusted host custody: inspect the exact grant's current credential/config
+   * revision without returning secrets or doing network I/O. Presence selects
+   * native prerequisite evidence for every grant, independent of its ID. Throw
+   * on unavailable/revoked access; never fall back to an SDK vault record. */
+  prerequisiteBinding?: (grant: Grant) => Promise<string>;
   useReadOnly?<T>(grant: Grant, guard: () => Promise<void>, action: (credentials: Credentials & { expiresAt: number; scopes: string[] }) => Promise<T>): Promise<T>;
   use<T>(
     grant: Grant,
@@ -479,11 +484,11 @@ export class NativeProvider implements ProviderPort {
     try {
       // A newer check cannot authorize a client that captured older credentials.
       // Keep the envelope fingerprint private and fixed for this entire use.
-      const sealed = this.name === "meta" && g.id.startsWith("connection:")
-        ? digest(await this.store.get(g.projectId, "vault", g.secretRef)) : null;
+      const sealed = this.vault.prerequisiteBinding || this.name === "meta" && g.id.startsWith("connection:")
+        ? await this.credentialBinding(g) : null;
       const assertCustody = async () => {
         if (!sealed) return;
-        requireThat(digest(await this.store.get(g.projectId, "vault", g.secretRef)) === sealed &&
+        requireThat(await this.credentialBinding(g) === sealed &&
           digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g) &&
           !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "provider_custody_changed");
       };
@@ -507,12 +512,12 @@ export class NativeProvider implements ProviderPort {
               ? new LinkedInMarketingClient({
                   ...credentials,
                   apiVersion: "202609",
-                  fetchImpl: this.fetcher,
+                  fetchImpl: fetcher,
                 })
               : new GoogleAdsClient(
                   async () => credentials.accessToken,
                   credentials.loginCustomerId,
-                  this.fetcher,
+                  fetcher,
                 ),
         );
         await assertCustody();
@@ -531,10 +536,10 @@ export class NativeProvider implements ProviderPort {
   }
   async searchCountries(g: Grant, query: string, after: string | undefined, guard: () => Promise<void>) {
     requireThat(this.name === "meta" && g.provider === "meta" && this.vault.useReadOnly, "country_search_unsupported");
-    const sealed = digest(await this.store.get(g.projectId, "vault", g.secretRef));
+    const sealed = await this.credentialBinding(g);
     const current = async () => {
       await guard();
-      requireThat(digest(await this.store.get(g.projectId, "vault", g.secretRef)) === sealed &&
+      requireThat(await this.credentialBinding(g) === sealed &&
         digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g), "provider_custody_changed");
     };
     try {
@@ -646,13 +651,19 @@ export class NativeProvider implements ProviderPort {
       });
     } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("provider_prerequisite_read_unavailable", 502); }
   }
+  async credentialBinding(g: Grant): Promise<string> {
+    const binding = this.vault.prerequisiteBinding
+      ? await this.vault.prerequisiteBinding(g) : await storedCredentialBinding(this.store, g);
+    requireThat(typeof binding === 'string' && binding.length > 0 && binding.length <= 500, 'credential_binding_invalid');
+    return binding;
+  }
   private async prerequisite(c: Campaign, g: Grant) {
-    if (!g.id.startsWith("connection:")) { validateAccountCapability(c, g, true); return; }
+    if (!this.vault.prerequisiteBinding && !g.id.startsWith("connection:")) { validateAccountCapability(c, g, true); return; }
     validateAccountCapability(c, g);
     const blockers = providerBudgetBlockers(c.material);
     requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified", 422);
     const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(c.projectId, "asset", id)));
-    await currentPrerequisite(this.store, c, g, this.plan(c, g, assets));
+    await currentPrerequisite(this.store, c, g, this.plan(c, g, assets), Date.now(), await this.credentialBinding(g));
   }
   async verify(
     g: Grant,

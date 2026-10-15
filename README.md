@@ -193,6 +193,36 @@ groups. Native HTTP fixtures cover shared-group preservation, paused-group
 activation rejection before writes and read-only recovery after lost readback;
 live execution qualification remains required.
 
+Hosts with existing advertising connections may supply `MarketingServer`'s
+`campaignAccess: CampaignAccess` alongside their `NativeProvider` credential port.
+This qualifies country selection and exact campaign preparation without an SDK
+OAuth journey or SDK vault row. `CampaignAccess.campaignAuthority` returns current
+account/identity facts, original authority receipt references, live session
+inspections and an access digest. `withCampaignAuthority` holds the existing host
+session/configuration/revocation guard through the local SDK commit; no provider
+HTTP belongs inside that guard. It cannot grant account permissions, approve
+material, allocate advertising budget or replace tracking checks.
+
+The matching `VaultPort.prerequisiteBinding(grant)` returns a private nonsecret
+credential/configuration revision binding from current host custody. It must
+change on rotation, scope/configuration changes or replacement and reject revoked
+or unavailable access. Credential `use`/`useReadOnly` must enforce that same native
+authority. Inspection functions do local reads only; finish refresh/discovery
+before entering SDK commit guards. Credentials remain in host custody. A host
+binding error is terminal for that operation, with no SDK credential fallback.
+`credentialExpiresAt` is the exact usable envelope deadline, not proof of the
+provider token's lifetime; retain unknown provider expiry separately. Pinning a
+previous deadline cannot extend or revive an expired/replaced envelope.
+
+Host custody requires exact prerequisite evidence regardless of grant ID. The
+provider holds one credential binding through its requests, preserves returned
+object IDs before stopping after an uncertain write, and never replays an unknown
+operation. Prerequisite contract v5 includes this custody binding. Earlier checks
+remain historical records and need fresh qualification before use. The SDK's own
+Connections service implements the same authority interface for its existing
+OAuth records. A package upgrade does not supply a native host adapter or new
+publication authority.
+
 `NativeProvider.inspectExistingCampaign` reads retained Meta/LinkedIn object IDs
 against the supplied exact configuration through required `VaultPort.useReadOnly`
 custody. It admits only provider GETs with current-authority checks around each

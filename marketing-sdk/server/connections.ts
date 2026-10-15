@@ -1,6 +1,7 @@
 import { classifyConnectionRoute, privatePage, callbackLanding, escapeHtml, safeLocalPath, readPrivateJson, privateMutationHeaders, scriptJson, type PrivateMutationHeaders } from "./handoff-http.js";
 import { createStoreSessionAuthority, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from "./session-authority.js";
 import type { CreativeConnections } from "./creative-connections.js";
+import type { CampaignAccess, CampaignAccessSnapshot } from './campaign-access.js';
 import type {
   AccountChoice, Campaign, ConnectionCatalogue, ConnectionCommands,
   ConnectionTransition, ConnectionView, ConnectionAccessReview, Grant, IdentityChoice, Permission, Provider, SafeEvidence, Setup,
@@ -72,7 +73,7 @@ const routePart = (s: string) => encodeURIComponent(s);
 
 export function createConnections(options: ConnectionsOptions) { return new MarketingConnectionsService(options); }
 /** Durable pre-grant journey; owns no scheduler, session engine, credential store or campaign executor. */
-export class MarketingConnectionsService {
+export class MarketingConnectionsService implements CampaignAccess {
   readonly sessionAuthority: SessionAuthority;
   readonly store: Store; readonly discovery: ConnectionDiscovery; readonly evidence: "fixture" | "provider";
   constructor(readonly options: ConnectionsOptions) {
@@ -159,7 +160,7 @@ export class MarketingConnectionsService {
   }
   /** Private prerequisite binding, never a browser receipt or an expanded grant.
    * The policy callback must only inspect current host configuration. */
-  async campaignAuthority(p: Principal, g: Grant, observedCredentialExpiry?: number) {
+  async campaignAuthority(p: Principal, g: Grant, observedCredentialExpiry?: number): Promise<CampaignAccessSnapshot> {
     await this.auth(p, g.projectId, true);
     const matches = (await this.store.list<PrivateConnection>(g.projectId, "connection")).filter(c => c.view.grantId === g.id);
     requireThat(matches.length === 1, "campaign_connection_required");
@@ -183,6 +184,12 @@ export class MarketingConnectionsService {
     const sealed = await this.store.get(g.projectId, "vault", g.secretRef);
     return { digest: digest({ c, policy, configuration: this.configuration(g.provider, policy, operations(c)), sealed, sessions }),
       sessions, expiresAt, credentialExpiresAt: accessExpiry, account: c.account, identities: c.identities, receiptReferences: [c.view.accountVerified.receiptRef, c.view.consented.receiptRef].filter((r): r is string => !!r) };
+  }
+  async withCampaignAuthority<T>(p: Principal, g: Grant, expected: CampaignAccessSnapshot, local: () => Promise<T>): Promise<T> {
+    return this.sessionAuthority.withLiveSessions(expected.sessions, () => this.store.transaction(async () => {
+      const verify = async () => requireThat(digest(await this.campaignAuthority(p, g, expected.credentialExpiresAt)) === digest(expected), 'campaign_access_changed');
+      await verify(); const result = await local(); await verify(); return result;
+    }));
   }
   private async save(c: PrivateConnection, phase: ConnectionView["phase"], reason: string) {
     const previous = c.revision; c.revision++;

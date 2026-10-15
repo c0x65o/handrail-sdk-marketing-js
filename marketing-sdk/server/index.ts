@@ -13,6 +13,7 @@ export * from "./reporting.js";
 export { FixtureProvider } from "./fixtures.js";
 
 export * from "./connections.js";
+export * from "./campaign-access.js";
 export * from "./session-authority.js";
 export { classifyConnectionRoute, type PrivateMutationHeaders } from "./handoff-http.js";
 

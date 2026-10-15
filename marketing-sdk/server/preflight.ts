@@ -2,7 +2,7 @@ import type { Campaign, CampaignCheck, Grant, Asset } from "../core/index.js";
 import { Store, digest, byteDigest, requireThat } from "./store.js";
 import type { SessionInspection } from "./session-authority.js";
 
-export const NATIVE_PREREQUISITE_CONTRACT = "marketing-provider-prerequisites-4";
+export const NATIVE_PREREQUISITE_CONTRACT = "marketing-provider-prerequisites-5";
 export interface PrerequisiteRecord {
   id: string; projectId: string; campaignId: string; generation: number;
   action: "prepare"; contract: string; actorId: string;
@@ -16,9 +16,12 @@ export interface PrerequisiteRecord {
   checkedFacts?: Record<string, unknown>;
   receiptReferences?: string[];
 }
+export async function storedCredentialBinding(store: Store, g: Grant) {
+  return digest({ secretRef: g.secretRef, sealed: await store.get(g.projectId, "vault", g.secretRef) });
+}
 /** Server-only digest; includes bytes read from SQL, never trusts asset metadata alone.
  * No decoding or external work: safe to reuse inside a short final commit guard. */
-export async function prerequisiteBinding(store: Store, c: Campaign, g: Grant, plan: unknown) {
+export async function prerequisiteBinding(store: Store, c: Campaign, g: Grant, plan: unknown, credentialBinding?: string) {
   const assets = [];
   for (const assetId of c.material.assetIds) {
     const a = await store.get<Asset>(c.projectId, "asset", assetId);
@@ -29,11 +32,12 @@ export async function prerequisiteBinding(store: Store, c: Campaign, g: Grant, p
   }
   const destination = await store.get(c.projectId, "destination", c.material.destinationDigest);
   const tracking = (await store.list<any>(c.projectId, "trackingBinding")).find(b => b.owner.kind === "campaign" && b.owner.id === c.id) ?? null;
-  const sealed = await store.get(c.projectId, "vault", g.secretRef);
+  const custody = credentialBinding ?? await storedCredentialBinding(store, g);
+  requireThat(typeof custody === "string" && custody.length > 0 && custody.length <= 500, "credential_binding_invalid");
   return digest({ contract: NATIVE_PREREQUISITE_CONTRACT, action: "prepare", projectId: c.projectId,
-    campaignId: c.id, revision: c.revision, material: c.material, grant: g, plan, assets, destination, tracking, sealed });
+    campaignId: c.id, revision: c.revision, material: c.material, grant: g, plan, assets, destination, tracking, custody });
 }
-export async function currentPrerequisite(store: Store, c: Campaign, g: Grant, plan: unknown, now = Date.now()) {
+export async function currentPrerequisite(store: Store, c: Campaign, g: Grant, plan: unknown, now = Date.now(), credentialBinding?: string) {
   const campaign = await store.get<Campaign>(c.projectId, "campaign", c.id);
   const grant = await store.get<Grant>(c.projectId, "grant", g.id);
   requireThat(c.grantId === g.id && campaign.grantId === g.id && campaign.revision === c.revision &&
@@ -46,6 +50,6 @@ export async function currentPrerequisite(store: Store, c: Campaign, g: Grant, p
     r.view.campaignId === c.id && r.view.campaignRevision === c.revision && r.view.grantRevision === g.revision &&
     Date.parse(r.view.expiresAt ?? "") > now && Date.parse(r.view.expiresAt ?? "") <= Date.parse(r.createdAt) + 120000 &&
     Date.parse(r.createdAt) <= Date.parse(r.view.checkedAt ?? "") && Date.parse(r.view.checkedAt ?? "") <= now &&
-    r.binding === await prerequisiteBinding(store, c, g, plan), "campaign_prerequisites_stale", 422);
+    r.binding === await prerequisiteBinding(store, c, g, plan, credentialBinding), "campaign_prerequisites_stale", 422);
   return r;
 }

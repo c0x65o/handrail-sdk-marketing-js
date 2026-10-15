@@ -1,4 +1,5 @@
 import { materialCurrency, materialEndTime } from "../core/index.js";
+import type { CampaignAccess } from "./campaign-access.js";
 import type { ExecutionAuthority, ExecutionAction } from "./execution-authority.js";
 import { measurementAccountId } from "./measurement-collectors.js";
 import { saveMeasurementRevision, readMeasurementEvidence } from "./measurement.js";
@@ -97,9 +98,12 @@ export class MarketingServer {
     readonly mode: "fixture" | "live",
     readonly now = () => Date.now(),
     readonly readDestination = capturePublicDestination,
-    readonly options: { connections?: MarketingConnectionsService; studio?: StudioOptions; tracking?: TrackingOptions; executionAuthority?: ExecutionAuthority } = {},
+    readonly options: { campaignAccess?: CampaignAccess; connections?: MarketingConnectionsService; studio?: StudioOptions; tracking?: TrackingOptions; executionAuthority?: ExecutionAuthority } = {},
   ) {
     requireThat(!options.connections || options.connections.store === store, "connections_store_mismatch");
+    requireThat(!options.campaignAccess || options.campaignAccess.store === store, "campaign_access_store_mismatch");
+    requireThat(!options.campaignAccess || Object.values(providers).every(provider =>
+      !(provider instanceof NativeProvider) || typeof provider.vault.prerequisiteBinding === 'function'), 'host_credential_binding_required');
     requireThat(mode === "fixture" || Object.values(providers).every(provider => provider.evidence === "provider"), "fixture_provider_requires_fixture_mode");
   }
   private trackingService?: MarketingTracking;
@@ -118,6 +122,27 @@ export class MarketingServer {
   } }, this.mode, this.now); }
   private defaultConnections?: MarketingConnectionsService;
   get connections() { return this.options.connections ?? (this.defaultConnections ??= createConnections({ store: this.store, evidence: this.mode === "fixture" ? "fixture" : "provider" })); }
+  get campaignAccess(): CampaignAccess { return this.options.campaignAccess ?? this.connections; }
+  private async readCampaignAuthority(p: Principal, g: Grant, expiry?: number) {
+    const access = structuredClone(await this.campaignAccess.campaignAuthority(p, g, expiry));
+    requireThat(typeof access.digest === 'string' && access.digest.length > 0 && access.digest.length <= 500 &&
+      Number.isFinite(access.expiresAt) && access.expiresAt > this.now() &&
+      Number.isFinite(access.credentialExpiresAt) && access.credentialExpiresAt > this.now() && (expiry === undefined || expiry === access.credentialExpiresAt) &&
+      access.expiresAt <= access.credentialExpiresAt && access.expiresAt <= Date.parse(g.expiresAt) &&
+      Array.isArray(access.sessions) && access.sessions.length > 0 &&
+      access.sessions.some(s => s.projectId === g.projectId && digest(s.binding) === digest(sessionBinding(p))) &&
+      access.sessions.every(s => s.projectId === g.projectId && s.expiresAt >= access.expiresAt) &&
+      access.account?.id === g.accountId && access.account.currency === g.currency && access.account.timezone === g.timezone &&
+      access.account.permissions.includes('prepare') && g.permissions.includes('prepare') &&
+      Array.isArray(access.identities) && (g.provider === 'meta'
+        ? access.identities.some(i => i.kind === 'meta_page' && i.id === g.pageId)
+        : g.provider === 'linkedin' && access.identities.some(i => i.kind === 'linkedin_organization' && i.id === g.organizationId)) &&
+      Array.isArray(access.receiptReferences) && access.receiptReferences.length > 0 &&
+      access.receiptReferences.every(r => typeof r === 'string' && r.length > 0 && r.length <= 500),
+    'campaign_access_binding_invalid');
+    await inspectLiveSessions(this.campaignAccess.sessionAuthority, access.sessions);
+    return access;
+  }
   get advertisingBudgets() { return new AdvertisingBudgets(this.store, this.now, this.mode === "fixture" ? "fixture" : "provider"); }
   private async auth(p: Principal, project: string, write = false) {
     return await this.store.authorize(
@@ -752,8 +777,8 @@ export class MarketingServer {
       !m.advertisingBudget?.daily && !settings.targeting?.languages?.length && !settings.targeting?.interestGroups?.length &&
       !settings.targeting?.excludedCustomAudiences?.length, "country_search_unsupported");
     const provider = this.providers[g.provider]; requireThat(provider instanceof NativeProvider, "country_search_unsupported");
-    const authority = await this.connections.campaignAuthority(p, g, expiry);
-    const scope = digest({ project, principal: p.userId, authority: authority.digest, grant: g,
+    const authority = await this.readCampaignAuthority(p, g, expiry);
+    const scope = digest({ project, principal: p.userId, authority: authority.digest, custody: await provider.credentialBinding(g), grant: g,
       apiVersion: "v26.0", locale: input.locale, facet: input.facet,
       restrictions: { settings, purpose: m.purpose, advertisingBudget: m.advertisingBudget,
         ageMin: m.audience?.ageMin, ageMax: m.audience?.ageMax, expansion: m.audience?.expansion } });
@@ -766,7 +791,7 @@ export class MarketingServer {
       const current = await this.audienceContext(p, project, input, context.authority.credentialExpiresAt);
       requireThat(current.scope === context.scope, "audience_access_changed");
     };
-    const commit = <V>(local: () => Promise<V>) => this.connections.sessionAuthority.withLiveSessions(context.authority.sessions,
+    const commit = <V>(local: () => Promise<V>) => this.campaignAccess.withCampaignAuthority(p, context.g, context.authority,
       () => this.store.transaction(async () => { await guard(); const result = await local(); await guard(); return result; }));
     return work(context, guard, commit);
   }
@@ -872,14 +897,15 @@ export class MarketingServer {
     const c = await this.store.get<Campaign>(project, "campaign", campaignId);
     const g = await this.grant(project, c.grantId, "prepare");
     requireThat(g.provider === "meta" || g.provider === "linkedin", "campaign_prerequisite_tuple_unqualified", 422);
-    const authority = await this.connections.campaignAuthority(p, g, credentialExpiry);
+    const authority = await this.readCampaignAuthority(p, g, credentialExpiry);
     const tracking = await this.tracking.campaignConfiguration(p, project, c.id);
     const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(project, "asset", id)));
     const provider = this.providers[g.provider];
     requireThat(provider instanceof NativeProvider, "native_campaign_check_required");
     const plan = provider.plan(c, g, assets);
-    const binding = await prerequisiteBinding(this.store, c, g, plan);
-    return { c, g, authority, assets, provider, plan, binding, tracking };
+    const credentialBinding = await provider.credentialBinding(g);
+    const binding = await prerequisiteBinding(this.store, c, g, plan, credentialBinding);
+    return { c, g, authority, assets, provider, plan, binding, tracking, credentialBinding };
   }
   private async assertCheckContext(p: Principal, project: string, expected: Awaited<ReturnType<MarketingServer["checkContext"]>>) {
     const current = await this.checkContext(p, project, expected.c.id, expected.authority.credentialExpiresAt);
@@ -909,7 +935,7 @@ export class MarketingServer {
     if (view.state === "ready") {
       try {
         const current = await this.checkContext(p, project, r.campaignId);
-        const trusted = await currentPrerequisite(this.store, current.c, current.g, current.plan, this.now());
+        const trusted = await currentPrerequisite(this.store, current.c, current.g, current.plan, this.now(), current.credentialBinding);
         requireThat(trusted.id === r.id && r.view.evidence === (this.mode === "fixture" ? "fixture" : "provider") && r.authority === current.authority.digest, "campaign_prerequisites_stale");
       } catch { view.state = "stale"; view.reasons = ["Campaign data or access changed, or this check expired. Check updated campaign before preparing."]; }
     }
@@ -958,7 +984,7 @@ export class MarketingServer {
       await guard();
       const expires = Math.min(Date.parse(attempt.createdAt) + 120000, context.authority.expiresAt, facts.expiresAt, session.expiresAt, materialEndTime(c.material));
       requireThat(expires > this.now(), "campaign_prerequisites_expired");
-      return await this.connections.sessionAuthority.withLiveSessions(context.authority.sessions, () => this.tracking.withCampaignConfiguration(context.tracking, () => this.store.transaction(async () => {
+      return await this.campaignAccess.withCampaignAuthority(p, context.g, context.authority, () => this.tracking.withCampaignConfiguration(context.tracking, () => this.store.transaction(async () => {
         await guard();
         const pointer = await this.store.get<{id:string}>(project, "campaignCheckCurrent", c.id);
         attempt.credentialExpiresAt = context.authority.credentialExpiresAt; attempt.binding = context.binding; attempt.authority = context.authority.digest; attempt.sessions = context.authority.sessions;
@@ -989,14 +1015,21 @@ export class MarketingServer {
       return structuredClone(attempt.view);
     }
   }
+  private requiresCampaignCheck(g: Grant, kind: Operation['kind']) {
+    const provider = this.providers[g.provider];
+    return kind !== 'pause' && provider instanceof NativeProvider &&
+      (this.options.campaignAccess !== undefined || provider.vault.prerequisiteBinding !== undefined || g.id.startsWith('connection:'));
+  }
   private async consumeCampaignCheck(p: Principal, c: Campaign, g: Grant) {
     const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(c.projectId, "asset", id)));
-    const proof = await currentPrerequisite(this.store, c, g, this.providers[g.provider].plan(c, g, assets), this.now());
+    const provider = this.providers[g.provider];
+    requireThat(provider instanceof NativeProvider, 'native_campaign_check_required');
+    const proof = await currentPrerequisite(this.store, c, g, provider.plan(c, g, assets), this.now(), await provider.credentialBinding(g));
     const context = await this.checkContext(p, c.projectId, c.id, proof.credentialExpiresAt);
     requireThat(digest(context.g) === digest(g) && context.c.revision === c.revision && proof.view.evidence === (this.mode === "fixture" ? "fixture" : "provider") && proof.authority === context.authority.digest,
       "campaign_prerequisites_stale");
-    await inspectLiveSessions(this.connections.sessionAuthority, proof.sessions);
-    return proof;
+    await inspectLiveSessions(this.campaignAccess.sessionAuthority, proof.sessions);
+    return { ...proof, access: context.authority };
   }
   async prepare(
     p: Principal,
@@ -1322,7 +1355,7 @@ export class MarketingServer {
           o.payloadDigest,
         "payload_changed",
       );
-      if (g.id.startsWith("connection:") && o.kind !== "pause" && this.providers[g.provider] instanceof NativeProvider) await this.consumeCampaignCheck(p, c, g);
+      if (this.requiresCampaignCheck(g, o.kind)) await this.consumeCampaignCheck(p, c, g);
       const v = await this.providers[g.provider].verify(
         g,
         c,
@@ -1433,7 +1466,7 @@ export class MarketingServer {
     const provider = this.providers[g.provider];
     const withWriteAuthority = async <T>(action: () => Promise<T>) => {
       const actor = await this.store.get<Principal>(project, "executionActor", o.id);
-      const proof = g.id.startsWith("connection:") && o.kind !== "pause" && provider instanceof NativeProvider
+      const proof = this.requiresCampaignCheck(g, o.kind)
         ? await this.consumeCampaignCheck(actor, c, g) : null;
       const local = () => this.store.transaction(async () => {
         await this.store.db.assertExecutionOwner();
@@ -1473,7 +1506,7 @@ export class MarketingServer {
       const secured = async () => {
         if (!proof) return local();
         const tracking = await this.tracking.campaignConfiguration(actor, project, c.id);
-        return this.connections.sessionAuthority.withLiveSessions(proof.sessions, () => this.tracking.withCampaignConfiguration(tracking, local));
+        return this.campaignAccess.withCampaignAuthority(actor, g, proof.access, () => this.tracking.withCampaignConfiguration(tracking, local));
       };
       return this.options.executionAuthority
         ? this.options.executionAuthority.withCurrent(actor, c, o.kind, async () => {
