@@ -124,7 +124,13 @@ export class MarketingTracking {
     for(const instruction of s.instructions) text(instruction,2000);
     requireThat(!s.destinationScopes || Array.isArray(s.destinationScopes) && s.destinationScopes.length<=50,'invalid_tracking_destination_scope',422);
     for(const scope of s.destinationScopes??[]) {
-      keys(scope,['origin','pathPrefix']);text(scope.origin,2048);text(scope.pathPrefix,2048);
+      keys(scope,['origin','pathPrefix','testQuery']);text(scope.origin,2048);text(scope.pathPrefix,2048);
+      if(scope.testQuery!==undefined){
+        requireThat(scope.testQuery!==null && typeof scope.testQuery==='object' && !Array.isArray(scope.testQuery)
+          && Object.keys(scope.testQuery).length>0 && Object.keys(scope.testQuery).length<=10,'invalid_tracking_test_query',422);
+        for(const [key,value] of Object.entries(scope.testQuery)){text(key,100);text(value,500);
+          requireThat(!['marketing_test','marketing_source','marketing_outcome'].includes(key),'reserved_tracking_test_query',422);}
+      }
       let u:URL|undefined;try{u=new URL(scope.origin);}catch{/* rejected below */}
       requireThat(u,'invalid_tracking_destination_scope',422);
       requireThat(u.origin===scope.origin && u.hostname===s.domain && (u.protocol==='https:' || this.mode==='fixture'&&u.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(u.hostname))
@@ -146,12 +152,23 @@ export class MarketingTracking {
     if(!raw||raw.length>2048||known.some(d=>d.url===raw))return known;
     let url:URL;try{url=new URL(raw);}catch{return known;}
     if(url.username||url.password||this.encodedSeparator(url.pathname))return known;
-    if(!(source.destinationScopes??[]).some(scope=>url.origin===scope.origin &&
-      (url.pathname===scope.pathPrefix||url.pathname.startsWith(scope.pathPrefix.endsWith('/')?scope.pathPrefix:scope.pathPrefix+'/'))))return known;
-    // Preserve the original spelling, path, query order and fragment. The ID
-    // identifies this exact destination, independently of other campaigns.
-    return [...known,{id:'destination_'+digest([source.id,raw]),label:'Current campaign destination',url:raw,testUrl:null}];
+    const scopes=(source.destinationScopes??[]).filter(scope=>url.origin===scope.origin &&
+      (url.pathname===scope.pathPrefix||url.pathname.startsWith(scope.pathPrefix.endsWith('/')?scope.pathPrefix:scope.pathPrefix+'/')));
+    if(!scopes.length)return known;
+    // Ambiguous host test declarations do not grant a test destination. Preserve
+    // original URL bytes; only the explicitly declared control query is added.
+    const testQuery=scopes.length===1?scopes[0]!.testQuery:undefined;
+    const testUrl=testQuery?this.queryUrl(raw,testQuery):null;
+    return [...known,{id:'destination_'+digest([source.id,raw]),label:'Current campaign destination',url:raw,testUrl}];
   }
+  private queryUrl(raw:string,query:Record<string,string>) {
+    const url=new URL(raw);
+    requireThat(Object.keys(query).every(key=>!url.searchParams.has(key)),'tracking_test_query_conflict',422);
+    const hash=raw.indexOf('#'),base=hash<0?raw:raw.slice(0,hash),fragment=hash<0?'':raw.slice(hash);
+    const result=base+(url.search?'&':'?')+new URLSearchParams(query).toString()+fragment;
+    text(result,4096);return result;
+  }
+
   private async withSource<T>(s: TrackingSource, local: () => Promise<T>) {
     requireThat(this.options.sources,'tracking_source_integration_required');
     return this.options.sources.withLiveSources([s], async () => {
@@ -333,8 +350,8 @@ export class MarketingTracking {
       const destination=this.destinations(binding.source,binding.destination).find(d=>d.id===binding.destinationId);requireThat(destination?.testUrl,'no_send_test_destination_required');
       const prior=(await this.store.list<TestRecord>(project,'trackingTest')).find(r=>r.binding.id===binding.id && r.test.bindingRevision===binding.revision && !r.test.cancelledAt && Date.parse(r.test.expiresAt)>this.now());
       if(prior) {requireThat(digest(prior.session)===digest(s),'test_in_progress_in_another_session');return prior.test;}
-      const testId=id(), url=new URL(destination.testUrl);url.searchParams.set('marketing_test',testId);url.searchParams.set('marketing_outcome',binding.outcome);
-      const test:TrackingTest={id:testId,revision:1,bindingId:binding.id,bindingRevision:binding.revision,createdAt:new Date(this.now()).toISOString(),expiresAt:new Date(this.now()+300000).toISOString(),cancelledAt:null,observedAt:null,destinationUrl:url.href};
+      const testId=id(), url=this.queryUrl(destination.testUrl,{marketing_test:testId,marketing_source:binding.source.id,marketing_outcome:binding.outcome});
+      const test:TrackingTest={id:testId,revision:1,bindingId:binding.id,bindingRevision:binding.revision,createdAt:new Date(this.now()).toISOString(),expiresAt:new Date(this.now()+300000).toISOString(),cancelledAt:null,observedAt:null,destinationUrl:url};
       await this.store.put(project,'trackingTest',testId,{test,binding,session:s});return test;
     }),[binding.source]);
   }

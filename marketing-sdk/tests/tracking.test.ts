@@ -540,3 +540,40 @@ test('no-send admission holds source/collector revocation guards and fails on au
     assert.equal((await f.store.list('p','event')).length,0);
   }finally{await f.close();}
 });
+
+
+test('host-declared scoped no-send URLs preserve campaign bytes and include exact authenticated source selection',async()=>{
+ const f=await fixture();try{
+  const origin=f.origin.replace('http:','https:');
+  const source={...f.source.source,revision:'2',destinationScopes:[{origin,pathPrefix:'/owned',testQuery:{handrail_capture_mode:'synthetic_no_send'}}]};
+  await f.source.saveSource(source);
+  const raw=origin+'/owned/form?utm_campaign=space%20here&x=~&x=%2f#form';
+  const draft=await f.service.call(f.p,'p','saveBrief',{requestKey:'scoped-test',brief:{...emptyBrief(),name:'Scoped test',offer:'Offer',audience:'Customers',destination:raw,outcome:'acquisition'}});
+  const owner={kind:'draft' as const,id:draft.id},view=await f.service.call(f.p,'p','tracking',{owner});
+  const destination=view.destinations.find(d=>d.url===raw)!;assert.ok(destination.testUrl);
+  assert.equal(destination.testUrl,raw.replace('#form','&handrail_capture_mode=synthetic_no_send#form'));
+  const binding=await f.service.call(f.p,'p','bindTracking',{owner,expectedRevision:1,expectedBindingRevision:0,sourceId:source.id,sourceRevision:source.revision,destinationId:destination.id,outcome:'inquiry',refundTreatment:null,requestKey:'bind-scoped-test'});
+  const test=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:binding.revision,requestKey:'start-scoped-test'});
+  assert.ok(test.destinationUrl.startsWith(raw.split('#')[0]+'&handrail_capture_mode=synthetic_no_send&'));
+  assert.equal(new URL(test.destinationUrl).searchParams.get('marketing_source'),source.id);
+  const inspected=await f.service.tracking.inspectTest(f.collectorRequest(),{testId:test.id,interactionUrl:test.destinationUrl});
+  assert.equal(inspected.destinationUrl,raw);assert.equal(inspected.sourceId,source.id);
+  assert.equal((await f.store.list('p','event')).length,0);
+  await f.source.saveSource({...source,revision:'3',destinationScopes:[{origin,pathPrefix:'/owned'}]});
+  const changed=await f.service.call(f.p,'p','tracking',{owner});assert.equal(changed.destinations.find(d=>d.url===raw)!.testUrl,null);assert.equal(changed.readiness,'stale');
+ }finally{await f.close();}
+});
+test('scoped no-send query declarations cannot replace reserved SDK identity or ambiguous ownership',async()=>{
+ const f=await fixture();try{
+  const origin=f.origin.replace('http:','https:'),{owner}=await f.bind();
+  for(const testQuery of [{marketing_test:'forged'},{}] as Record<string,string>[]){
+   await f.source.saveSource({...f.source.source,destinationScopes:[{origin,pathPrefix:'/',testQuery}]});
+   await assert.rejects(f.service.call(f.p,'p','tracking',{owner}),/tracking_test_query/);
+  }
+  const raw=origin+'/owned/ambiguous';
+  const draft=await f.service.call(f.p,'p','saveBrief',{requestKey:'ambiguous-test',brief:{...emptyBrief(),name:'Ambiguous',offer:'Offer',audience:'Customers',destination:raw,outcome:'acquisition'}});
+  await f.source.saveSource({...f.source.source,destinationScopes:[{origin,pathPrefix:'/',testQuery:{mode:'no-send'}},{origin,pathPrefix:'/owned',testQuery:{mode:'other'}}]});
+  const view=await f.service.call(f.p,'p','tracking',{owner:{kind:'draft',id:draft.id}});
+  assert.equal(view.destinations.find(d=>d.url===raw)!.testUrl,null);
+ }finally{await f.close();}
+});

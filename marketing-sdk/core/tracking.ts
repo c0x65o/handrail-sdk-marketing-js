@@ -20,7 +20,9 @@ export interface TrackingSource {
   destinations: TrackingDestination[];
   /** Host-declared ownership only. Resolving a URL never proves collection,
    * consent, a no-send destination, provider delivery or production coverage. */
-  destinationScopes?: { origin: string; pathPrefix: string }[];
+  destinationScopes?: { origin: string; pathPrefix: string;
+    /** Explicit host no-send route contract; ownership alone never supplies it. */
+    testQuery?: Record<string,string> }[];
   instructions: string[];
 }
 export interface TrackingBinding {

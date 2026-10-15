@@ -623,3 +623,12 @@ readiness, click, coverage, provider operation or spending authority; the source
 still must retain the actual no-send interaction and submit its authenticated
 completion receipt. Unbound hosts remain unavailable. HTTP replies are private and
 no-store. Existing accepted QA receipts and history remain unchanged.
+
+Hosts may declare `destinationScopes[].testQuery` for their actual no-send route
+contract. SDK-generated exact campaign destinations gain a test URL only from one
+unambiguous explicit declaration; ownership alone leaves testUrl null. Test links
+carry marketing_test, marketing_source and marketing_outcome. Existing campaign
+query bytes and fragments are preserved while these control parameters are added.
+Reserved controls cannot be overridden; removing/changing the declaration makes
+existing test bindings stale. A link still requires authenticated test admission
+and an actual source completion; it grants no production metric or send authority.
