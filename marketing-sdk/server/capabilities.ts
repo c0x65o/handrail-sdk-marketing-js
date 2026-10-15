@@ -46,3 +46,18 @@ export function exactTargeting(actual: unknown, expected: unknown): boolean {
   // intentionally strict: an unqualified provider normalization is not guessed here.
   return canonical(actual) === canonical(expected);
 }
+
+/** AND children and facet members are unordered in LinkedIn targeting. Preserve
+ * grouping, duplicates, unknown keys and scalar types; only reorder sets. */
+export function exactLinkedInTargeting(actual: unknown, expected: unknown): boolean {
+  const normalize = (value: unknown, key = ""): unknown => {
+    if (Array.isArray(value)) {
+      const items = value.map(v => normalize(v));
+      return key === "and" || key === "or" || key.startsWith("urn:li:adTargetingFacet:")
+        ? items.sort((a,b) => canonical(a).localeCompare(canonical(b))) : items;
+    }
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,normalize(v,k)]));
+    return value;
+  };
+  return canonical(normalize(actual)) === canonical(normalize(expected));
+}

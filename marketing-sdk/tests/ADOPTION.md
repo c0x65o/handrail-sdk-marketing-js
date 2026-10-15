@@ -118,3 +118,26 @@ and disposable SQL. A consumer must implement the trusted source (including orig
 current Vault/grant binding and monotonic native execution guard before invoking
 it live. Passing these tests is not evidence that Handrail has transferred a
 campaign or completed an authorized live pilot.
+
+Existing LinkedIn campaigns retain exact UTC instants, including partial-day
+starts, and explicit `interfaceLocales` targeting. Manual CPC with website
+conversions and `NONE` optimization is represented without changing it to an
+optimized-bidding mode. AND child order and facet-member order are compared as
+unordered collections, preserving grouping, duplicates and unknown fields.
+These terms follow the provider's [campaign schema](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaigns?view=li-lms-2026-01)
+and [website conversion objectives](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/campaign-objectives?view=li-lms-2026-08),
+and a current Handrail provider observation (2026-10-15T00:19Z).
+
+Read-only adoption marks the existing LinkedIn group as shared in the generated
+receipt. Its account/identity and original observed configuration remain in the
+readback digest, but its cap/schedule are not relabeled as this campaign's terms.
+Campaign daily/lifetime amounts and schedule still require exact agreement.
+Later operations retain this receipt and never acquire group ownership or mutate
+its budget/schedule/status. A changed campaign cap, start time, locale target or
+account is still rejected. Newly created group validation remains unchanged.
+
+Validation: normal compilation and 59 disposable-PostgreSQL tests passed across
+capabilities, adoption and provider paths, including reordered targeting, changed
+membership, distinct shared-group terms, partial-day schedules and lost responses.
+This qualifies the implementation against intercepted transports, not a live
+execution adoption or campaign resumption.

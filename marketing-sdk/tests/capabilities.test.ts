@@ -9,7 +9,7 @@ import { NativeProvider, providerPlan } from "../server/providers.js";
 import { MetaMarketingClient } from "../support/owner-marketing/meta-client.js";
 import { FixtureProvider, FixtureAgent, FixtureGeneration } from "../server/fixtures.js";
 import { MarketingServer } from "../server/service.js";
-import { metaExpansionOff } from "../server/capabilities.js";
+import { metaExpansionOff, exactLinkedInTargeting } from "../server/capabilities.js";
 import { testStore } from "./datastore.js";
 import { byteDigest, digest } from "../server/store.js";
 
@@ -677,4 +677,63 @@ test('daily-only terms reject missing amounts, mixed currency and conflicting li
     (x:Campaign)=>{x.material.endAt='';},
     (x:Campaign)=>{x.material.advertisingBudget!.campaignLifetimeCeiling={currency:'USD',minor:50000};},
   ]){const changed=structuredClone(c);mutate(changed);assert.throws(()=>providerPlan(changed,g,[a]));}
+});
+
+
+test('LinkedIn original schedule, manual conversion bidding, locale target and shared group survive read-only inspection',async()=>{
+  const t=await native('linkedin');try{
+    linkedInMode(t.c,['WEBSITE_CONVERSION','NONE','manual','CPC']);
+    const settings=t.c.material.settings as LinkedInSettings;
+    settings.targeting.include.interfaceLocales=[{id:'urn:li:locale:en_US',label:'English'}];
+    settings.targeting.include.titles=[{id:'urn:li:title:1',label:'Designer'},{id:'urn:li:title:2',label:'Architect'}];
+    t.g.targetingOptions!.push({kind:'interfaceLocales',id:'urn:li:locale:en_US',label:'English'});
+    t.c.material.startAt='2026-10-04T15:23:53.318Z';eligible(t.c,t.g);
+    const prepared=await t.port.prepare(t.c,t.g,[t.a],'original-partial-day',()=>{},()=>{});
+    const ids=Object.fromEntries(['group','campaign','creative','image','conversion'].map(k=>[k,prepared.ids[k]!]));
+    t.c.material.budget=null;t.c.material.endAt=null;t.c.material.advertisingBudget={daily:{currency:'USD',minor:1000}};
+    const group=t.state.objects.get(ids.group!),campaign=t.state.objects.get(ids.campaign!);
+    group.totalBudget={amount:'7500',currencyCode:'USD'};
+    group.runSchedule={start:Date.parse('2026-01-01T12:00:00Z'),end:Date.parse('2027-01-01T00:00:00Z')};
+    delete campaign.runSchedule.end;campaign.dailyBudget={amount:'10',currencyCode:'USD'};
+    campaign.targetingCriteria.include.and.reverse();
+    const titles=campaign.targetingCriteria.include.and.find((x:any)=>x.or['urn:li:adTargetingFacet:titles']);
+    titles.or['urn:li:adTargetingFacet:titles'].reverse();
+    const retainedGroup=structuredClone(group),writes=t.state.writes;
+    const observed=await t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{});
+    assert.equal(observed.candidateReceipt.ids.groupOwnership,'shared');
+    assert.equal(campaign.runSchedule.start,Date.parse(t.c.material.startAt));
+    assert.deepEqual(group,retainedGroup);assert.equal(t.state.writes,writes);
+    campaign.runSchedule.start+=1;
+    await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_effective_material_mismatch/);
+    campaign.runSchedule.start-=1;campaign.totalBudget={amount:'50',currencyCode:'USD'};
+    await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_effective_material_mismatch/);
+    delete campaign.totalBudget;
+    const locales=campaign.targetingCriteria.include.and.find((x:any)=>x.or['urn:li:adTargetingFacet:interfaceLocales']);
+    locales.or['urn:li:adTargetingFacet:interfaceLocales']=['urn:li:locale:fr_FR'];
+    await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_targeting_or_optimization_mismatch/);
+    assert.equal(t.state.writes,writes);assert.deepEqual(group,retainedGroup);
+  }finally{await t.close();}
+});
+
+test('LinkedIn targeting comparison preserves grouping, duplicate members and unknown fields',()=>{
+  const expected={include:{and:[{or:{'urn:li:adTargetingFacet:titles':['urn:li:title:1','urn:li:title:2']}},{or:{'urn:li:adTargetingFacet:locations':['urn:li:geo:1']}}]}};
+  const reordered=structuredClone(expected);reordered.include.and.reverse();
+  assert.equal(exactLinkedInTargeting(reordered,expected),true);
+  for(const mutate of [
+    (x:any)=>{x.include.or=x.include.and;delete x.include.and;},
+    (x:any)=>{x.include.and.push(x.include.and[0]);},
+    (x:any)=>{x.include.and[0].or['urn:li:adTargetingFacet:titles'].push('urn:li:title:1');},
+    (x:any)=>{x.include.and[0].or.unknown=['broader'];},
+    (x:any)=>{x.exclude={};},
+  ]){const changed=structuredClone(expected);mutate(changed);assert.equal(exactLinkedInTargeting(changed,expected),false);}
+});
+
+test('LinkedIn exact UTC instants reject invalid dates and timezone-less times',()=>{
+  const {c,g}=sample('linkedin');
+  for(const v of ['2026-10-04T15:23:53.318Z','2026-10-04T15:23:53Z']){
+    c.material.startAt=v;assert.deepEqual(capabilityBlockers(c.material,g),[]);
+  }
+  for(const v of ['2026-02-30T12:00:00Z','2026-10-04T15:23:53','2026-10-04T24:00:00Z','invalid']){
+    c.material.startAt=v;assert.ok(capabilityBlockers(c.material,g).includes('linkedin_schedule_requires_utc_instants'));
+  }
 });

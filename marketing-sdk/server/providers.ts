@@ -4,7 +4,7 @@ import { currentPrerequisite } from "./preflight.js";
 import { providerBudgetBlockers } from "../core/index.js";
 import type { DiscoveredAccount, DiscoveredIdentity } from "./connection-discovery.js";
 import { selectedOptions } from "../core/index.js";
-import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, exactTargeting } from "./capabilities.js";
+import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, exactTargeting, exactLinkedInTargeting } from "./capabilities.js";
 import type {
   Asset,
   Campaign,
@@ -939,7 +939,8 @@ export class NativeProvider implements ProviderPort {
     requireThat(providerIds && Object.keys(providerIds).every(k => allowed.includes(k)) && required.every(k => typeof providerIds[k] === "string" && providerIds[k]!.length > 0) &&
       Object.values(providerIds).every(v => typeof v === "string" && v.length > 0), "existing_campaign_identity_invalid", 422);
     // Readback versions/digests come from this SDK read, never supplied history.
-    const ids = { ...providerIds, readbackVersion: this.name === "meta" ? "4" : "3" };
+    const ids = { ...providerIds, readbackVersion: this.name === "meta" ? "4" : "3",
+      ...(this.name === "linkedin" ? { groupOwnership: "shared" } : {}) };
     const plan = this.plan(c, g, assets), scope = digest({c,g,assets,providerIds});
     const current = async () => {
       await guard();
@@ -1066,6 +1067,7 @@ export class NativeProvider implements ProviderPort {
             "associatedEntity",
             "targetingCriteria",
             "dailyBudget",
+            ...(ids.groupOwnership === "shared" ? ["totalBudget"] : []),
             "runSchedule",
             "audienceExpansionEnabled",
             "offsiteDeliveryEnabled",
@@ -1257,7 +1259,7 @@ export class NativeProvider implements ProviderPort {
         requireThat(s.campaign.optimizationTargetType === plan.campaign.optimizationTargetType &&
           s.campaign.politicalIntent === plan.campaign.politicalIntent && s.campaign.connectedTelevisionOnly === false &&
           exactTargeting(s.campaign.locale, { country: "US", language: "en" }) &&
-          exactTargeting(s.campaign.targetingCriteria, plan.campaign.targetingCriteria), "provider_targeting_or_optimization_mismatch");
+          exactLinkedInTargeting(s.campaign.targetingCriteria, plan.campaign.targetingCriteria), "provider_targeting_or_optimization_mismatch");
         requireThat(s.post.contentCallToActionLabel === plan.creative.callToActionLabel &&
           exactTargeting(s.post.distribution, { feedDistribution: "NONE", thirdPartyDistributionChannels: [] }), "creative_distribution_mismatch");
         requireThat(s.image?.id === ids.image && s.image?.owner === `urn:li:organization:${plan.creative.organizationId}` && s.image?.status === "AVAILABLE", "provider_media_owner_unverified");
@@ -1273,22 +1275,21 @@ export class NativeProvider implements ProviderPort {
         s.campaign.account === `urn:li:sponsoredAccount:${plan.accountId}` &&
         s.campaign.associatedEntity === `urn:li:organization:${plan.campaign.organizationId}` &&
         linkedInMoney(s.campaign.dailyBudget, (plan.campaign.dailyBudgetCents / 100).toFixed(2), plan.campaign.currencyCode) &&
+        (ids.groupOwnership !== "shared" || (plan.group.totalBudgetCents === undefined ? s.campaign.totalBudget == null :
+          linkedInMoney(s.campaign.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.campaign.currencyCode))) &&
         linkedInMoney(s.campaign.unitCost, plan.campaign.unitCostAmount, plan.campaign.currencyCode) &&
         s.campaign.objectiveType === plan.campaign.objectiveType &&
         s.campaign.type === plan.campaign.type && s.campaign.costType === plan.campaign.costType &&
         s.campaign.format === plan.campaign.format &&
-        (plan.group.totalBudgetCents === undefined ? s.group.totalBudget == null :
-          linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode)) &&
-        (plan.group.endAt !== undefined || s.group.runSchedule?.end == null) &&
+        (ids.groupOwnership === "shared" || (plan.group.totalBudgetCents === undefined ? s.group.totalBudget == null :
+          linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode))) &&
+        (ids.groupOwnership === "shared" || plan.group.endAt !== undefined || s.group.runSchedule?.end == null) &&
         (plan.campaign.endAt !== undefined || s.campaign.runSchedule?.end == null) &&
-          subset(
-            s.campaign.targetingCriteria,
-            plan.campaign.targetingCriteria,
-          ) &&
-          subset(s.group.runSchedule, {
+          exactLinkedInTargeting(s.campaign.targetingCriteria, plan.campaign.targetingCriteria) &&
+          (ids.groupOwnership === "shared" || subset(s.group.runSchedule, {
             start: plan.group.startAt,
             ...(plan.group.endAt === undefined ? {} : { end: plan.group.endAt }),
-          }) &&
+          })) &&
           subset(s.campaign.runSchedule, {
             start: plan.campaign.startAt,
             ...(plan.campaign.endAt === undefined ? {} : { end: plan.campaign.endAt }),

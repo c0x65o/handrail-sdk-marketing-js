@@ -2,7 +2,7 @@ import { canonical, type Audience, type Material, type PublicGrant } from "./ind
 
 export const CAPABILITY_VERSION = "2026-10-06.1" as const;
 export interface ResolvedOption { id: string; label: string }
-export type ProfessionalFacet = "titles" | "jobFunctions" | "seniorities" | "employers" | "industries" | "staffCountRanges";
+export type ProfessionalFacet = "titles" | "jobFunctions" | "seniorities" | "employers" | "industries" | "staffCountRanges" | "interfaceLocales";
 export type ProfessionalFacets = Partial<Record<ProfessionalFacet, ResolvedOption[]>>;
 export interface ApplicantGoal {
   event: "ApplicantRequestMOU";
@@ -68,6 +68,7 @@ export const LINKEDIN_COMBINATIONS = [
   ["WEBSITE_CONVERSION", "MAX_CONVERSION", "auto", "CPM"],
   ["BRAND_AWARENESS", "MAX_REACH", "auto", "CPM"],
   ["ENGAGEMENT", "MAX_CLICK", "auto", "CPM"],
+  ["WEBSITE_CONVERSION", "NONE", "manual", "CPC"],
 ] as const;
 export const META_COMBINATIONS = [
   ["ordinary", "OUTCOME_TRAFFIC", "LINK_CLICKS"],
@@ -95,6 +96,7 @@ const options = (v: unknown, pattern: RegExp) => Array.isArray(v) && v.length <=
   new Set(v.map(x => x?.id)).size === v.length && v.every(x => only(x, ["id", "label"]) && typeof x.id === "string" && pattern.test(x.id) && nonempty(x.label));
 const facetPatterns: Record<ProfessionalFacet, RegExp> = {
   titles: /^urn:li:title:\d+$/, jobFunctions: /^urn:li:function:\d+$/, seniorities: /^urn:li:seniority:\d+$/,
+  interfaceLocales: /^urn:li:locale:[a-z]{2}_[A-Z]{2}$/,
   employers: /^urn:li:organization:\d+$/, industries: /^urn:li:industry:\d+$/,
   staffCountRanges: /^urn:li:staffCountRange:\((1,1|2,10|11,50|51,200|201,500|501,1000|1001,5000|5001,10000|10001,2147483647)\)$/,
 };
@@ -137,7 +139,11 @@ export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "a
     } else check(m.purpose === "acquisition" && s.specialAdCategory === undefined && s.specialAdCategoryCountry === undefined && s.conversion === undefined, "purpose_conversion_mismatch");
   } else if (s.provider === "linkedin") {
     check(m.timezone === "UTC" && (!g || g.timezone === "UTC"), "linkedin_utc_required");
-    check([m.startAt, ...(m.endAt === null ? [] : [m.endAt])].every(v => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.000)?Z$/.test(v)), "linkedin_schedule_requires_utc_midnights");
+    // Provider runSchedule uses exact UTC instants, including existing partial days.
+    // Completed-day reporting has its own midnight boundary validation.
+    check([m.startAt, ...(m.endAt === null ? [] : [m.endAt])].every(v => typeof v === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(v) && Number.isFinite(Date.parse(v)) &&
+      new Date(v).toISOString() === (v.includes(".") ? v : v.replace("Z", ".000Z"))), "linkedin_schedule_requires_utc_instants");
     check(only(s, [...base, "bid", "politicalIntent", "politicalConsent"]), "unexpected_settings_fields");
     check(s.apiVersion === "202609" && s.format === "STANDARD_UPDATE", "unsupported_format_or_api");
     check(LINKEDIN_COMBINATIONS.some(row => row[0] === s.objective && row[1] === s.optimization && row[2] === s.bid?.mode && row[3] === s.bid?.costType), "unsupported_objective_optimization_bid");
