@@ -547,6 +547,17 @@ permissions still require the existing independent role checks.
 
 ## Exact campaign destinations in Tracking
 
+Destination captures use a version-2 identity containing the exact URL, HTML
+content digest and source kind. `digest` identifies the retained snapshot;
+`contentDigest` identifies the original bytes. Two campaign URLs serving the same
+HTML cannot overwrite each other's evidence. Repeated captures of identical
+content retain the original observation/time; changed content creates another
+snapshot. Live preparation/reconciliation compares current bytes with the retained
+content digest. Historical byte-addressed snapshots remain readable without
+rewriting campaign material or approvals. Hosts adopting existing campaigns use
+`destinationSnapshot` and `retainDestinationSnapshot` inside their existing
+authorized Store transaction; raw blobs remain content-addressed.
+
 A host source may declare `destinationScopes: [{origin, pathPrefix}]` from its
 current owned deployment contract. The SDK resolves the draft/campaign's existing
 URL against those explicit scopes and returns `TrackingView.destinations`, keyed

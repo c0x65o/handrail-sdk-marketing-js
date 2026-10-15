@@ -1,7 +1,43 @@
 import { lookup } from "node:dns/promises";
 import { request } from "node:https";
 import { isIP } from "node:net";
-import { requireThat } from "./store.js";
+import { Store, byteDigest, digest, requireThat } from "./store.js";
+
+export interface DestinationSnapshot {
+  version: 2; digest: string; contentDigest: string; url: string;
+  source: 'fixture' | 'public_https'; observedAt: string;
+}
+/** Content identity includes the exact URL. Identical HTML served at two
+ * campaign URLs must not overwrite either campaign's retained evidence. */
+export function destinationSnapshot(url: string, bytes: Uint8Array, source: DestinationSnapshot['source'], observedAt: string): DestinationSnapshot {
+  const contentDigest=byteDigest(bytes);
+  return {version:2,digest:digest(['destination-v2',url,contentDigest,source]),contentDigest,url,source,observedAt};
+}
+export function destinationContentDigest(snapshot: {version?:number;digest?:string;contentDigest?:string;url:string;source:string}, expected: string, url: string) {
+  requireThat(snapshot.url===url,'destination_snapshot_mismatch');
+  if(snapshot.version===2) {
+    requireThat(snapshot.digest===expected && /^[a-f0-9]{64}$/.test(snapshot.contentDigest??'')
+      && digest(['destination-v2',url,snapshot.contentDigest,snapshot.source])===expected,'destination_snapshot_mismatch');
+    return snapshot.contentDigest!;
+  }
+  // Original retained snapshots use the byte hash as their identity. Reading
+  // those facts does not rewrite material, receipts or historical approvals.
+  requireThat(snapshot.version===undefined && (!snapshot.digest || snapshot.digest===expected),'destination_snapshot_mismatch');
+  return expected;
+}
+export async function retainDestinationSnapshot(store: Store, project: string, snapshot: DestinationSnapshot, bytes: Uint8Array) {
+  requireThat(destinationContentDigest(snapshot,snapshot.digest,snapshot.url)===byteDigest(bytes),'destination_bytes_changed');
+  const previous=await store.get<DestinationSnapshot>(project,'destination',snapshot.digest).catch(error=>{
+    if(error.code==='not_found')return null;throw error;
+  });
+  if(previous) {
+    requireThat(destinationContentDigest(previous,snapshot.digest,snapshot.url)===snapshot.contentDigest,'destination_snapshot_mismatch');
+    return previous;
+  }
+  await store.db.prepare('INSERT OR IGNORE INTO blobs VALUES(?,?,?)').run(project,snapshot.contentDigest,bytes);
+  await store.put(project,'destination',snapshot.digest,snapshot);
+  return snapshot;
+}
 
 export function publicAddress(address: string): boolean {
   if (isIP(address) === 6)

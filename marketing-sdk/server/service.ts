@@ -55,7 +55,7 @@ import {
   DomainError,
 } from "./store.js";
 import { draftMaterial, instant, keys, material, text } from "./validation.js";
-import { capturePublicDestination } from "./destination.js";
+import { capturePublicDestination, destinationSnapshot, destinationContentDigest, retainDestinationSnapshot } from "./destination.js";
 import { AdvertisingBudgets } from "./budgets.js";
 import { providerDayWindow } from "./reporting.js";
 import { inspectMedia } from "./generation.js";
@@ -352,22 +352,8 @@ export class MarketingServer {
       this.mode === "fixture"
         ? Buffer.from(`Synthetic destination descriptor only: ${input.url}`)
         : await this.readDestination(input.url);
-    const snapshot = {
-      digest: byteDigest(bytes),
-      url: input.url,
-      source:
-        this.mode === "fixture"
-          ? ("fixture" as const)
-          : ("public_https" as const),
-      observedAt: new Date(this.now()).toISOString(),
-    };
-    await this.reportGuard(p, session, true, async () => {
-      await this.store.db
-        .prepare("INSERT OR IGNORE INTO blobs VALUES(?,?,?)")
-        .run(project, snapshot.digest, bytes);
-      await this.store.put(project, "destination", snapshot.digest, snapshot);
-    });
-    return snapshot;
+    const snapshot=destinationSnapshot(input.url,bytes,this.mode==='fixture'?'fixture':'public_https',new Date(this.now()).toISOString());
+    return this.reportGuard(p,session,true,()=>retainDestinationSnapshot(this.store,project,snapshot,bytes));
   }
   // Preserve trusted server-only legacy principals; browser/external sessions
   // retain the stronger coordinated host guard and exact inspection.
@@ -956,7 +942,7 @@ export class MarketingServer {
       await this.assets(c); // Retained ownership, actual bytes and decoding, outside locks.
       const snapshot = await this.store.get<{url:string;source:string}>(project, "destination", c.material.destinationDigest);
       requireThat(snapshot.url === c.material.destination, "destination_snapshot_mismatch");
-      if (this.mode === "live") requireThat(byteDigest(await this.readDestination(c.material.destination)) === c.material.destinationDigest, "destination_changed");
+      if (this.mode === "live") requireThat(byteDigest(await this.readDestination(c.material.destination)) === destinationContentDigest(snapshot,c.material.destinationDigest,c.material.destination), "destination_changed");
       await guard();
       const facts = await context.provider.inspectPrerequisites(c, context.g, context.assets, context.authority.account!, context.authority.identities, guard);
       await guard();
@@ -1340,12 +1326,14 @@ export class MarketingServer {
           v.permissions.includes(o.kind),
         "provider_capability_missing",
       );
-      if (this.mode === "live" && o.kind !== "pause")
+      if (this.mode === "live" && o.kind !== "pause") {
+        const snapshot=await this.store.get<{url:string;source:string}>(project,'destination',c.material.destinationDigest);
         requireThat(
           byteDigest(await this.readDestination(c.material.destination)) ===
-            c.material.destinationDigest,
+            destinationContentDigest(snapshot,c.material.destinationDigest,c.material.destination),
           "destination_changed",
         );
+      }
       // Recheck after asynchronous preflight, immediately before claiming effects.
       const currentGrant = await this.grant(project, g.id, o.kind);
       requireThat(

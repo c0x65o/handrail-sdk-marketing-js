@@ -1,9 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Campaign, Grant } from "../core/index.js";
-import { digest, MarketingServer } from "../server/index.js";
+import { digest, byteDigest, MarketingServer, destinationContentDigest } from "../server/index.js";
 import { nativePreflightFixture } from "./preflight-fixture.js";
 import { testStore } from "./datastore.js";
+
+test('destination captures preserve distinct URLs with identical bytes and immutable original observations',async()=>{
+  const f=await nativePreflightFixture(true);
+  try {
+    let bytes=Buffer.from('<!doctype html><p>The same offer</p>');
+    const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'live',undefined,
+      async()=>bytes,{connections:f.connections,studio:{sessions:f.connections.sessionAuthority}});
+    const a=await server.call(f.principal,'p','captureDestination',{url:'https://example.com/?campaign=a'});
+    const b=await server.call(f.principal,'p','captureDestination',{url:'https://example.com/?campaign=b'});
+    assert.notEqual(a.digest,b.digest);assert.equal(a.contentDigest,b.contentDigest);
+    assert.equal(a.contentDigest,byteDigest(bytes));
+    assert.deepEqual(await f.store.get('p','destination',a.digest),a);
+    assert.deepEqual(await f.store.get('p','destination',b.digest),b);
+    assert.deepEqual(await server.call(f.principal,'p','captureDestination',{url:a.url}),a,'same source content reuses the original immutable observation');
+    const old={url:a.url,source:'public_https',digest:byteDigest(bytes),observedAt:'2026-01-01T00:00:00.000Z'};
+    await f.store.put('p','destination',old.digest,old);
+    assert.equal(destinationContentDigest(old,old.digest,a.url),old.digest,'original byte-addressed evidence remains readable');
+    assert.throws(()=>destinationContentDigest(a,a.digest,b.url),/destination_snapshot_mismatch/);
+    assert.throws(()=>destinationContentDigest({...a,contentDigest:'f'.repeat(64)},a.digest,a.url),/destination_snapshot_mismatch/);
+    bytes=Buffer.from('<!doctype html><p>A changed offer</p>');
+    const changed=await server.call(f.principal,'p','captureDestination',{url:a.url});
+    assert.notEqual(changed.digest,a.digest);assert.notEqual(changed.contentDigest,a.contentDigest);
+    assert.deepEqual(await f.store.get('p','destination',a.digest),a);
+    assert.deepEqual(await f.store.get('p','destination',old.digest),old);
+    const restarted=await testStore(f.path);
+    try {assert.deepEqual(await restarted.get('p','destination',b.digest),b);
+      const blob=await restarted.db.prepare('SELECT bytes FROM blobs WHERE project_id=? AND digest=?').get('p',changed.contentDigest);
+      assert.deepEqual(Buffer.from(blob!.bytes as Uint8Array),bytes);
+    } finally {await restarted.close();}
+  } finally {await f.close();}
+});
 
 test("prerequisite expiry is bounded by the earliest observation, including slow native reads", async t => {
   const f = await nativePreflightFixture(true);

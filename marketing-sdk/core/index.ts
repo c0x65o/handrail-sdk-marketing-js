@@ -399,7 +399,9 @@ export interface Commands extends AudienceCommands, ConnectionCommands, StudioCo
   captureDestination: {
     input: { url: string };
     output: {
+      version: 2;
       digest: string;
+      contentDigest: string;
       url: string;
       source: "fixture" | "public_https";
       observedAt: string;
