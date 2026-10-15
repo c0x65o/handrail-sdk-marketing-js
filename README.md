@@ -567,3 +567,30 @@ coverage from ownership alone. For a collector receipt at a scoped destination,
 completion and match its exact SDK destination ID. A missing or mismatched URL
 is rejected. Consent, qualification, provider transport and completeness remain
 separate evidence requirements.
+
+## Authenticated paid-click receipts
+
+`TrackingCollector.verifyClick` resolves a `CollectorClick` from an existing
+host-retained click receipt. The collector needs explicit `click` permission.
+`MarketingTracking.acceptClick(request, {sourceReceipt})` and
+`handleTrackingCollector(tracking, request, 'click')` accept only that reference;
+no browser-supplied campaign, person, consent, QA or completeness fields are
+accepted. The host must retain and guard the original click, consent and identity
+facts. URL parameters alone are not proof of a paid click.
+
+SDK admission checks current source ownership, destination, campaign revision,
+material digest and acquisition/recruitment purpose before atomically saving the
+click event and immutable receipt. QA/test classification remains excluded from
+business totals. An accepted receipt replays its original result after later
+material edits; newly arriving evidence for stale material is rejected with
+`click_campaign_identity_mismatch` and must be reconciled at its source. Changed
+payloads cannot overwrite earlier evidence.
+
+Authenticated completion attribution now requires a matching authenticated click
+receipt in the same source namespace. Generic event/import records cannot supply
+that proof. The existing person, purpose, last eligible click and seven-day rules
+still apply. Click admission neither qualifies a no-send completion test nor
+attests production coverage, provider delivery or independent Ads Manager
+comparison. Hosts without a click verifier remain explicitly unavailable. This
+contract does not add a scheduler, credentials, provider writes or spending
+permission.

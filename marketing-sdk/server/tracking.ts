@@ -20,7 +20,18 @@ export interface TrackingSources {
 }
 export interface CollectorInspection {
   id: string; revision: string; expiresAt: number; source: TrackingSource;
-  permissions: readonly ('completion' | 'coverage')[];
+  permissions: readonly ('completion' | 'coverage' | 'click')[];
+}
+/** A retained first-party paid-click fact resolved by the authenticated host.
+ * URL parameters and browser assertions alone cannot establish these fields.
+ * No provider delivery, matching or collection-coverage claim is implied. */
+export interface CollectorClick {
+  sourceReceipt: string; eventId: string; domain: string; environment: TrackingSource['environment'];
+  destinationId: string; destinationUrl: string; campaignId: string;
+  campaignRevision: number; materialDigest: string; purpose: MarketingPurpose;
+  occurredAt: string; personId: string;
+  consent: { basis: 'consent' | 'contract' | 'legitimate_interest'; receipt: string };
+  clickReceipt: string; testId: string | null; qa: boolean;
 }
 /** Facts resolved from an existing retained collector completion, not from the
  * HTTP caller's asserted flags. Opaque person/order references only; no PII. */
@@ -47,6 +58,8 @@ export interface TrackingCollector {
    * Resolve outside guards. withLiveCollector rechecks exact current authority. */
   inspectCollector?(id: string): Promise<CollectorInspection | null>;
   verifyCompletion(context: CollectorInspection, sourceReceipt: string): Promise<CollectorCompletion>;
+  /** Resolve and guard the original retained click, identity and consent. */
+  verifyClick?(context: CollectorInspection, sourceReceipt: string): Promise<CollectorClick>;
   verifyCheckpoint(context: CollectorInspection, checkpoint: string): Promise<CollectorCheckpoint>;
   withLiveCollector<T>(expected: CollectorInspection, local: () => Promise<T>): Promise<T>;
 }
@@ -321,7 +334,7 @@ export class MarketingTracking {
   }
   observeTrackingTest(p:Principal,project:string,i:TrackingCommands['observeTrackingTest']['input']) {return this.mutateTest(p,project,i,false);}
   cancelTrackingTest(p:Principal,project:string,i:TrackingCommands['cancelTrackingTest']['input']) {return this.mutateTest(p,project,i,true);}
-  private async collectorContext(request: Request, permission: 'completion' | 'coverage') {
+  private async collectorContext(request: Request, permission: 'completion' | 'coverage' | 'click') {
     requireThat(this.options.collector && this.options.sources,'authenticated_collector_unavailable',503);
     const context=await this.options.collector.authenticateRequest(request);
     requireThat(context && context.expiresAt>this.now(),'collector_authority_expired',401);
@@ -332,6 +345,49 @@ export class MarketingTracking {
     return this.options.collector!.withLiveCollector(c,()=>this.withSource(c.source,()=>this.store.transaction(async()=>{
       requireThat(c.expiresAt>this.now(),'collector_authority_expired',401);const result=await local();requireThat(c.expiresAt>this.now(),'collector_authority_expired',401);return result;
     })));
+  }
+  /** Server-only receipt admission; never a browser setup command. */
+  async acceptClick(request: Request, input: { sourceReceipt: string }) {
+    keys(input,['sourceReceipt']);text(input.sourceReceipt,200);
+    const c=await this.collectorContext(request,'click');
+    requireThat(this.options.collector?.verifyClick,'authenticated_click_collector_unavailable',503);
+    const fact=await this.options.collector.verifyClick(c,input.sourceReceipt),project=c.source.projectId;
+    requireThat(Buffer.byteLength(JSON.stringify(fact))<=8192,'collector_evidence_limit',413);
+    keys(fact,['sourceReceipt','eventId','domain','environment','destinationId','destinationUrl','campaignId',
+      'campaignRevision','materialDigest','purpose','occurredAt','personId','consent','clickReceipt','testId','qa']);
+    requireThat(fact.sourceReceipt===input.sourceReceipt && typeof fact.qa==='boolean','collector_receipt_mismatch',422);
+    requireThat(fact.domain===c.source.domain && fact.environment===c.source.environment
+      && this.destinations(c.source,fact.destinationUrl).some(d=>d.id===fact.destinationId && d.url===fact.destinationUrl),
+    'collector_scope_mismatch',403);
+    for(const value of [fact.eventId,fact.campaignId,fact.personId,fact.materialDigest,fact.clickReceipt,fact.consent.receipt])text(value,200);
+    text(fact.destinationUrl,2048);keys(fact.consent,['basis','receipt']);
+    requireThat(['consent','contract','legitimate_interest'].includes(fact.consent.basis),'verified_consent_required',422);
+    requireThat(['acquisition','recruitment'].includes(fact.purpose) && Number.isSafeInteger(fact.campaignRevision) && fact.campaignRevision>0,'invalid_click_identity',422);
+    instant(fact.occurredAt);requireThat(Date.parse(fact.occurredAt)<=this.now(),'future_event',422);
+    if(fact.testId!==null)text(fact.testId,160);
+    return this.collectorGuard(c,async()=>{
+      const identity=digest([c.source.id,fact.sourceReceipt]),hash=digest(fact);
+      const previous=(await this.store.list<{id:string;digest:string;event:FirstPartyEvent}>(project,'trackingClickReceipt')).find(r=>r.id===identity);
+      if(previous){requireThat(previous.digest===hash,'source_event_payload_conflict');return {eventRef:previous.event.id,deduplicated:true};}
+      const campaign=await this.store.get<Campaign>(project,'campaign',fact.campaignId);
+      requireThat(campaign.projectId===project && campaign.revision===fact.campaignRevision
+        && digest(campaign.material)===fact.materialDigest && campaign.material.destination===fact.destinationUrl
+        && (campaign.material.purpose??'acquisition')===fact.purpose,'click_campaign_identity_mismatch',409);
+      if(fact.testId){
+        const test=await this.store.get<TestRecord>(project,'trackingTest',fact.testId);
+        requireThat(test.binding.owner.kind==='campaign' && test.binding.owner.id===campaign.id
+          && test.binding.source.id===c.source.id && test.binding.destinationId===fact.destinationId
+          && test.binding.materialDigest===fact.materialDigest && test.binding.purpose===fact.purpose,'tracking_receipt_mismatch',422);
+      }
+      const qa=!!fact.testId || fact.qa || c.source.environment==='test';
+      const event=await this.ingest(project,{id:fact.eventId,kind:'click',sourceId:c.source.id,purpose:fact.purpose,
+        campaignId:campaign.id,personId:fact.personId,occurredAt:fact.occurredAt,consentReceipt:fact.consent.receipt,
+        sourceReceipt:fact.sourceReceipt,clickId:null,revenue:null,test:qa,productionMetricsExcluded:qa});
+      await this.store.put(project,'trackingClickReceipt',identity,{id:identity,digest:hash,event,
+        campaignRevision:fact.campaignRevision,materialDigest:fact.materialDigest,clickEvidenceDigest:digest(fact.clickReceipt),
+        collectorId:c.id,collectorRevision:c.revision,receivedAt:new Date(this.now()).toISOString()});
+      return {eventRef:event.id,deduplicated:false};
+    });
   }
   /** Public server-only endpoint. Browser setup commands cannot reach this method. */
   async acceptReceipt(request: Request, input: { sourceReceipt: string; testId: string | null }) {
@@ -364,6 +420,10 @@ export class MarketingTracking {
       if(setup && record && !record.test.cancelledAt && Date.parse(record.test.expiresAt)>this.now() && Date.parse(fact.occurredAt)>=Date.parse(record.test.createdAt)) {
         try {await this.exact(project,record.binding);await inspectLiveSessions(this.sessions,[record.session]);eligible=!!this.options.sources?.inspectAccess && await this.options.sources.inspectAccess(record.session,c.source) && digest(record.binding.source)===digest(c.source);} catch {eligible=false;}
       }
+      if(fact.clickId){
+        const click=(await this.store.list<{event:FirstPartyEvent}>(project,'trackingClickReceipt')).find(r=>r.event.id===fact.clickId);
+        requireThat(click && click.event.sourceId===c.source.id,'authenticated_click_receipt_required',422);
+      }
       const event=await this.ingest(project,{id:fact.eventId,kind:TRACKING_OUTCOMES[fact.outcome].kind,sourceId:c.source.id,purpose:TRACKING_OUTCOMES[fact.outcome].purpose,personId:fact.personId,occurredAt:fact.occurredAt,consentReceipt:fact.consent.receipt,sourceReceipt:fact.sourceReceipt,clickId:fact.clickId,revenue:fact.revenue,test:qa,productionMetricsExcluded:qa});
       const diagnostic:TrackingDiagnostic|null=record?{id:identity,testId:record.test.id,eventRef:event.id,occurredAt:event.occurredAt,receivedAt:new Date(this.now()).toISOString(),consentBasis:fact.consent.basis,qaExcluded:true,eligibleAtReceipt:eligible,localReceipt:'accepted',providerDelivery:'unavailable',matching:'unavailable',attribution:{campaignId:event.campaignId,rule:'last-paid-click-7d-v1',source:'first-party',windowDays:7}}:null;
       await this.store.put(project,'trackingReceipt',identity,{id:identity,digest:hash,event,diagnostic,completionEvidenceDigest:digest(fact.completionReceipt),collectorId:c.id,collectorRevision:c.revision,receivedAt:new Date(this.now()).toISOString()});
@@ -395,12 +455,12 @@ export class MarketingTracking {
 
 /** Mount separately from browser commands. Bounded JSON carries references, never trusted flags; host auth is resolved
  * independently by the server-only acceptance methods. */
-export async function handleTrackingCollector(tracking: MarketingTracking, request: Request, operation: 'receipt' | 'coverage'): Promise<Response> {
+export async function handleTrackingCollector(tracking: MarketingTracking, request: Request, operation: 'receipt' | 'coverage' | 'click'): Promise<Response> {
   requireThat(request.method==='POST','method_not_allowed',405);requireThat(request.headers.get('content-type')==='application/json','json_required',415);
   const reader=request.body?.getReader();requireThat(reader,'body_required',422);const chunks:Uint8Array[]=[];let size=0,expired=false;
   const timer=setTimeout(()=>{expired=true;void reader.cancel();},5000);
   try {for(;;){const r=await reader.read();requireThat(!expired,'collector_body_timeout',408);if(r.done)break;size+=r.value.length;requireThat(size<=2048,'collector_body_limit',413);chunks.push(r.value);}}finally{clearTimeout(timer);await reader.cancel();reader.releaseLock();}
   let input;try{input=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{requireThat(false,'invalid_json',422);}
-  const result=operation==='receipt'?await tracking.acceptReceipt(request,input):await tracking.attestCoverage(request,input);
+  const result=operation==='receipt'?await tracking.acceptReceipt(request,input):operation==='click'?await tracking.acceptClick(request,input):await tracking.attestCoverage(request,input);
   return Response.json(result,{headers:{'cache-control':'private, no-store'}});
 }

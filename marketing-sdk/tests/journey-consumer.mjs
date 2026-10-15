@@ -49,7 +49,8 @@ const handler=async(req,res)=>{try{
     if(req.method==='GET'){
       if(url.pathname==='/tour'){
         const clickId=url.searchParams.get('click'),campaignId=url.searchParams.get('campaign');assert.ok(clickId&&campaignId);
-        const response=await fetch(origin+'/api/projects/p/event',{method:'POST',headers:{origin,'x-host-csrf':'fixture','content-type':'application/json',cookie:`host_session=${session.token}`},body:JSON.stringify({id:clickId,kind:'click',campaignId,personId:'one-synthetic-person',occurredAt:new Date(fixtureNow-1000).toISOString(),consentReceipt:'synthetic-retained-consent',sourceReceipt:'synthetic-paid-click-'+clickId,clickId:null,revenue:null})});assert.equal(response.status,200,await response.text());
+        await source.retainCampaignClick({sourceReceipt:'synthetic-paid-click-'+clickId,eventId:clickId,campaignId,personId:'one-synthetic-person',occurredAt:new Date(fixtureNow-1000).toISOString()});
+        await service.tracking.acceptClick(new Request(origin+'/api/collector',{headers:{'x-fixture-collector':'synthetic-collector-only'}}),{sourceReceipt:'synthetic-paid-click-'+clickId});
       }
       res.writeHead(200,{'content-type':'text/html'});return res.end(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>No-send website fixture</title><h1>${outcome==='purchase'?'Test checkout':outcome==='mou'?'Test MOU request':outcome==='application'?'Test application':'Test inquiry'}</h1><p>This fixture retains an opaque completion and consent receipt. No email, order or provider conversion is sent.</p><form method="post"><label><input type="checkbox" name="consent" required>Allow this no-send test receipt</label><button type="submit">Complete no-send interaction</button></form></html>`);}
     assert.equal(req.headers.origin,siteOrigin);assert.equal(new URLSearchParams(body).get('consent'),'on');

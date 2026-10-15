@@ -20,9 +20,9 @@ async function fixture() {
   let service:MarketingServer,source:Awaited<ReturnType<typeof trackingFixture>>,clock=Date.now(),origin='';
   const server=createServer(async(req,res)=>{try{
     const url=new URL(req.url!,origin);let body='';for await(const b of req)body+=b;
-    if(url.pathname==='/collector'||url.pathname==='/coverage') {
+    if(url.pathname==='/collector'||url.pathname==='/coverage'||url.pathname==='/click') {
       const request=new Request(origin+'/collector',{method:'POST',headers:{'content-type':'application/json',...req.headers as Record<string,string>},body});
-      const response=await handleTrackingCollector(service.tracking,request,url.pathname==='/coverage'?'coverage':'receipt');res.writeHead(response.status,{'content-type':'application/json'});res.end(await response.text());return;
+      const response=await handleTrackingCollector(service.tracking,request,url.pathname==='/coverage'?'coverage':url.pathname==='/click'?'click':'receipt');res.writeHead(response.status,{'content-type':'application/json'});res.end(await response.text());return;
     }
     assert.equal(url.pathname,'/interact');const input=JSON.parse(body) as {testId:string;outcome:TrackingOutcome;receipt?:string;overrides?:Partial<CollectorCompletion>};
     const receipt=input.receipt??randomUUID();const fact:CollectorCompletion={sourceReceipt:receipt,eventId:'event-'+receipt,domain:'127.0.0.1',environment:'production',destinationId:'tour',outcome:input.outcome,occurredAt:new Date(clock).toISOString(),personId:'opaque-person',consent:{basis:'consent',receipt:'retained-consent'},completionReceipt:'completed-'+receipt,testId:input.testId,qa:true,clickId:null,revenue:input.outcome==='purchase'?{minor:2900,currency:'USD'}:null,refundTreatment:input.outcome==='purchase'?'gross_before_refunds':null,...input.overrides};
@@ -124,7 +124,7 @@ test('Results requires authenticated retained completeness; separate submissions
     const owner={kind:'campaign' as const,id:campaign.id};await f.service.call(f.p,'p','bindTracking',{owner,expectedRevision:1,expectedBindingRevision:0,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry',refundTreatment:null,requestKey:'campaign-bind'});
     const window={campaignId:campaign.id,from,until};await f.store.put('p','firstPartyCoverage','untrusted',{from,until,purpose:'acquisition',complete:true,verified:true});
     assert.equal((await f.service.results(f.p,'p',window)).completedSubmissions?.value,null);
-    const occurredAt=new Date(now-5000).toISOString();await f.service.event(f.p,'p',{id:'click',kind:'click',campaignId:campaign.id,personId:'person',occurredAt,consentReceipt:'consent',sourceReceipt:'paid-click',clickId:null,revenue:null});
+    const occurredAt=new Date(now-5000).toISOString();await f.source.retainCampaignClick({sourceReceipt:'paid-click',eventId:'click',campaignId:campaign.id,personId:'person',occurredAt});await f.service.tracking.acceptClick(f.collectorRequest(),{sourceReceipt:'paid-click'});
     for(let n=0;n<3;n++){
       const fact:CollectorCompletion={sourceReceipt:'submission-'+n,eventId:'form-'+n,domain:'127.0.0.1',environment:'production',destinationId:'tour',outcome:'inquiry',occurredAt:new Date(now-4000+n).toISOString(),personId:'person',consent:{basis:'consent',receipt:'consent'},completionReceipt:'verified-'+n,testId:null,qa:n===2,clickId:n===2?null:'click',revenue:null,refundTreatment:null};
       await f.source.retainCompletion(fact);await f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:fact.sourceReceipt,testId:null});
@@ -400,4 +400,83 @@ test('destination scopes reject off-origin paths, prefix confusion, encoded sepa
    await assert.rejects(f.service.call(f.p,'p','tracking',{owner}),/invalid_tracking_destination_scope/);
   }
  }finally{await f.close();}
+});
+
+async function clickCampaign(f:Awaited<ReturnType<typeof fixture>>) {
+  const campaign:Campaign={id:'click-campaign',projectId:'p',revision:1,grantId:'none',creativeSetId:'set',state:'paused',receipt:null,
+    material:{name:'Click attribution',purpose:'acquisition',headline:'Tour',body:'Visit',destination:f.source.source.destinations[0]!.url,
+      destinationDigest:'fixture',assetIds:[],budget:{minor:10000,currency:'USD'},audience:{provider:'meta',locations:[],expansion:false},
+      timezone:'UTC',startAt:new Date(Date.now()-86400000).toISOString(),endAt:null}};
+  await f.store.put('p','campaign',campaign.id,campaign);return campaign;
+}
+
+test('authenticated click HTTP receipts join inquiry and qualification without granting coverage or provider effects',async()=>{
+  const f=await fixture();try {
+    const campaign=await clickCampaign(f),at=new Date(Date.now()-1000).toISOString();
+    const click=await f.source.retainCampaignClick({sourceReceipt:'paid-click',eventId:'tracked-click',campaignId:campaign.id,personId:'same-person',occurredAt:at});
+    const response=await fetch(f.origin+'/click',{method:'POST',headers:{'content-type':'application/json','x-fixture-collector':'synthetic-collector-only'},body:JSON.stringify({sourceReceipt:click.sourceReceipt})});
+    assert.equal(response.status,200);const accepted=await response.json();assert.equal(accepted.deduplicated,false);
+    f.restart();assert.deepEqual(await f.service.tracking.acceptClick(f.collectorRequest(),{sourceReceipt:click.sourceReceipt}),{eventRef:accepted.eventRef,deduplicated:true});
+    for(const outcome of ['inquiry','qualified'] as const){
+      await f.source.retainCompletion({sourceReceipt:outcome,eventId:'event-'+outcome,domain:'127.0.0.1',environment:'production',destinationId:'tour',
+        outcome,occurredAt:new Date(Date.now()-500).toISOString(),personId:'same-person',consent:{basis:'consent',receipt:'fixture-consent'},
+        completionReceipt:'retained-'+outcome,testId:null,qa:false,clickId:accepted.eventRef,revenue:null,refundTreatment:null});
+      const result=await f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:outcome,testId:null});
+      const event=await f.store.get<FirstPartyEvent>('p','event',result.eventRef);assert.equal(event.campaignId,campaign.id);
+      assert.equal(event.kind,TRACKING_OUTCOMES[outcome].kind);assert.equal(event.sourceId,'site');
+    }
+    assert.equal((await f.store.list('p','trackingClickReceipt')).length,1);
+    assert.equal((await f.store.list('p','validatedCoverage')).length,0);
+    assert.equal((await f.store.list('p','operation')).length,0);
+    // A legitimate accepted receipt survives a later material revision without
+    // pretending that newly arriving old material is still current.
+    await f.store.put('p','campaign',campaign.id,{...campaign,revision:2,material:{...campaign.material,headline:'Changed'}});
+    assert.equal((await f.service.tracking.acceptClick(f.collectorRequest(),{sourceReceipt:click.sourceReceipt})).deduplicated,true);
+    await f.source.retainClick({...click,sourceReceipt:'late-click',eventId:'late-click'});
+    await assert.rejects(f.service.tracking.acceptClick(f.collectorRequest(),{sourceReceipt:'late-click'}),/click_campaign_identity_mismatch/);
+    await f.source.retainClick({...click,personId:'changed'});
+    await assert.rejects(f.service.tracking.acceptClick(f.collectorRequest(),{sourceReceipt:click.sourceReceipt}),/source_event_payload_conflict/);
+  }finally{await f.close();}
+});
+
+test('click receipt admission rejects caller attribution, wrong identity, absent permissions and changed source facts',async()=>{
+  const f=await fixture();try {
+    const campaign=await clickCampaign(f);
+    const fact=await f.source.retainCampaignClick({sourceReceipt:'click-proof',eventId:'click-proof',campaignId:campaign.id,personId:'person',occurredAt:new Date(Date.now()-1000).toISOString()});
+    const input={sourceReceipt:fact.sourceReceipt};
+    for(const fields of [{campaignId:campaign.id},{qa:false},{personId:'forged'},{consent:true},{projectId:'other'}])
+      await assert.rejects(f.service.tracking.acceptClick(f.collectorRequest(),{...input,...fields}),/unexpected_fields/);
+    await assert.rejects(f.service.tracking.acceptClick(new Request(f.origin),input),/collector_authentication_required/);
+    await f.source.saveProducer({...f.source.producer,permissions:['completion','coverage']});
+    await assert.rejects(f.service.tracking.acceptClick(f.collectorRequest(),input),/collector_permission_required/);
+    await f.source.saveProducer(f.source.producer);
+    for(const patch of [{domain:'unowned.example'},{environment:'test' as const},{destinationId:'other'},
+      {campaignRevision:2},{materialDigest:'changed'},{purpose:'recruitment' as const},{consent:{basis:'consent' as const,receipt:''}},
+      {occurredAt:new Date(Date.now()+86400000).toISOString()}]) {
+      await f.source.retainClick({...fact,...patch});await assert.rejects(f.service.tracking.acceptClick(f.collectorRequest(),input));
+    }
+    await f.source.retainClick(fact);
+    const verify=f.source.options.collector!.verifyClick!;
+    f.source.options.collector!.verifyClick=async(...args)=>{const read=await verify(...args);await f.source.retainClick({...read,personId:'changed-during-verification'});return read;};
+    await assert.rejects(f.service.tracking.acceptClick(f.collectorRequest(),input),/click_evidence_changed/);
+    assert.equal((await f.store.list('p','event')).length,0);
+    assert.equal((await f.store.list('p','trackingClickReceipt')).length,0);
+  }finally{await f.close();}
+});
+
+test('completion attribution rejects generic-event clicks and keeps QA clicks outside business outcomes',async()=>{
+  const f=await fixture();try {
+    const campaign=await clickCampaign(f),occurredAt=new Date(Date.now()-1000).toISOString();
+    await f.service.event(f.p,'p',{id:'unverified',kind:'click',campaignId:campaign.id,personId:'person',occurredAt,consentReceipt:'legacy',sourceReceipt:'legacy-click',clickId:null,revenue:null});
+    const completion:CollectorCompletion={sourceReceipt:'submission',eventId:'submission',domain:'127.0.0.1',environment:'production',destinationId:'tour',outcome:'inquiry',
+      occurredAt:new Date(Date.now()-500).toISOString(),personId:'person',consent:{basis:'consent',receipt:'consent'},completionReceipt:'retained',testId:null,qa:false,clickId:'unverified',revenue:null,refundTreatment:null};
+    await f.source.retainCompletion(completion);
+    await assert.rejects(f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:'submission',testId:null}),/authenticated_click_receipt_required/);
+    const click=await f.source.retainCampaignClick({sourceReceipt:'qa-click',eventId:'qa-click',campaignId:campaign.id,personId:'person',occurredAt,qa:true});
+    await f.service.tracking.acceptClick(f.collectorRequest(),{sourceReceipt:click.sourceReceipt});
+    assert.equal((await f.store.get<FirstPartyEvent>('p','event',click.eventId)).productionMetricsExcluded,true);
+    await f.source.retainCompletion({...completion,clickId:click.eventId});
+    await assert.rejects(f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:'submission',testId:null}),/attribution_identity_mismatch/);
+    assert.equal((await f.store.list('p','trackingReceipt')).length,0);
+  }finally{await f.close();}
 });
