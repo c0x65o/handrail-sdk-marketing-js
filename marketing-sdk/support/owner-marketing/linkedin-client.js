@@ -843,9 +843,16 @@ export class LinkedInMarketingClient {
         },
         token: {
           active: true,
-          expiresAt: Number.isFinite(this.accessTokenExpiresAtMs) && this.accessTokenExpiresAtMs > 0
-            ? Math.floor(this.accessTokenExpiresAtMs / 1000)
-            : introspectionApplies ? token.expires_at || null : null,
+          // Neither refresh nor introspection may extend the other's observed
+          // authority. Unknown expiry stays unknown when neither provides one.
+          expiresAt: (() => {
+            const expiries = [
+              Number.isFinite(this.accessTokenExpiresAtMs) && this.accessTokenExpiresAtMs > 0
+                ? Math.floor(this.accessTokenExpiresAtMs / 1000) : null,
+              introspectionApplies && Number.isFinite(token.expires_at) && token.expires_at > 0 ? token.expires_at : null,
+            ].filter(value => value !== null);
+            return expiries.length ? Math.min(...expiries) : null;
+          })(),
           verificationSource: "ad_account_read",
           introspectionActive: token.active === true,
         },

@@ -141,3 +141,17 @@ capabilities, adoption and provider paths, including reordered targeting, change
 membership, distinct shared-group terms, partial-day schedules and lost responses.
 This qualifies the implementation against intercepted transports, not a live
 execution adoption or campaign resumption.
+
+## Existing native credential binding — 2026-10-15
+
+The exported LinkedIn client now reports the earliest known expiry from OAuth
+refresh and current token introspection. A later refresh response cannot extend
+the introspection bound; absent expiry remains unknown when neither source
+provides one. Five cases cover shorter refresh, shorter introspection, absent
+introspection expiry, direct tokens and wholly unknown expiry. Normal build and
+45 focused provider/connection tests passed with the disposable database runner.
+
+The public server entrypoint exports `capturePublicDestination` for native
+adoption to bind real HTML content bytes. It retains the existing public-HTTPS,
+pinned-DNS, no-redirect implementation; a destination URL hash is not a substitute
+for a page snapshot. Neither API issues a grant or transfers campaign execution.
