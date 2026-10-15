@@ -175,6 +175,13 @@ async function native(provider: "meta" | "linkedin") {
       if (last === "61") return response({ id: "61", account_id: "123", pixel: { id: "60" }, rule: JSON.stringify({ and: [{ event: { eq: "ApplicantRequestMOU" } }] }) }, "conversion");
       if (last === "search") return response({ data: [{ id: "10", name: "Gardens" }, { id: "11", name: "Design" }] }, "taxonomy");
       if (last === "customaudiences") return response({ data: [{ id: "20", name: "Existing customers" }] }, "audiences");
+      if (init?.method !== "POST" && ["adsets", "ads"].includes(last)) {
+        const parent = url.pathname.split("/").at(-2);
+        return Response.json({data: [...state.objects.values()].filter(row => last === "adsets"
+          ? row.campaign_id === parent && !row.adset_id
+          : row.adset_id && state.objects.get(row.adset_id)?.campaign_id === parent)
+          .map(row => ({...row, campaign_id: row.campaign_id ?? state.objects.get(row.adset_id)?.campaign_id, effective_status: row.status}))});
+      }
       if (last === "adimages") return response({ data: [{ hash: "meta-image", status: "ACTIVE" }] }, "image");
       const o = state.objects.get(last); assert.ok(o, `Unexpected synthetic Meta request ${path}`);
       if (state.loseRead && o._kind === "ads") { state.loseRead = false; throw new Error("synthetic lost read"); }
@@ -207,6 +214,12 @@ async function native(provider: "meta" | "linkedin") {
       return Response.json({}, { status: 201, headers: { "x-restli-id": id } });
     }
     if (path.includes("/images/")) return response({ id: "urn:li:image:fixture", owner: "urn:li:organization:44", status: "AVAILABLE" }, "image");
+    if (last === "creatives") {
+      assert.equal(url.searchParams.get("q"), "criteria");
+      assert.equal(url.searchParams.get("campaigns"), "List(urn:li:sponsoredCampaign:102)");
+      return response({elements: [...state.objects.values()].filter(row => row._kind === "creatives" &&
+        row.campaign === "urn:li:sponsoredCampaign:102").map(({_kind,...row})=>row)}, "creative_inventory");
+    }
     const o = state.objects.get(last); assert.ok(o, `Unexpected synthetic LinkedIn request ${path}`);
     if (state.loseRead && o._kind === "creatives") { state.loseRead = false; throw new Error("synthetic lost read"); }
     const { _kind, ...fields } = o; return response(fields, _kind);

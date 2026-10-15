@@ -220,6 +220,16 @@ disposable PostgreSQL; live consumer adoption remains separate qualification.
 
 ## Native execution authority
 
+Meta adoption now inventories both campaign child edges through every returned
+page before accepting the saved single-ad-set/single-ad identity. The inspection
+requires matching account, campaign, ad set and creative IDs, explicit configured
+pause and a paused effective state. Extra or duplicate children, incomplete
+pagination and unknown states refuse adoption. Continuations use only the cursor
+on the original Graph endpoint; provider-supplied next URLs are never followed.
+The candidate receipt retains an inventory digest alongside its material digest.
+This is read-only inspection; it grants neither execution ownership nor spending
+authority and does not establish independent browser verification.
+
 LinkedIn token verification failures retain fixed `provider_token_*` reason codes
 for inactive, changed, wrong-client, unverified-status/auth-type and expired token
 evidence. Provider values, bodies and credential details are never included. An

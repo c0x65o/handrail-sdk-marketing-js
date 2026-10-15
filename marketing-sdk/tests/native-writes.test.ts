@@ -108,6 +108,13 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
       assert.ok(url.searchParams.get('filtering')?.includes(retained.campaign!));
       return Response.json({data:[{account_id:'123',campaign_id:retained.campaign,date_start:'2026-10-01',date_stop:'2026-10-01',impressions:'1000',clicks:'25',spend:'12.50',actions:[{action_type:'lead',value:'999'}]}]});
     }
+    if (init?.method !== "POST" && ["adsets", "ads"].includes(last)) {
+      const parent = url.pathname.split("/").at(-2);
+      return Response.json({data: [...objects.values()].filter(row => last === "adsets"
+        ? row.campaign_id === parent && !row.adset_id
+        : row.adset_id && objects.get(row.adset_id)?.campaign_id === parent)
+        .map(row => ({...row, campaign_id: row.campaign_id ?? objects.get(row.adset_id)?.campaign_id, effective_status: row.status}))});
+    }
     if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [{ hash: "provider-image-hash", status: "ACTIVE" }] });
     if (init?.method === "POST") {
       writes++;
@@ -226,6 +233,11 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     const existingIds={campaign:retained.campaign!,adset:retained.adset!,creative:retained.creative!,ad:retained.ad!,image:retained.image!};
     const observed=await provider.inspectExistingCampaign(campaign,grant,[asset],existingIds,async()=>{});
     assert.equal(observed.candidateReceipt.ids.readbackDigest,reconciled.ids.readbackDigest);assert.equal(writes,5);
+    assert.match(observed.candidateReceipt.ids.inventoryDigest!,/^[a-f0-9]{64}$/);
+    objects.set("999",{...objects.get(retained.ad!),id:"999"});
+    await assert.rejects(provider.inspectExistingCampaign(campaign,grant,[asset],existingIds,async()=>{}),/existing_campaign_children_mismatch/);
+    objects.delete("999");
+    assert.equal(writes,5);
     assert.equal(observed.executionReady,false);assert.equal(observed.originalMediaContentVerified,false);
     let readGuards=0;
     await assert.rejects(provider.inspectExistingCampaign(campaign,grant,[asset],existingIds,async()=>{if(++readGuards>3)throw Error("access-revoked-during-read");}),/access-revoked-during-read/);

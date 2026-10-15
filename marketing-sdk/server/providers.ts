@@ -21,6 +21,7 @@ import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
 import { existingLinkedInMaterial, existingLinkedInChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
+import { existingMetaChildren } from "./existing-meta-children.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
@@ -1003,7 +1004,9 @@ export class NativeProvider implements ProviderPort {
       const snapshot = await this.snapshot(client,g,ids);
       requireThat(snapshot.paused, "existing_campaign_not_paused");
       this.validateSnapshot(snapshot.material,plan,ids);
-      const inventory=this.name==="linkedin" ? await existingLinkedInChildren(client,g.accountId,ids.campaign!,ids.creative!) : null;
+      const inventory=this.name==="linkedin" ? await existingLinkedInChildren(client,g.accountId,ids.campaign!,ids.creative!)
+        : await existingMetaChildren(client as MetaMarketingClient,g.accountId,
+          {campaign:ids.campaign!,adset:ids.adset!,ad:ids.ad!,creative:ids.creative!});
       await current();
       return {candidateReceipt:{...this.receipt({...ids,readbackDigest:digest(snapshot.material),...(inventory?{inventoryDigest:digest(inventory)}:{})},digest(plan),"paused"),
         providerRequestId:"lastRequestId" in client && typeof client.lastRequestId === "string" ? client.lastRequestId : null},
