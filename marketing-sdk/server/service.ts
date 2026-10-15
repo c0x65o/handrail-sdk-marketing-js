@@ -1046,7 +1046,12 @@ export class MarketingServer {
         input.campaignId,
       );
       requireThat(!c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
-      requireThat(
+      const g = await this.grant(project, c.grantId, "prepare", c.id);
+      // Native campaign checks bind current material, tracking and credential
+      // custody. Their proof is consumed by dispatch before provider I/O and
+      // again before each effect. An older setup record cannot replace that
+      // proof, and is not needed to queue the checked execution workflow.
+      if (!this.requiresCampaignCheck(g, "prepare")) requireThat(
         (await this.store.list<Setup>(project, "setup")).some(
           (s) => s.grantId === c.grantId && s.state === "ready",
         ),

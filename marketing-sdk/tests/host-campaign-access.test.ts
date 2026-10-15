@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {nativePreflightFixture} from './preflight-fixture.js';
 import {MarketingServer,NativeProvider,digest,requireThat,inspectLiveSessions,type CampaignAccess,type VaultPort} from '../server/index.js';
-import type {Grant,Commands,Campaign,Setup} from '../core/index.js';
+import type {Grant,Commands,Campaign} from '../core/index.js';
 
 async function hostFixture() {
   const f=await nativePreflightFixture(true);
@@ -14,7 +14,7 @@ async function hostFixture() {
     const credentials=await f.custody.useReadOnly(original,async()=>{},async c=>structuredClone(c));
     const grant={...original,id:'host-grant',secretRef:'host-vault-reference'};
     await f.store.put('p','grant',grant.id,grant);
-    for(const setup of await f.store.list<Setup>('p','setup'))await f.store.put('p','setup',setup.id,{...setup,grantId:grant.id});
+    await f.store.db.prepare('DELETE FROM records WHERE project_id=? AND kind=?').run('p','setup');
     await f.store.put('p','campaign',f.c.id,{...f.c,grantId:grant.id});
     await f.store.db.prepare('DELETE FROM records WHERE project_id=? AND kind IN (?,?)').run('p','connection','vault');
     let revision=1,denied=false,expiry=credentials.expiresAt,guards=0,held=0;
@@ -60,12 +60,13 @@ async function hostFixture() {
   } catch(error) {await f.close();throw error;}
 }
 
-test('host custody prepares a paused campaign without SDK OAuth/vault records, retaining current proof and original grant identity',async()=>{
+test('host custody prepares a paused campaign without SDK OAuth/vault/setup records, retaining current proof and original grant identity',async()=>{
   const f=await hostFixture();try{
     const before=digest(f.grant);
     const proof=await f.call('checkCampaign',f.check);assert.equal(proof.state,'ready',JSON.stringify(proof));
     assert.ok(f.guards()>0);assert.ok(f.http.trace.every(r=>r.method==='GET'));
     assert.deepEqual(await f.store.list('p','connection'),[]);assert.deepEqual(await f.store.list('p','vault'),[]);
+    assert.deepEqual(await f.store.list('p','setup'),[]);
     assert.deepEqual(await f.call('checkCampaign',f.check),proof);
     assert.equal((await f.call('campaignCheck',{campaignId:f.c.id}))?.state,'ready');
     await f.store.db.acquireExecutor();

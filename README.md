@@ -203,6 +203,12 @@ session/configuration/revocation guard through the local SDK commit; no provider
 HTTP belongs inside that guard. It cannot grant account permissions, approve
 material, allocate advertising budget or replace tracking checks.
 
+Native execution using campaign checks does not require a legacy `setup` record.
+Queuing preparation is local; dispatch consumes current exact prerequisite proof
+before provider I/O and rechecks it before effects. Missing, stale or revoked
+proof blocks dispatch even if an old setup record says ready. Hosts must never
+fabricate setup records to connect their existing credential custody.
+
 The matching `VaultPort.prerequisiteBinding(grant)` returns a private nonsecret
 credential/configuration revision binding from current host custody. It must
 change on rotation, scope/configuration changes or replacement and reject revoked
