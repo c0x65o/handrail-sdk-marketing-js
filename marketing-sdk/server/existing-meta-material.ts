@@ -84,7 +84,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const daily=money(adset.daily_budget,true), lifetime=money(campaign.spend_cap);
   requireThat(daily && !money(adset.lifetime_budget), "existing_material_budget_mode_unsupported");
   const t=adset.targeting;
-  requireThat(t && t.targeting_automation?.advantage_audience===1 && Array.isArray(t.flexible_spec) && t.flexible_spec.length>0,
+  requireThat(t && t.targeting_automation?.advantage_audience===1 && (t.flexible_spec===undefined || Array.isArray(t.flexible_spec) && t.flexible_spec.length>0),
     "existing_material_targeting_unsupported");
   const options:TargetingOption[]=[];
   const option=(kind:TargetingOption["kind"],id:unknown,label:unknown=id)=>{
@@ -94,7 +94,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   };
   requireThat(t.locales===undefined || Array.isArray(t.locales)&&t.locales.every((x:unknown)=>Number.isSafeInteger(x)&&Number(x)>0),"existing_material_targeting_unsupported");
   const languages=(t.locales??[]).map((id:number)=>option("languages",String(id)));
-  const interestGroups=t.flexible_spec.map((group:any)=>{
+  const interestGroups=(t.flexible_spec??[]).map((group:any)=>{
     requireThat(group&&Object.keys(group).length===1&&Array.isArray(group.interests),"existing_material_targeting_unsupported");
     return group.interests.map((x:any)=>{requireThat(x&&Object.keys(x).every(k=>["id","name"].includes(k)),"existing_material_targeting_unsupported");return option("interests",x.id,x.name);});
   });
@@ -111,7 +111,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     Object.values(features).every((v:any)=>v&&Object.keys(v).length===1&&["OPT_IN","OPT_OUT"].includes(v.enroll_status)),"existing_material_creative_features_unknown");
   requireThat(Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
   const settings:MetaSettings={version:CAPABILITY_VERSION,provider:"meta",apiVersion:"v26.0",accountId:grant.accountId,format:"single_image",
-    objective:"OUTCOME_LEADS",optimization:"OFFSITE_CONVERSIONS",delivery:"advantage_plus_interests",nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
+    objective:"OUTCOME_LEADS",optimization:"OFFSITE_CONVERSIONS",delivery:interestGroups.length?"advantage_plus_interests":"advantage_plus_broad",nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
     placements:[],identity:{pageId:grant.pageId!},conversion:{pixelId:source.conversion.pixelId,event:"Lead",...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})},
     attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,

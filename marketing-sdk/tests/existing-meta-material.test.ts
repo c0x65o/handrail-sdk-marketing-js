@@ -195,3 +195,26 @@ for(const value of [null,0,1,'false',{},[]])test(`Meta rejects non-Boolean Smart
   const f=fixture();f.observed.adset.promoted_object.smart_pse_enabled=value;
   f.source.retainedProviderTerms=existingMetaTerms(f.observed);await assert.rejects(f.capture(),/existing_material_smart_pse_invalid/);
 });
+
+test('Meta broad Advantage+ adoption preserves absent interest suggestions through representation, plan and UI',async()=>{
+  const f=fixture();delete f.observed.adset.targeting.flexible_spec;
+  f.source.retainedProviderTerms=existingMetaTerms(f.observed);
+  const r=await f.capture();assert.equal(r.material.settings?.provider,'meta');
+  if(r.material.settings?.provider!=='meta')throw Error('Meta required');
+  assert.equal(r.material.settings.delivery,'advantage_plus_broad');assert.deepEqual(r.material.settings.targeting.interestGroups,[]);
+  assert.equal(r.material.audience.expansion,true);assert.deepEqual(r.material.settings.targeting.expansion,{detailedTargeting:1,lookalike:0});
+  const c={id:'c',projectId:'p',grantId:'g',material:r.material} as Campaign,g={...f.grant,targetingOptions:r.targetingOptions};
+  const a={id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset;
+  const plan:any=providerPlan(c,g,[a]);assert.deepEqual(plan.adset.targeting,f.observed.adset.targeting);
+  assert.equal(Object.hasOwn(plan.adset.targeting,'flexible_spec'),false);assert.equal(plan.readbackVersion,'5');
+  const review=renderToStaticMarkup(createElement(MaterialReview,{material:r.material,assets:[],client:{assetUrl:()=>'/fixture'} as any,grant:g}));assert.match(review,/advantage_plus_broad/);
+  const editor=renderToStaticMarkup(createElement(GuidedFields,{value:r.material,grant:g,onChange:()=>{}}));
+  assert.match(editor,/Broad acquisition audience without interest suggestions/);assert.match(editor,/Lead Pixel/);assert.doesNotMatch(editor,/Remove unused conversion fields/);
+  assert.ok(capabilityStatus(r.material,g).blockers.includes('meta_daily_budget_semantics_unverified'));
+  r.material.settings.targeting.interestGroups=[[{id:'10',label:'Invented'}]];
+  assert.throws(()=>providerPlan(c,g,[a]),/explicit_expansion_required/);
+});
+for(const value of [null,[],{},[{interests:[]}]])test(`Meta broad mode never repairs malformed interest suggestions ${JSON.stringify(value)}`,async()=>{
+  const f=fixture();f.observed.adset.targeting.flexible_spec=value;f.source.retainedProviderTerms=existingMetaTerms(f.observed);
+  await assert.rejects(f.capture());
+});

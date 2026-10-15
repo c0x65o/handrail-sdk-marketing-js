@@ -20,7 +20,7 @@ export interface MetaSettings extends SettingsBase {
   format: "single_image";
   objective: "OUTCOME_TRAFFIC" | "OUTCOME_AWARENESS" | "OUTCOME_LEADS";
   optimization: "LINK_CLICKS" | "IMPRESSIONS" | "REACH" | "OFFSITE_CONVERSIONS";
-  delivery: "ordinary" | "strict" | "employment" | "advantage_plus_interests";
+  delivery: "ordinary" | "strict" | "employment" | "advantage_plus_interests" | "advantage_plus_broad";
   placements: ("facebook_feed" | "instagram_feed")[];
   identity: { pageId: string; instagramUserId?: string };
   targeting: {
@@ -88,6 +88,7 @@ export const META_COMBINATIONS = [
   ["strict", "OUTCOME_AWARENESS", "REACH"],
   ["employment", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
   ["advantage_plus_interests", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
+  ["advantage_plus_broad", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
 ] as const;
 export const CAPABILITY_MATRIX = {
   version: CAPABILITY_VERSION,
@@ -141,10 +142,10 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
     if (errors.includes("invalid_resolved_targeting")) return errors;
     check(t.locationTypes === undefined || Array.isArray(t.locationTypes) && t.locationTypes.length > 0 &&
       new Set(t.locationTypes).size === t.locationTypes.length && t.locationTypes.every(x => ["home", "recent", "travel_in", "frequently_in"].includes(x)), "invalid_location_types");
-    check(m.audience.expansion === (s.delivery === "advantage_plus_interests"), "targeting_expansion_mismatch");
-    if (s.delivery === "advantage_plus_interests") {
+    check(m.audience.expansion === (["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)), "targeting_expansion_mismatch");
+    if (["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)) {
       check(Array.isArray(s.attribution) && s.attribution.length > 0, "explicit_attribution_required");
-      check(t.interestGroups.length > 0 && only(t.expansion, ["detailedTargeting", "lookalike"]) &&
+      check((s.delivery === "advantage_plus_broad" ? t.interestGroups.length === 0 : t.interestGroups.length > 0) && only(t.expansion, ["detailedTargeting", "lookalike"]) &&
         [t.expansion?.detailedTargeting, t.expansion?.lookalike].every(x => x === 0 || x === 1), "explicit_expansion_required");
     } else check(t.expansion === undefined, "unexpected_expansion_settings");
     check(s.attribution === undefined || Array.isArray(s.attribution) && s.attribution.length > 0 &&
@@ -168,7 +169,7 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
       check(only(s.conversion, ["pixelId", "customConversionId", "event", "smartPseEnabled"]) && numeric(s.conversion?.pixelId) && numeric(s.conversion && "customConversionId" in s.conversion ? s.conversion.customConversionId : undefined) && s.conversion?.event === "ApplicantRequestMOU", "applicant_conversion_required");
     } else {
       check(m.purpose === "acquisition" && s.specialAdCategory === undefined && s.specialAdCategoryCountry === undefined, "purpose_conversion_mismatch");
-      check(s.delivery === "advantage_plus_interests" ? only(s.conversion, ["pixelId", "event", "smartPseEnabled"]) &&
+      check(["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery) ? only(s.conversion, ["pixelId", "event", "smartPseEnabled"]) &&
         numeric(s.conversion?.pixelId) && s.conversion?.event === "Lead" : s.conversion === undefined, "purpose_conversion_mismatch");
     }
   } else if (s.provider === "linkedin") {

@@ -497,3 +497,11 @@ and a snapshot digest. Newly observed children participate in paused-state check
 missing mapped objects/statuses remain unknown. The visibility scope is explicit:
 this does not settle historical requests, prove actual impressions, authorize
 spending, or claim that an unmapped historical campaign never created an object.
+
+Meta material now represents `advantage_plus_broad` separately from
+`advantage_plus_interests`. Broad acquisition preserves the provider's absence
+of interest groups, explicit Advantage+ automation/expansion, Lead conversion,
+attribution, location types and other targeting fields through capture, review,
+planning and exact readback. It cannot silently drop supplied interests or repair
+malformed groups. Existing authority, daily-budget qualification and provider
+capability gates remain required for execution.
