@@ -646,8 +646,15 @@ for (const name of ['meta','linkedin'] as const) test(`${name} read-only inspect
     if(name==='meta'){
       const row=t.state.objects.get(ids.adset!);row.end_time='2026-12-01T00:00:00Z';
       await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/unexpected_provider_end_time/);delete row.end_time;
-      t.state.objects.get(ids.campaign!).spend_cap='50000';
-      await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/unexpected_provider_spend_cap/);
+      for(const invalid of ['50000',false,'',[]]) {
+        t.state.objects.get(ids.campaign!).spend_cap=invalid;
+        await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/unexpected_provider_spend_cap/);
+      }
+      delete t.state.objects.get(ids.campaign!).spend_cap;
+      for(const invalid of ['50000',false,'',[]]) {
+        row.lifetime_budget=invalid;
+        await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/unexpected_provider_budget_mode/);
+      }
     }else{
       t.state.objects.get(ids.campaign!).runSchedule.end=Date.parse('2026-12-01T00:00:00Z');
       await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_effective_material_mismatch/);

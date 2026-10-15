@@ -1158,9 +1158,9 @@ export class NativeProvider implements ProviderPort {
       expected.start_time = new Date(expected.start_time).getTime();
       if (expected.end_time !== undefined) expected.end_time = new Date(expected.end_time).getTime();
       else requireThat(s.adset.end_time == null, "unexpected_provider_end_time");
-      if (!plan.campaign.spend_cap) requireThat(s.campaign.spend_cap == null || Number(s.campaign.spend_cap) === 0, "unexpected_provider_spend_cap");
+      if (!plan.campaign.spend_cap) requireThat(s.campaign.spend_cap == null || s.campaign.spend_cap === 0 || s.campaign.spend_cap === "0", "unexpected_provider_spend_cap");
       const unusedBudget = plan.adset.daily_budget ? s.adset.lifetime_budget : s.adset.daily_budget;
-      requireThat(unusedBudget == null || Number(unusedBudget) === 0, "unexpected_provider_budget_mode");
+      requireThat(unusedBudget == null || unusedBudget === 0 || unusedBudget === "0", "unexpected_provider_budget_mode");
       requireThat(
         subset(
           {
