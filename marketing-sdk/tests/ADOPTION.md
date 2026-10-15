@@ -155,3 +155,13 @@ The public server entrypoint exports `capturePublicDestination` for native
 adoption to bind real HTML content bytes. It retains the existing public-HTTPS,
 pinned-DNS, no-redirect implementation; a destination URL hash is not a substitute
 for a page snapshot. Neither API issues a grant or transfers campaign execution.
+
+Existing LinkedIn material capture uses the SDK's read-only credential port and
+an exact account/campaign GET. `captureExistingLinkedInMaterial` preserves current
+provider daily/lifetime terms, UTC instants, optimization/bid and Boolean targeting,
+while the host supplies original copy, media identity, destination content digest,
+explicit purpose and retained policy acknowledgements. It returns no execution
+readiness or grant. Complete hierarchy/media inspection and guarded adoption are
+still required. Identifier display fallbacks are not taxonomy eligibility receipts.
+The intercepted transport tests cover unknown/drifting facts and revocation; the
+native-writes regression distinguishes a shared group cap from a campaign cap.

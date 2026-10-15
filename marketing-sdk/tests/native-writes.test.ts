@@ -401,16 +401,19 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     assert.equal(objects.get("102").status,"DRAFT");
     const existingIds={group:receipt.ids.group!,campaign:receipt.ids.campaign!,creative:receipt.ids.creative!,image:receipt.ids.image!};
     const readOnlyWrites=writes;
-    const inspected=await provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{});
+    // Adoption treats the original group as shared. This existing campaign has
+    // no own lifetime cap; a group cap cannot be imported as campaign authority.
+    const existingCampaign={...c,material:{...c.material,budget:null,advertisingBudget:{daily:c.material.advertisingBudget!.daily!}}};
+    const inspected=await provider.inspectExistingCampaign(existingCampaign,grant,[asset],existingIds,async()=>{});
     assert.equal(inspected.candidateReceipt.ids.campaign,receipt.ids.campaign);
-    assert.equal(inspected.candidateReceipt.ids.readbackDigest,receipt.ids.readbackDigest);assert.equal(writes,readOnlyWrites);
+    assert.equal(inspected.candidateReceipt.ids.groupOwnership,"shared");assert.ok(inspected.candidateReceipt.ids.readbackDigest);assert.equal(writes,readOnlyWrites);
     assert.equal(inspected.executionReady,false);
-    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],{...existingIds,readbackDigest:"forged"},async()=>{}),/existing_campaign_identity_invalid/);
-    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{throw Error("current-authority-revoked");}),/current-authority-revoked/);
+    await assert.rejects(provider.inspectExistingCampaign(existingCampaign,grant,[asset],{...existingIds,readbackDigest:"forged"},async()=>{}),/existing_campaign_identity_invalid/);
+    await assert.rejects(provider.inspectExistingCampaign(existingCampaign,grant,[asset],existingIds,async()=>{throw Error("current-authority-revoked");}),/current-authority-revoked/);
     objects.get("102").status="ACTIVE";
-    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{}),/existing_campaign_not_paused/);
+    await assert.rejects(provider.inspectExistingCampaign(existingCampaign,grant,[asset],existingIds,async()=>{}),/existing_campaign_not_paused/);
     objects.get("102").status="DRAFT";objects.get("102").account="urn:li:sponsoredAccount:999";
-    await assert.rejects(provider.inspectExistingCampaign(c,grant,[asset],existingIds,async()=>{}),/provider_effective_material_mismatch/);
+    await assert.rejects(provider.inspectExistingCampaign(existingCampaign,grant,[asset],existingIds,async()=>{}),/provider_effective_material_mismatch/);
     objects.get("102").account="urn:li:sponsoredAccount:123";assert.equal(writes,readOnlyWrites);
     // Simulate an unrelated campaign sharing this group. No campaign-scoped
     // operation may change the group or that campaign, even on lost readback.
