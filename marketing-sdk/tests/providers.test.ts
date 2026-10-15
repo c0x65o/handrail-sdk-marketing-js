@@ -866,3 +866,28 @@ test("native reporting refuses partial/future provider days before transport and
     assert.equal(reads, 1);
   } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("Meta safety pause verifies complete current account role without payment or publication Page readiness", async()=>{
+  const directory=mkdtempSync(join(tmpdir(),"meta-pause-role-")),store=await testStore(join(directory,"db.sqlite"));
+  try{
+    let mode='allowed';const requests:string[]=[];
+    const provider=new NativeProvider('meta',{use:async(_grant,fn)=>fn({accessToken:'private-pause-token'})},store,async input=>{
+      const u=new URL(String(input));requests.push(u.pathname);
+      if(u.pathname==='/v26.0/me/permissions')return Response.json({data:[{permission:'ads_read',status:'granted'},
+        {permission:'ads_management',status:mode==='scope'?'declined':'granted'}]});
+      assert.equal(u.pathname,'/v26.0/me/adaccounts');
+      if(!u.searchParams.has('after'))return Response.json({data:[],paging:{next:'untrusted-provider-url',cursors:{after:'page-two'}}});
+      assert.equal(u.searchParams.get('after'),'page-two');
+      const row={id:'act_123',currency:'USD',timezone_name:'America/Chicago',account_status:1,user_tasks:mode==='viewer'?['ANALYZE']:['ANALYZE','ADVERTISE']};
+      return Response.json({data:mode==='missing'?[]:[row],...(mode==='loop'?{paging:{next:'untrusted',cursors:{after:'page-two'}}}:{})});
+    });
+    const result=await provider.verify(g,undefined,[],'pause');
+    assert.deepEqual(result.permissions,['pause','report']);assert.equal(result.accountId,g.accountId);
+    assert.ok(requests.every(p=>['/v26.0/me/permissions','/v26.0/me/adaccounts'].includes(p)));
+    for(const [scenario,code] of [['viewer','provider_account_role_missing'],['missing','provider_account_context_changed'],
+      ['scope','provider_access_expired_or_denied'],['loop','provider_discovery_incomplete']]){
+      mode=scenario!;await assert.rejects(provider.verify(g,undefined,[],'pause'),{code});
+    }
+  }finally{await store.close();rmSync(directory,{recursive:true,force:true});}
+});

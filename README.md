@@ -267,6 +267,12 @@ HTTP 200 introspection response alone does not establish current authority. Nati
 client verification and Connections discovery use the same field validation and
 fixed reasons, including checks after an earlier successful account read.
 
+Meta safety-pause verification enumerates the complete current account membership
+and requires advertising/management tasks plus `ads_read` and `ads_management`.
+It does not require payment setup or publication Page readiness. Missing roles,
+scopes, account context or incomplete pagination refuse admission. Preparation
+and activation retain their existing billing, identity and budget requirements.
+
 Adopted campaigns require a trusted server `ExecutionAuthority` port for SDK
 prepare/activate/pause and recovery. The host revalidates its real principal and
 exact native action, with revocation guards held through local SDK commits and

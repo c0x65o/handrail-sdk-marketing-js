@@ -176,7 +176,8 @@ async function native(provider: "meta" | "linkedin") {
         if (last === "campaigns" && state.loseCampaignAck) throw new Error("synthetic lost campaign create acknowledgment");
         return Response.json({ id });
       }
-      if (last === "permissions") return Response.json({ data: [{ permission: "ads_management", status: "granted" }] });
+      if (last === "permissions") return Response.json({ data: [{ permission: "ads_read", status: "granted" },{ permission: "ads_management", status: "granted" }] });
+      if (last === "adaccounts") return Response.json({data:[{id:"act_123",currency:"USD",timezone_name:"America/Chicago",account_status:1,user_tasks:["ANALYZE","ADVERTISE"]}]});
       if (last === "act_123") return response({ id: "act_123", currency: "USD", timezone_name: "America/Chicago", funding_source_details: { id: "fixture-only" } }, "account");
       if (last === "42") return response({ id: "42", instagram_business_account: { id: "43" } }, "page");
       if (last === "60") return response({id:"60",owner_ad_account:{id:"123"}},"pixel");

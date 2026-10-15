@@ -656,6 +656,18 @@ export class NativeProvider implements ProviderPort {
     if (campaign && intent !== "pause") await this.prerequisite(campaign, g);
     return await this.use(g, async (client) => {
       if (campaign?.material.settings && intent !== "pause") await this.verifySettings(client, campaign, g);
+      if (this.name === "meta" && intent === "pause") {
+        // Safety pause requires current account advertising custody, not billing
+        // or publication Page readiness. Re-enumerate all pages and roles under
+        // the same credential before admitting the existing SDK pause executor.
+        const expected: DiscoveredAccount = {id:accountPath(g.accountId),label:g.label ?? g.accountId,
+          businessLabel:null,currency:g.currency,timezone:g.timezone,timezoneSource:"provider_account",
+          roleSummary:"",limitations:[],permissions:[]};
+        const actual=await new ConnectionDiscovery(this.fetcher).verify("meta",
+          {accessToken:client.accessToken,appSecret:client.appSecret},expected,[],["pause"],async()=>{});
+        return {accountId:g.accountId,currency:actual.currency,timezone:actual.timezone,
+          timezoneSource:"provider_account" as const,permissions:["pause","report"] as Permission[]};
+      }
       if (this.name === "google") {
         const c = await client.verify(g.accountId);
         // A read alone is insufficient proof of mutate permission. Validate the
