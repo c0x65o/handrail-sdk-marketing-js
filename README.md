@@ -259,6 +259,23 @@ for the same account, preserving the original operation grant revision and never
 replaying the provider write. Failed or revoked post-write authority retains an
 unknown effect and its lease until qualified readback.
 
+## Original source and provider upload media
+
+`prepareMetaImageUpload` owns Meta's encoding: JPEG/PNG bytes stay unchanged;
+WebP uses the retained white-background, quality-90 mozjpeg recipe.
+`recoverMetaImageUpload` verifies both original source SHA-256 and the immutable
+historical upload SHA-256. Re-encoding alone is not proof: missing hashes,
+mislabelled media and codec drift fail. Neither helper performs network work.
+Native preparation retains the exact upload digest before dispatch.
+
+Execution adoption can retain an original source asset alongside its transformed
+provider upload. Each retains its own ID, version, bytes, MIME and rights receipt;
+the uploaded asset names the source in `parentAssetIds`. The source history record,
+metadata, dimensions and bytes are checked again around provider inspection and
+inside the ownership transaction. Both assets/blobs commit atomically with the
+paused execution owner; collisions, source mutation or unknown history roll back.
+This neither uploads a replacement image nor changes provider identities.
+
 ## Existing Meta acquisition material
 
 `NativeProvider.captureExistingMetaMaterial` uses read-only custody for the exact

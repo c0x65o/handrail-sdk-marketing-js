@@ -1,11 +1,13 @@
 import test from 'node:test';
+import sharp from 'sharp';
+import {prepareMetaImageUpload} from '../server/meta-image.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { testStore } from './datastore.js';
 import { fixtureSettings } from './capability-fixtures.js';
-import { CampaignExecutionAdoptions, type ExecutionAdoptionCandidate, type ExecutionAdoptionSource } from '../server/execution-adoption.js';
+import { CampaignExecutionAdoptions, type ExecutionAdoptionCandidate, type ExecutionAdoptionSource, type ExecutionAdoptionMedia } from '../server/execution-adoption.js';
 import { HistoricalCampaignImports } from '../server/adoption.js';
 import { MarketingServer } from '../server/service.js';
 import { DomainError } from '../server/store.js';
@@ -19,19 +21,21 @@ import type { Asset, Campaign, Grant, Material, Receipt } from '../core/index.js
 import type { HistoricalCampaignSnapshot, HistoricalRecord } from '../core/adoption.js';
 import type { ProviderPort } from '../server/ports.js';
 
-async function fixture(providerName: "meta" | "linkedin" = "meta") {
+async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=false) {
   const dir = mkdtempSync(join(tmpdir(), 'sdk-execution-adoption-')), path = join(dir, 'db');
   const store = await testStore(path);
   await store.db.prepare('INSERT INTO projects VALUES(?,?)').run('p', 'Adoption');
   const user = await store.createUser('owner', 'fixture');
   await store.db.prepare('INSERT INTO memberships VALUES(?,?,?)').run(user, 'p', 'admin');
   const principal = await store.authenticate((await store.login('owner', 'fixture', 'fixture'))!);
-  const bytes = readFileSync(new URL('../../marketing-sdk/tests/fixtures/test-pattern.png', import.meta.url)), hash = byteDigest(bytes);
+  const rawBytes=readFileSync(new URL('../../marketing-sdk/tests/fixtures/test-pattern.png', import.meta.url));
+  const sourceBytes=withOriginal?await sharp(rawBytes).webp().toBuffer():null;
+  const bytes=sourceBytes?(await prepareMetaImageUpload({bytes:sourceBytes,mime:'image/webp',filename:'original.webp'})).bytes:rawBytes,hash=byteDigest(bytes);
   const grant: Grant = { id: 'existing-grant', projectId: 'p', provider: providerName, revision: 1, accountId: providerName === 'meta' ? 'act_123' : '123', pageId: '42', organizationId: '42',
     label: 'Existing fixture authority', currency: 'USD', timezone: 'UTC', permissions: ['pause', 'report'],
     expiresAt: '2099-01-01T00:00:00Z', revokedAt: null, secretRef: 'retained-vault-reference' };
   const asset: Asset = { id: 'original-asset', projectId: 'p', campaignId: 'native', version: 1, kind: 'image', digest: hash,
-    mime: 'image/png', width: 320, height: 180, seconds: null, source: 'uploaded', jobId: null, rightsReceipt: 'original-rights', parentAssetIds: [] };
+    mime: withOriginal?'image/jpeg':'image/png', width: 320, height: 180, seconds: null, source: 'uploaded', jobId: null, rightsReceipt: 'original-rights', parentAssetIds: [] };
   const material: Material = { name: 'Retained ad', headline: 'Original headline', body: 'Original body', purpose: 'acquisition',
     settings: fixtureSettings(providerName, grant.accountId, '42'), destination: 'https://example.com', destinationDigest: 'a'.repeat(64),
     assetIds: [asset.id], audience: { provider: 'meta', locations: ['US'], ageMin: 25, ageMax: 54, expansion: false },
@@ -47,6 +51,7 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     records: [row('campaign', 'native', { providerId: '100' }), row('provider_object', 'upload', { image: 'original-image', digest: hash, status: 'accepted' }),
       row('operation', 'historical-unknown', { status: 'unknown' }), row('event', 'original-conversion', { attribution: 'original-attribution' })],
     expectedCounts: { campaign: 1, provider_object: 1, operation: 1, event: 1 }, totals: [], unsettledOperationIds: ['historical-unknown'] };
+  if(withOriginal){snapshot.records.push(row('material','source-asset',{digest:byteDigest(sourceBytes!)}));snapshot.expectedCounts.material=1;}
   const historical = new HistoricalCampaignImports(store, { authorize: async () => {}, capture: async () => snapshot,
     assertCurrent: async () => {}, withCurrentSnapshot: async (_p, _s, commit) => commit() });
   const history = await historical.stage(principal, 'p', 'native', 'history');
@@ -57,7 +62,13 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     settlements: [{ operationId: 'historical-unknown', receiptRefs: ['actual-read-only-reconciliation'] }] };
   if(providerName==='linkedin')candidate.providerIds={group:'shared-group',campaign:'100',creative:'103',image:'original-image'};
   let denied = false, failCommit = false, reads = 0;
-  const nativeMedia = [{asset, bytes}];
+  const nativeMedia:ExecutionAdoptionMedia[] = [{asset, bytes}];
+  if(withOriginal){
+    const original={...structuredClone(asset),id:'source-asset',version:7,mime:'image/webp',digest:byteDigest(sourceBytes!)};
+    asset.parentAssetIds=[original.id];
+    nativeMedia[0]!.original={asset:original,bytes:sourceBytes!};
+    candidate.media[0]!.original={assetId:original.id,digest:original.digest,historyRecordId:history.recordRefs.find(r=>r.sourceId==='source-asset')!.digest};
+  }
   const source: ExecutionAdoptionSource = { authorize: async (_p, project, campaign) => {
     assert.equal(project, 'p'); assert.equal(campaign, 'native'); if (denied) throw Error('current-native-access-revoked');
   }, capture: async () => structuredClone(candidate), readMedia: async () => structuredClone(nativeMedia), assertCurrent: async (_p, expected) => {
@@ -306,5 +317,33 @@ test('identical retained SDK media can be reused without replacing metadata or b
     assert.equal((await f.store.list('p','asset')).length,1);
     assert.equal((await f.store.db.prepare('SELECT * FROM blobs WHERE project_id=?').all('p')).length,1);
     assert.deepEqual(await f.store.get('p','asset',original.asset.id),original.asset);
+  }finally{await f.close();}
+});
+
+
+test('adoption retains original source identity/version and upload asset atomically without replacing history',async()=>{
+  const f=await fixture('meta',true);try{
+    const receipt=await f.service.adopt(f.principal,'p','native','source-and-upload');
+    assert.equal(receipt.mediaRecordIds.length,2);
+    assert.equal((await f.store.db.prepare('SELECT * FROM blobs WHERE project_id=?').all('p')).length,2);
+    const assets=await f.store.list<Asset>('p','asset');assert.equal(assets.length,2);
+    assert.equal((await f.store.get<Asset>('p','asset','source-asset')).version,7);
+    assert.deepEqual((await f.store.get<Asset>('p','asset','original-asset')).parentAssetIds,['source-asset']);
+    assert.deepEqual(await f.service.adopt(f.principal,'p','native','source-and-upload'),receipt);
+    assert.equal((await f.historical.read(f.principal,'p',f.history.id)).receipt.id,f.history.id);
+  }finally{await f.close();}
+});
+for(const mode of ['source-bytes','source-metadata','missing-history','parent','conflicting-source','during-read'])test(`adoption refuses invalid original source: ${mode}`,async()=>{
+  const f=await fixture('meta',true);try{
+    const original=f.nativeMedia[0]!.original!;
+    if(mode==='source-bytes')original.bytes=Buffer.from('changed');
+    if(mode==='source-metadata')original.asset.width=1;
+    if(mode==='missing-history')f.candidate.media[0]!.original!.historyRecordId=f.candidate.media[0]!.historyRecordId;
+    if(mode==='parent')f.nativeMedia[0]!.asset.parentAssetIds=['unrelated'];
+    if(mode==='conflicting-source')await f.store.put('p','asset',original.asset.id,{...original.asset,version:99});
+    if(mode==='during-read'){const read=f.provider.inspectExistingCampaign!;f.provider.inspectExistingCampaign=async(...args)=>{const r=await read(...args);original.asset.rightsReceipt='changed';return r;};}
+    await assert.rejects(f.service.adopt(f.principal,'p','native','bad-source'));
+    assert.deepEqual(await f.store.list('p','campaign'),[]);assert.deepEqual(await f.store.list('p','campaignExecutionOwner'),[]);
+    assert.equal((await f.store.list('p','asset')).length,mode==='conflicting-source'?1:0);
   }finally{await f.close();}
 });

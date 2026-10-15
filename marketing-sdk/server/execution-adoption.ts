@@ -18,7 +18,8 @@ export interface ExecutionAdoptionCandidate {
   grantId: string;
   material: Material;
   providerIds: Record<string, string>;
-  media: { assetId: string; uploadedDigest: string; providerImageId: string; historyRecordId: string }[];
+  media: { assetId: string; uploadedDigest: string; providerImageId: string; historyRecordId: string;
+    original?: {assetId:string; digest:string; historyRecordId:string} }[];
   retirement: { state: "all_legacy_writes_disabled"; receiptRefs: string[] };
   unsettledOperationIds: string[];
   settlements: { operationId: string; receiptRefs: string[] }[];
@@ -35,6 +36,8 @@ export interface ExecutionAdoptionMedia {
   asset: Asset;
   /** Exact original provider-upload bytes, not a newly transformed source. */
   bytes: Uint8Array;
+  /** Original pre-transcoding asset, retained separately with its original ID/version. */
+  original?: {asset:Asset; bytes:Uint8Array};
 }
 export interface ExecutionAdoptionSource {
   authorize(principal: Principal, projectId: string, nativeCampaignId: string): Promise<void>;
@@ -136,7 +139,24 @@ export class CampaignExecutionAdoptions {
     text(asset.rightsReceipt);
     const decoded = await inspectMedia(bytes, asset.kind, asset.mime);
     requireThat(decoded.width === asset.width && decoded.height === asset.height, "adoption_media_dimensions_changed");
-    const candidateDigest = digest(candidate), grantDigest = digest(grant), assetsDigest = digest(assets);
+    const original = originalMedia[0]!.original;
+    requireThat(Boolean(original) === Boolean(media.original), "adoption_original_media_binding_required");
+    if (original && media.original) {
+      const a=original.asset, binding=media.original;
+      requireThat(a.id===binding.assetId && a.id!==asset.id && a.digest===binding.digest && byteDigest(original.bytes)===a.digest &&
+        a.projectId===project && a.campaignId===campaign.id && a.kind==="image" &&
+        Number.isSafeInteger(a.version)&&a.version>0&&["generated","uploaded"].includes(a.source) &&
+        digest(asset.parentAssetIds)===digest([a.id]), "adoption_original_media_mismatch");
+      text(a.rightsReceipt);
+      const originalRecord=await this.store.get<HistoricalRecord>(project,"historicalRecord",binding.historyRecordId);
+      requireThat(history.recordRefs.some(r=>r.digest===binding.historyRecordId&&r.kind==="material") &&
+        digest({project,nativeCampaignId,system:snapshot.source.system,record:originalRecord})===binding.historyRecordId,"adoption_original_media_history_missing");
+      const decoded=await inspectMedia(original.bytes,a.kind,a.mime);
+      requireThat(decoded.width===a.width&&decoded.height===a.height,"adoption_original_media_dimensions_changed");
+    } else requireThat(asset.parentAssetIds.length===0,"adoption_original_media_binding_required");
+    const retainedMedia=[...(original?[original]:[]),{asset,bytes}].map(x=>({asset:structuredClone(x.asset),bytes:Buffer.from(x.bytes)}));
+    const originalDigest=original?digest({asset:original.asset,bytesDigest:byteDigest(original.bytes)}):null;
+    const candidateDigest = digest(candidate), grantDigest = digest(grant), assetsDigest = digest(retainedMedia.map(x=>x.asset));
     const guard = async () => {
       await inspectLiveSessions(this.sessions, [session]);
       await this.store.authorize(principal, project, ["admin", "editor"]);
@@ -145,7 +165,9 @@ export class CampaignExecutionAdoptions {
       requireThat(currentMedia.length === originalMedia.length && currentMedia.every((item, index) =>
         byteDigest(item.bytes) === assets[index]!.digest), "adoption_media_bytes_changed");
       requireThat(digest(candidate) === candidateDigest && digest(await this.store.get(project, "grant", grant.id)) === grantDigest &&
-        digest(currentMedia.map(item => item.asset)) === assetsDigest, "adoption_source_changed");
+        digest(currentMedia.map(item => item.asset)) === digest(assets) &&
+        (currentMedia[0]?.original ? digest({asset:currentMedia[0].original.asset,bytesDigest:byteDigest(currentMedia[0].original.bytes)}) : null) === originalDigest,
+        "adoption_source_changed");
       requireThat(Date.parse(grant.expiresAt) > Date.now(), "adoption_current_grant_required");
     };
     await guard();
@@ -158,7 +180,7 @@ export class CampaignExecutionAdoptions {
       nativeCampaignId, sdkCampaignId: campaign.id, historyImportId: history.id, sourceRevision: candidate.sourceRevision, candidateDigest,
       grantId: grant.id, grantRevision: grant.revision, providerReceipt: inspection.candidateReceipt,
       retirementReceiptRefs: candidate.retirement.receiptRefs, settlementReceiptRefs: candidate.settlements.flatMap(x => x.receiptRefs),
-      mediaRecordIds: candidate.media.map(x => x.historyRecordId), mediaAssetsDigest: assetsDigest, adoptedAt: new Date().toISOString(), adoptedBy: principal.userId,
+      mediaRecordIds: candidate.media.flatMap(x => [x.historyRecordId,...(x.original?[x.original.historyRecordId]:[])]), mediaAssetsDigest: assetsDigest, adoptedAt: new Date().toISOString(), adoptedBy: principal.userId,
       executionOwner: "sdk", state: "paused", spendingAuthorityGranted: false };
     return this.sessions.withLiveSessions([session], () => this.source.withRetiredExecution(principal, candidate, () => this.store.transaction(async () => {
       await guard();
@@ -199,12 +221,14 @@ export class CampaignExecutionAdoptions {
       }
       // Original media and execution ownership commit together. An existing ID
       // or digest may be reused only when its retained contents match exactly.
-      const existingAsset = await optional<Asset>(this.store, project, "asset", asset.id);
-      requireThat(!existingAsset || digest(existingAsset) === digest(asset), "adoption_asset_conflict");
-      await this.store.db.prepare("INSERT OR IGNORE INTO blobs VALUES(?,?,?)").run(project, asset.digest, bytes);
-      requireThat(await this.store.db.prepare("SELECT 1 AS present FROM blobs WHERE project_id=? AND digest=? AND bytes=?")
-        .get(project, asset.digest, bytes), "adoption_media_bytes_changed");
-      if (!existingAsset) await this.store.put(project, "asset", asset.id, asset);
+      for(const retained of retainedMedia) {
+        const existingAsset = await optional<Asset>(this.store, project, "asset", retained.asset.id);
+        requireThat(!existingAsset || digest(existingAsset) === digest(retained.asset), "adoption_asset_conflict");
+        await this.store.db.prepare("INSERT OR IGNORE INTO blobs VALUES(?,?,?)").run(project, retained.asset.digest, retained.bytes);
+        requireThat(await this.store.db.prepare("SELECT 1 AS present FROM blobs WHERE project_id=? AND digest=? AND bytes=?")
+          .get(project, retained.asset.digest, retained.bytes), "adoption_media_bytes_changed");
+        if (!existingAsset) await this.store.put(project, "asset", retained.asset.id, retained.asset);
+      }
       const adopted: Campaign = { ...campaign, receipt: inspection.candidateReceipt, preparedMaterial: structuredClone(campaign.material),
         adoptionOrigin: { nativeCampaignId, historyImportId: history.id, sourceRevision: candidate.sourceRevision, receiptId: receipt.id } };
       await this.store.put(project, "campaign", campaign.id, adopted);

@@ -22,6 +22,7 @@ import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js
 import { material } from "./validation.js";
 import { existingLinkedInMaterial, existingLinkedInChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
 import { existingMetaMaterial, META_EXISTING_FIELDS, type ExistingMetaMaterialSource } from "./existing-meta-material.js";
+import { prepareMetaImageUpload } from "./meta-image.js";
 import { existingMetaChildren } from "./existing-meta-children.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
@@ -880,10 +881,13 @@ export class NativeProvider implements ProviderPort {
         await retain(ids);
       } else if (this.name === "meta") {
         const bytes = await this.bytes(c.projectId, assets[0]!);
+        const prepared = await prepareMetaImageUpload({bytes,mime:assets[0]!.mime,filename:`${key}.${assets[0]!.mime === "image/png" ? "png" : "jpg"}`});
+        ids.imageUploadDigest = prepared.uploadDigest;
+        await retain(ids);
         await beforeWrite();
         const image = await client.uploadImage(g.accountId, {
-          bytesBase64: bytes.toString("base64"),
-          filename: `${key}.png`,
+          bytesBase64: prepared.bytes.toString("base64"),
+          filename: prepared.filename,
         });
         ids.image = String(
           (Object.values(image.images || {})[0] as any)?.hash || "",

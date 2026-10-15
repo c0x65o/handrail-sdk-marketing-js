@@ -43,3 +43,5 @@ export type { ExistingLinkedInMaterialSource } from "./existing-linkedin-materia
 export { capturePublicDestination } from "./destination.js";
 
 export { existingMetaMaterial, existingMetaTerms, type ExistingMetaMaterialSource } from "./existing-meta-material.js";
+
+export * from "./meta-image.js";

@@ -503,7 +503,7 @@ test("Meta lost campaign-create acknowledgment retains only known IDs; no automa
     eligible(t.c, t.g); t.state.loseCampaignAck = true;
     let ids: Record<string, string> = {};
     await assert.rejects(t.port.prepare(t.c, t.g, [t.a], "lost-create", v => { ids = { ...v }; }, () => {}), /provider_request_failed/);
-    assert.deepEqual(ids, { readbackVersion: "4", image: "meta-image" });
+    assert.deepEqual(ids, { readbackVersion: "4", imageUploadDigest:t.a.digest, image: "meta-image" });
     assert.equal(t.state.writes, 2); // Image + uncertain campaign; no automatic retry.
     assert.equal(t.state.objects.get("100").is_adset_budget_sharing_enabled, false);
     const payloadDigest = digest(t.port.plan(t.c, t.g, [t.a]));
