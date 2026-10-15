@@ -41,3 +41,5 @@ export type { ExistingLinkedInMaterialSource } from "./existing-linkedin-materia
 
 // Native adoption binds a real public destination snapshot, never a URL hash.
 export { capturePublicDestination } from "./destination.js";
+
+export { existingMetaMaterial, existingMetaTerms, type ExistingMetaMaterialSource } from "./existing-meta-material.js";

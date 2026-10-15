@@ -50,7 +50,7 @@ const material = schemaObject(
         ageMax: { type: "integer", minimum: 18, maximum: 65 },
         keywords: strings,
         jobTitles: strings,
-        expansion: { const: false },
+        expansion: { type: "boolean" },
       },
       ["provider", "locations", "expansion"],
     ),

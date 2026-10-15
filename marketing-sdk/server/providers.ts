@@ -4,7 +4,7 @@ import { currentPrerequisite } from "./preflight.js";
 import { providerBudgetBlockers } from "../core/index.js";
 import type { DiscoveredAccount, DiscoveredIdentity } from "./connection-discovery.js";
 import { selectedOptions } from "../core/index.js";
-import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, exactTargeting, exactLinkedInTargeting } from "./capabilities.js";
+import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, metaExpansionMatches, exactTargeting, exactLinkedInTargeting } from "./capabilities.js";
 import type {
   Asset,
   Campaign,
@@ -21,6 +21,7 @@ import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
 import { existingLinkedInMaterial, existingLinkedInChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
+import { existingMetaMaterial, META_EXISTING_FIELDS, type ExistingMetaMaterialSource } from "./existing-meta-material.js";
 import { existingMetaChildren } from "./existing-meta-children.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
@@ -185,7 +186,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
     const ms = settings?.provider === "meta" ? settings : undefined;
     return {
       provider: g.provider,
-      ...(ms ? { capabilityVersion: ms.version, accountId: g.accountId, readbackVersion: "4" } : {}),
+      ...(ms ? { capabilityVersion: ms.version, accountId: g.accountId, readbackVersion: ms.creative || ms.attribution || ms.targeting.expansion ? "5" : "4" } : {}),
       imageDigest: image.digest,
       campaign: {
         name: m.name,
@@ -201,7 +202,10 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         billing_event: "IMPRESSIONS",
         optimization_goal: ms?.optimization ?? "LINK_CLICKS",
         ...(ms ? ms.objective === "OUTCOME_AWARENESS" ? { promoted_object: { page_id: ms.identity.pageId } } : { destination_type: "WEBSITE" } : {}),
-        ...(ms?.delivery === "employment" ? { promoted_object: { pixel_id: ms.conversion!.pixelId, custom_conversion_id: ms.conversion!.customConversionId } } : {}),
+        ...(ms?.delivery === "employment" ? { promoted_object: { pixel_id: ms.conversion!.pixelId, custom_conversion_id: ms.conversion && "customConversionId" in ms.conversion ? ms.conversion.customConversionId : undefined } } : {}),
+        ...(ms?.conversion?.event === "Lead" ? { promoted_object: { pixel_id: ms.conversion.pixelId, custom_event_type: "LEAD" } } : {}),
+        ...(ms?.attribution ? { attribution_spec: ms.attribution.map(x => ({event_type:x.eventType,window_days:x.windowDays})) } : {}),
+        ...(ms?.targeting.expansion ? { targeting_optimization_types: { detailed_targeting: ms.targeting.expansion.detailedTargeting, lookalike: ms.targeting.expansion.lookalike } } : {}),
         bid_strategy: "LOWEST_COST_WITHOUT_CAP",
         ...(m.advertisingBudget?.daily ? { daily_budget: String(m.advertisingBudget.daily.minor) } : { lifetime_budget: String(m.budget!.minor) }),
         start_time: m.startAt,
@@ -226,6 +230,9 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         name: m.headline,
         message: m.body,
         link: m.destination,
+        ...(ms?.creative?.description !== undefined ? { description: ms.creative.description } : {}),
+        ...(ms?.creative?.urlTags !== undefined ? { url_tags: ms.creative.urlTags } : {}),
+        ...(ms?.creative?.features ? { degrees_of_freedom_spec: {creative_features_spec: Object.fromEntries(Object.entries(ms.creative.features).map(([k,v])=>[k,{enroll_status:v}]))} } : {}),
       },
     };
   }
@@ -363,6 +370,33 @@ export class NativeProvider implements ProviderPort {
       if (error instanceof DomainError) throw error;
       throw new DomainError("existing_campaign_read_unavailable");
     });
+  }
+  /** Capture original Meta acquisition terms without writes, persistence or authority expansion. */
+  async captureExistingMetaMaterial(g: Grant, ids: {campaign:string; adset:string; creative:string; image:string}, source: ExistingMetaMaterialSource, guard: () => Promise<void>) {
+    requireThat(this.name === "meta" && g.provider === "meta" && this.vault.useReadOnly &&
+      [ids.campaign,ids.adset,ids.creative].every(x=>typeof x==="string"&&/^\d+$/.test(x)) &&
+      typeof ids.image==="string"&&/^[a-f0-9]{32}$/.test(ids.image), "existing_material_scope_invalid", 403);
+    const scope=digest({g,ids,source});
+    const current=async()=>{await guard();requireThat(digest({g,ids,source})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
+    const paths=[accountPath(g.accountId),ids.campaign,ids.adset,ids.creative].map(x=>`/v26.0/${x}`);
+    const fetcher:typeof fetch=async(input,init)=>{
+      const url=new URL(String(input));
+      requireThat(url.origin==="https://graph.facebook.com"&&paths.includes(url.pathname)&&
+        (!init?.method||init.method==="GET")&&init?.redirect==="error","existing_campaign_read_only_boundary",403);
+      await current();const response=await this.fetcher(input,init);await current();return response;
+    };
+    await current();
+    return this.vault.useReadOnly!(g,current,async credentials=>{
+      requireThat(credentials.expiresAt>Date.now(),"provider_access_expired_or_denied",403);
+      const client=new MetaMarketingClient({...credentials,fetchImpl:fetcher});
+      await this.accountContext(client,g);
+      const observed={campaign:await client.getObject(ids.campaign,META_EXISTING_FIELDS.campaign),
+        adset:await client.getObject(ids.adset,META_EXISTING_FIELDS.adset),
+        creative:await client.getObject(ids.creative,META_EXISTING_FIELDS.creative)};
+      const result=existingMetaMaterial(source,g,ids,observed);await current();
+      return {...result,providerMaterialDigest:digest(observed),observedAt:new Date().toISOString(),executionReady:false as const,
+        missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred","meta_daily_budget_semantics_unverified"]};
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_campaign_read_unavailable");});
   }
   private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
@@ -675,11 +709,15 @@ export class NativeProvider implements ProviderPort {
         const result = await client.listCustomAudiences(g.accountId);
         requireThat(s.targeting.excludedCustomAudiences.every(x => result.data.some((r: any) => String(r.id) === x.id && r.name === x.label)), "custom_audience_ownership_unverified");
       }
-      if (s.conversion) {
+      if (s.conversion?.event === "ApplicantRequestMOU") {
         const conversion = await client.getObject(s.conversion.customConversionId, "id,account_id,pixel,rule");
         let rule; try { rule = typeof conversion.rule === "string" ? JSON.parse(conversion.rule) : conversion.rule; } catch { rule = null; }
         requireThat(String(conversion.id) === s.conversion.customConversionId && String(conversion.account_id) === g.accountId.replace(/^act_/, "") &&
           String(conversion.pixel?.id) === s.conversion.pixelId && exactTargeting(rule, { and: [{ event: { eq: "ApplicantRequestMOU" } }] }), "applicant_event_binding_unverified");
+      }
+      if (s.conversion?.event === "Lead") {
+        const pixel = await client.getObject(s.conversion.pixelId, "id,owner_ad_account");
+        requireThat(String(pixel.id) === s.conversion.pixelId && String(pixel.owner_ad_account?.id) === g.accountId.replace(/^act_/, ""), "lead_pixel_ownership_unverified");
       }
     } else {
       for (const [kind, option] of selectedOptions(c.material.audience, s)) {
@@ -871,6 +909,8 @@ export class NativeProvider implements ProviderPort {
           method: "POST",
           body: {
             name: c.material.name,
+            ...(plan.creative.url_tags !== undefined ? {url_tags:plan.creative.url_tags} : {}),
+            ...(plan.creative.degrees_of_freedom_spec ? {degrees_of_freedom_spec:plan.creative.degrees_of_freedom_spec} : {}),
             object_story_spec: {
               page_id: plan.creative.pageId,
               ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
@@ -879,6 +919,7 @@ export class NativeProvider implements ProviderPort {
                 link: plan.creative.link,
                 message: plan.creative.message,
                 name: plan.creative.name,
+                ...(plan.creative.description !== undefined ? {description:plan.creative.description} : {}),
                 call_to_action: {
                   type: "LEARN_MORE",
                   value: {
@@ -982,6 +1023,7 @@ export class NativeProvider implements ProviderPort {
     const ids: Record<string,string> = { ...providerIds, readbackVersion: this.name === "meta" ? "4" : "3",
       ...(this.name === "linkedin" ? { groupOwnership: "shared" } : {}) };
     const plan = this.plan(c, g, assets), scope = digest({c,g,assets,providerIds});
+    if (this.name === "meta") ids.readbackVersion = (plan as any).readbackVersion ?? "4";
     const current = async () => {
       await guard();
       requireThat(digest({c,g,assets,providerIds}) === scope && !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "existing_campaign_scope_changed", 403);
@@ -1032,26 +1074,26 @@ export class NativeProvider implements ProviderPort {
   }> {
     requireThat(ids.campaign, "incomplete_provider_identity");
     requireThat(ids.readbackVersion === undefined || ["1", "2", "3"].includes(ids.readbackVersion) ||
-      (this.name === "meta" && ids.readbackVersion === "4"), "unsupported_readback_version");
+      (this.name === "meta" && ["4", "5"].includes(ids.readbackVersion!)), "unsupported_readback_version");
     if (this.name === "meta") {
       // v4 extends every v3 identity/material check; historical field sets stay exact.
-      const explicit = ["3", "4"].includes(ids.readbackVersion!);
-      const budgets = ["2", "3", "4"].includes(ids.readbackVersion!);
+      const explicit = ["3", "4", "5"].includes(ids.readbackVersion!);
+      const budgets = ["2", "3", "4", "5"].includes(ids.readbackVersion!);
       requireThat(
         ids.adset && ids.creative && ids.ad,
         "incomplete_provider_identity",
       );
       const campaign = await client.getObject(
         ids.campaign,
-        budgets ? `id,objective,special_ad_categories,spend_cap,status${explicit ? ",account_id,special_ad_category_country" : ""}${ids.readbackVersion === "4" ? ",is_adset_budget_sharing_enabled" : ""}` : "id,objective,special_ad_categories,status",
+        budgets ? `id,objective,special_ad_categories,spend_cap,status${explicit ? ",account_id,special_ad_category_country" : ""}${["4", "5"].includes(ids.readbackVersion!) ? ",is_adset_budget_sharing_enabled" : ""}` : "id,objective,special_ad_categories,status",
       );
       const adset = await client.getObject(
         ids.adset,
-        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${budgets ? "daily_budget," : ""}start_time,end_time,targeting,status${explicit ? ",account_id,destination_type,promoted_object,targeting_optimization_types" : ""}`,
+        `id,campaign_id,billing_event,optimization_goal,bid_strategy,lifetime_budget,${budgets ? "daily_budget," : ""}start_time,end_time,targeting,status${explicit ? ",account_id,destination_type,promoted_object,targeting_optimization_types" : ""}${ids.readbackVersion === "5" ? ",attribution_spec" : ""}`,
       );
       const creative = await client.getObject(
         ids.creative,
-        explicit ? "id,account_id,object_story_spec" : "id,object_story_spec",
+        explicit ? `id,account_id,object_story_spec${ids.readbackVersion === "5" ? ",url_tags,degrees_of_freedom_spec" : ""}` : "id,object_story_spec",
       );
       const ad = await client.getObject(ids.ad, explicit ? "id,account_id,adset_id,creative,status" : "id,adset_id,creative,status");
       const statuses = [campaign.status, adset.status, ad.status];
@@ -1180,7 +1222,7 @@ export class NativeProvider implements ProviderPort {
   }
   private validateSnapshot(s: any, plan: any, ids: Record<string, string>) {
     if (this.name === "meta") {
-      if (plan.readbackVersion === "4") requireThat(ids.readbackVersion === "4" &&
+      if (["4", "5"].includes(plan.readbackVersion)) requireThat(ids.readbackVersion === plan.readbackVersion &&
         plan.campaign.is_adset_budget_sharing_enabled === false && s.campaign.is_adset_budget_sharing_enabled === false,
         "meta_budget_sharing_unverified");
       if (plan.capabilityVersion) {
@@ -1195,11 +1237,17 @@ export class NativeProvider implements ProviderPort {
         requireThat(exactTargeting(s.creative.object_story_spec, {
           page_id: plan.creative.pageId, ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
           link_data: { image_hash: ids.image, link: plan.creative.link, message: plan.creative.message, name: plan.creative.name,
+            ...(plan.creative.description !== undefined ? {description:plan.creative.description} : {}),
             call_to_action: { type: "LEARN_MORE", value: { link: plan.creative.link } } },
         }), "creative_identity_or_content_mismatch");
+        if (plan.readbackVersion === "5") {
+          requireThat(exactTargeting(s.creative.url_tags, plan.creative.url_tags) &&
+            exactTargeting(s.creative.degrees_of_freedom_spec, plan.creative.degrees_of_freedom_spec), "creative_tracking_or_features_mismatch");
+          if (plan.adset.targeting_optimization_types) requireThat(metaExpansionMatches(s.adset.targeting_optimization_types, plan.adset.targeting_optimization_types), "meta_expansion_settings_mismatch");
+        }
         if (plan.adset.targeting.targeting_optimization === "none") requireThat(metaExpansionOff(s.adset.targeting_optimization_types), "meta_expansion_off_unverified");
       }
-      const { name: _name, status: _status, ...expected } = plan.adset;
+      const { name: _name, status: _status, targeting_optimization_types: _expansion, ...expected } = plan.adset;
       expected.start_time = new Date(expected.start_time).getTime();
       if (expected.end_time !== undefined) expected.end_time = new Date(expected.end_time).getTime();
       else requireThat(s.adset.end_time == null, "unexpected_provider_end_time");
@@ -1368,7 +1416,7 @@ export class NativeProvider implements ProviderPort {
       "verified_provider_objects_required",
     );
     const ids = c.receipt.ids;
-    if (activate && this.name === "meta") requireThat(ids.readbackVersion === "4", "meta_readback_requalification_required");
+    if (activate && this.name === "meta") requireThat(["4", "5"].includes(ids.readbackVersion!), "meta_readback_requalification_required");
     const scopeDigest = digest({ c, g });
     const hostBeforeWrite = beforeWrite;
     beforeWrite = async () => {
@@ -1494,7 +1542,7 @@ export class NativeProvider implements ProviderPort {
         return null;
       }
       if (!(o.kind === "activate" ? s.enabled : s.paused)) return null;
-      if (this.name === "meta" && receipt.ids.readbackVersion === "4" && o.kind !== "pause" &&
+      if (this.name === "meta" && ["4", "5"].includes(receipt.ids.readbackVersion!) && o.kind !== "pause" &&
         s.material.campaign.is_adset_budget_sharing_enabled !== false) return null;
       if (!receipt.ids.readbackDigest || receipt.payloadDigest !== o.payloadDigest) {
         if (o.kind !== "prepare") return null;

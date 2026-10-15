@@ -259,6 +259,32 @@ for the same account, preserving the original operation grant revision and never
 replaying the provider write. Failed or revoked post-write authority retains an
 unknown effect and its lease until qualified readback.
 
+## Existing Meta acquisition material
+
+`NativeProvider.captureExistingMetaMaterial` uses read-only custody for the exact
+account, campaign, ad set and creative. The host supplies original identity,
+copy, conversion and policy facts bound to retained history. Current provider
+terms must match that retained observation; a disagreement is rejected without
+rewriting either revision. This capture does not prove original media bytes,
+complete child inventory, exclusive ownership or permission to resume.
+
+The shared contract represents expanded-interest acquisition Lead campaigns,
+explicit detailed/lookalike expansion bits, location types, attribution windows,
+original creative description, URL tags and explicit feature enrollment. It
+preserves timezone, open schedule, daily budget, optional lifetime cap and native
+daily ceiling. Recruitment remains a separate ApplicantRequestMOU contract.
+Readback version 5 verifies these fields during initial preparation, adoption
+inspection, activation and recovery. Older receipt digests remain readable;
+unsupported or changed fields fail instead of being silently dropped.
+
+Representing Meta daily terms does not qualify provider pacing against a native
+spending ceiling. `meta_daily_budget_semantics_unverified` still prevents paid
+execution; unknown exposure is never treated as zero. The public material capture
+returns `executionReady: false`. Tests use real SDK clients and disposable SQL
+storage with intercepted provider HTTP; they are not live account eligibility or
+delivery proof. Provider field references: [Meta creative schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adcreative.py)
+and [Meta targeting schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/targeting.py).
+
 ## Measurement evidence
 
 `bindAdoptedMeasurementIdentity(store, input)` connects a fresh native collection

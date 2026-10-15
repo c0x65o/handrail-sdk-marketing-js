@@ -103,9 +103,9 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
     {s && <>
       <p>{s.provider} · API {s.apiVersion} · {s.accountId === g.accountId ? g.label : "Previously selected account"}</p>
       {s.accountId !== g.accountId && <p role="status">Saved settings refer to another account. Identity, conversions and targeting will still need review. <button type="button" onClick={() => settings({ accountId: g.accountId })}>Bind settings to selected account</button></p>}
-      <TuplePicker material={m} onChange={settings => update({ settings })} />
+      <TuplePicker material={m} onChange={settings => update({ settings, audience: { ...m.audience, expansion: settings.provider === "meta" && settings.delivery === "advantage_plus_interests" } })} />
       <Select label="Format" value={s.format} choices={[s.provider === "meta" ? "single_image" : "STANDARD_UPDATE"]} onChange={format => settings({ format })} />
-      {((s.provider === "linkedin" && s.objective !== "WEBSITE_CONVERSION" && s.conversion) || (s.provider === "meta" && s.delivery !== "employment" && (s.conversion || s.specialAdCategory || s.specialAdCategoryCountry))) && <p role="status">The new tuple is incompatible with the retained conversion/category fields. <button type="button" onClick={() => settings(s.provider === "meta" ? { conversion: undefined, specialAdCategory: undefined, specialAdCategoryCountry: undefined } : { conversion: undefined })}>Remove unused conversion fields</button></p>}
+      {((s.provider === "linkedin" && s.objective !== "WEBSITE_CONVERSION" && s.conversion) || (s.provider === "meta" && s.delivery !== "employment" && s.delivery !== "advantage_plus_interests" && (s.conversion || s.specialAdCategory || s.specialAdCategoryCountry))) && <p role="status">The new tuple is incompatible with the retained conversion/category fields. <button type="button" onClick={() => settings(s.provider === "meta" ? { conversion: undefined, specialAdCategory: undefined, specialAdCategoryCountry: undefined } : { conversion: undefined })}>Remove unused conversion fields</button></p>}
       <p>One image per creative set. Document and video ad publishing remain unavailable.</p>
       {s.provider === "meta" ? <>
         <IdentifierField label="Page identity" kind="page" grant={g} allowed={g.pageId || ""} value={s.identity.pageId} onChange={pageId => settings({ identity: { ...s.identity, pageId } })} />
@@ -120,11 +120,23 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
         <button type="button" disabled={s.targeting.interestGroups.length >= 5} onClick={() => settings({ targeting: { ...s.targeting, interestGroups: [...s.targeting.interestGroups, []] } })}>Add AND interest group</button>
         <ResolvedSelect label="Exclude existing custom audiences" kind="customAudiences" selected={s.targeting.excludedCustomAudiences} grant={g} onChange={excludedCustomAudiences => settings({ targeting: { ...s.targeting, excludedCustomAudiences } })} />
         </>}
+        {s.delivery === "advantage_plus_interests" && <>
+          <IdentifierField label="Lead Pixel" kind="pixel" grant={g} value={s.conversion?.pixelId || ""} onChange={pixelId => settings({ conversion: {pixelId, event:"Lead"} })} />
+          <p>Expanded acquisition audience; interests are suggestions. Conversion goal: Lead.</p>
+          {(["detailedTargeting", "lookalike"] as const).map(key => <Select key={key} label={key === "detailedTargeting" ? "Detailed targeting expansion" : "Lookalike expansion"}
+            value={s.targeting.expansion?.[key] === undefined ? "" : String(s.targeting.expansion[key])} choices={["0","1"]}
+            onChange={value => settings({targeting:{...s.targeting,expansion:{...s.targeting.expansion,[key]:Number(value)}}})} />)}
+        </>}
+        {s.creative && <>
+          <label>Description<input value={s.creative.description ?? ""} onChange={e=>settings({creative:{...s.creative,description:e.target.value}})} /></label>
+          <label>Tracking tags<input value={s.creative.urlTags ?? ""} onChange={e=>settings({creative:{...s.creative,urlTags:e.target.value}})} /></label>
+          {s.creative.features && <p>Creative enhancements: {Object.entries(s.creative.features).map(([key,value])=>`${key}: ${value}`).join(", ")}</p>}
+        </>}
         {s.delivery === "employment" && <>
           <Select label="Special ad category" value={s.specialAdCategory || ""} choices={["EMPLOYMENT"]} onChange={specialAdCategory => settings({ specialAdCategory })} />
           <Select label="Special category country" value={s.specialAdCategoryCountry || ""} choices={["US"]} onChange={specialAdCategoryCountry => settings({ specialAdCategoryCountry })} />
           <IdentifierField label="Pixel" kind="pixel" grant={g} value={s.conversion?.pixelId || ""} onChange={pixelId => settings({ conversion: { ...s.conversion, pixelId, event: "ApplicantRequestMOU" } })} />
-          <IdentifierField label="ApplicantRequestMOU custom conversion" kind="conversion" grant={g} value={s.conversion?.customConversionId || ""} onChange={customConversionId => settings({ conversion: { ...s.conversion, customConversionId, event: "ApplicantRequestMOU" } })} />
+          <IdentifierField label="ApplicantRequestMOU custom conversion" kind="conversion" grant={g} value={(s.conversion?.event === "ApplicantRequestMOU" ? s.conversion.customConversionId : "")} onChange={customConversionId => settings({ conversion: { ...s.conversion, customConversionId, event: "ApplicantRequestMOU" } })} />
           <p>US only; ages 18–65+, all genders, no language, interest or exclusion narrowing. Eligibility remains unverified until the host retains exact provider evidence.</p>
         </>}
       </> : <>

@@ -68,7 +68,7 @@ export function draftMaterial(value: DraftMaterial) {
       if (Object.hasOwn(a, key)) strings(a[key], 30, 200);
     for (const key of ["ageMin", "ageMax"] as const)
       if (Object.hasOwn(a, key)) requireThat(Number.isInteger(a[key]) && a[key]! >= 18 && a[key]! <= 65, "invalid_age", 422);
-    if (Object.hasOwn(a, "expansion")) requireThat(a.expansion === false, "unsupported_targeting", 422);
+    if (Object.hasOwn(a, "expansion")) requireThat(typeof a.expansion === "boolean", "unsupported_targeting", 422);
   }
 }
 export function audience(value: Audience, provider: string) {
@@ -82,7 +82,7 @@ export function audience(value: Audience, provider: string) {
     "expansion",
   ]);
   requireThat(
-    value.provider === provider && value.expansion === false,
+    value.provider === provider && (value.expansion === false || provider === "meta" && value.expansion === true),
     "unsupported_targeting",
     422,
   );
@@ -228,7 +228,13 @@ export function material(value: Material, provider: string) {
   requireThat(value.settings || value.applicantGoal === undefined, "applicant_goal_requires_settings", 422);
   if (value.advertisingBudget) {
     advertisingBudget(value.advertisingBudget);
-    requireThat(!value.advertisingBudget.campaignDailyCeiling || (dailyExposureMinor(value) !== null && dailyExposureMinor(value)! <= value.advertisingBudget.campaignDailyCeiling.minor), "campaign_daily_exposure_exceeded", 422);
+    // Representation preserves native ceilings even where provider exposure is unknown.
+    // Meta daily execution is separately blocked by providerBudgetBlockers; storing
+    // its nominal budget is not proof that provider pacing enforces this ceiling.
+    const exposure = dailyExposureMinor(value);
+    const representedDaily = exposure ?? (value.settings?.provider === "meta" ? value.advertisingBudget.daily?.minor : undefined);
+    requireThat(!value.advertisingBudget.campaignDailyCeiling || representedDaily !== undefined && representedDaily !== null &&
+      representedDaily <= value.advertisingBudget.campaignDailyCeiling.minor, "campaign_daily_exposure_exceeded", 422);
     requireThat(value.budget === null ? value.advertisingBudget.lifetime === undefined :
       value.advertisingBudget.lifetime?.currency === value.budget.currency && value.advertisingBudget.lifetime?.minor === value.budget.minor, "legacy_lifetime_budget_mismatch", 422);
   }
@@ -245,6 +251,7 @@ export function material(value: Material, provider: string) {
   } catch {
     requireThat(false, "invalid_timezone", 422);
   }
+  requireThat(value.settings || value.audience.expansion === false, "explicit_expansion_settings_required", 422);
   audience(value.audience, provider);
 }
 

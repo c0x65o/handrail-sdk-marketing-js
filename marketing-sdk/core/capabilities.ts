@@ -19,7 +19,7 @@ export interface MetaSettings extends SettingsBase {
   format: "single_image";
   objective: "OUTCOME_TRAFFIC" | "OUTCOME_AWARENESS" | "OUTCOME_LEADS";
   optimization: "LINK_CLICKS" | "IMPRESSIONS" | "REACH" | "OFFSITE_CONVERSIONS";
-  delivery: "ordinary" | "strict" | "employment";
+  delivery: "ordinary" | "strict" | "employment" | "advantage_plus_interests";
   placements: ("facebook_feed" | "instagram_feed")[];
   identity: { pageId: string; instagramUserId?: string };
   targeting: {
@@ -27,10 +27,20 @@ export interface MetaSettings extends SettingsBase {
     /** OR inside each group; AND between groups. */
     interestGroups: ResolvedOption[][];
     excludedCustomAudiences: ResolvedOption[];
+    locationTypes?: ("home" | "recent" | "travel_in" | "frequently_in")[];
+    expansion?: { detailedTargeting: 0 | 1; lookalike: 0 | 1 };
   };
   specialAdCategory?: "EMPLOYMENT";
   specialAdCategoryCountry?: "US";
-  conversion?: { pixelId: string; customConversionId: string; event: "ApplicantRequestMOU" };
+  conversion?: { pixelId: string; customConversionId: string; event: "ApplicantRequestMOU" }
+    | { pixelId: string; event: "Lead" };
+  attribution?: { eventType: "CLICK_THROUGH" | "VIEW_THROUGH"; windowDays: 1 | 7 | 28 }[];
+  creative?: {
+    description?: string;
+    urlTags?: string;
+    /** Exact provider feature names and explicit enrollment, never inferred defaults. */
+    features?: Record<string, "OPT_IN" | "OPT_OUT">;
+  };
 }
 export interface LinkedInSettings extends SettingsBase {
   provider: "linkedin";
@@ -76,6 +86,7 @@ export const META_COMBINATIONS = [
   ["strict", "OUTCOME_TRAFFIC", "REACH"],
   ["strict", "OUTCOME_AWARENESS", "REACH"],
   ["employment", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
+  ["advantage_plus_interests", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
 ] as const;
 export const CAPABILITY_MATRIX = {
   version: CAPABILITY_VERSION,
@@ -117,7 +128,7 @@ export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "a
   else check(m.applicantGoal === undefined, "purpose_outcome_mismatch");
   if (!record(s.identity) || !record(s.targeting) || !Array.isArray(s.placements)) return [...errors, "invalid_provider_settings"];
   if (s.provider === "meta") {
-    check(only(s, [...base, "delivery", "specialAdCategory", "specialAdCategoryCountry"]), "unexpected_settings_fields");
+    check(only(s, [...base, "delivery", "specialAdCategory", "specialAdCategoryCountry", "attribution", "creative"]), "unexpected_settings_fields");
     check(s.apiVersion === "v26.0" && s.format === "single_image", "unsupported_format_or_api");
     check(META_COMBINATIONS.some(row => row[0] === s.delivery && row[1] === s.objective && row[2] === s.optimization), "unsupported_objective_optimization");
     check(Array.isArray(s.placements) && s.placements.length > 0 && s.placements.length <= 2 && new Set(s.placements).size === s.placements.length && s.placements.every(p => ["facebook_feed", "instagram_feed"].includes(p)), "unsupported_placement");
@@ -125,8 +136,25 @@ export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "a
     check(s.placements?.includes("instagram_feed") ? numeric(s.identity?.instagramUserId) : s.identity?.instagramUserId === undefined, "instagram_identity_mismatch");
     if (g && s.identity?.instagramUserId) check(s.identity.instagramUserId === g.instagramUserId, "instagram_identity_mismatch");
     const t = s.targeting;
-    check(only(t, ["languages", "interestGroups", "excludedCustomAudiences"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");
+    check(only(t, ["languages", "interestGroups", "excludedCustomAudiences", "locationTypes", "expansion"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");
     if (errors.includes("invalid_resolved_targeting")) return errors;
+    check(t.locationTypes === undefined || Array.isArray(t.locationTypes) && t.locationTypes.length > 0 &&
+      new Set(t.locationTypes).size === t.locationTypes.length && t.locationTypes.every(x => ["home", "recent", "travel_in", "frequently_in"].includes(x)), "invalid_location_types");
+    check(m.audience.expansion === (s.delivery === "advantage_plus_interests"), "targeting_expansion_mismatch");
+    if (s.delivery === "advantage_plus_interests") {
+      check(Array.isArray(s.attribution) && s.attribution.length > 0, "explicit_attribution_required");
+      check(t.interestGroups.length > 0 && only(t.expansion, ["detailedTargeting", "lookalike"]) &&
+        [t.expansion?.detailedTargeting, t.expansion?.lookalike].every(x => x === 0 || x === 1), "explicit_expansion_required");
+    } else check(t.expansion === undefined, "unexpected_expansion_settings");
+    check(s.attribution === undefined || Array.isArray(s.attribution) && s.attribution.length > 0 &&
+      new Set(s.attribution.map(x => x.eventType)).size === s.attribution.length && s.attribution.every(x =>
+        only(x, ["eventType", "windowDays"]) && ["CLICK_THROUGH", "VIEW_THROUGH"].includes(x.eventType) && [1, 7, 28].includes(x.windowDays)), "invalid_attribution_spec");
+    const creative = s.creative;
+    check(creative === undefined || only(creative, ["description", "urlTags", "features"]) &&
+      (creative.description === undefined || typeof creative.description === "string" && creative.description.length <= 3000) &&
+      (creative.urlTags === undefined || typeof creative.urlTags === "string" && creative.urlTags.length <= 8000) &&
+      (creative.features === undefined || record(creative.features) && Object.keys(creative.features).length <= 200 &&
+        Object.entries(creative.features).every(([key, value]) => /^[a-z][a-z0-9_]{0,99}$/.test(key) && ["OPT_IN", "OPT_OUT"].includes(value))), "invalid_creative_settings");
     if (s.delivery === "strict") {
       check(t?.interestGroups?.length > 0, "strict_interests_required");
       check(m.audience.locations?.length === 1 && m.audience.locations[0] === "US", "meta_country_contract_unverified");
@@ -135,8 +163,12 @@ export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "a
     if (s.delivery === "employment") {
       check(m.purpose === "recruitment" && s.specialAdCategory === "EMPLOYMENT" && s.specialAdCategoryCountry === "US", "employment_category_country_required");
       check(m.audience.locations?.length === 1 && m.audience.locations[0] === "US" && m.audience.ageMin === 18 && m.audience.ageMax === 65 && t?.languages?.length === 0 && t?.interestGroups?.length === 0 && t?.excludedCustomAudiences?.length === 0, "employment_narrowing_unsupported");
-      check(only(s.conversion, ["pixelId", "customConversionId", "event"]) && numeric(s.conversion?.pixelId) && numeric(s.conversion?.customConversionId) && s.conversion?.event === "ApplicantRequestMOU", "applicant_conversion_required");
-    } else check(m.purpose === "acquisition" && s.specialAdCategory === undefined && s.specialAdCategoryCountry === undefined && s.conversion === undefined, "purpose_conversion_mismatch");
+      check(only(s.conversion, ["pixelId", "customConversionId", "event"]) && numeric(s.conversion?.pixelId) && numeric(s.conversion && "customConversionId" in s.conversion ? s.conversion.customConversionId : undefined) && s.conversion?.event === "ApplicantRequestMOU", "applicant_conversion_required");
+    } else {
+      check(m.purpose === "acquisition" && s.specialAdCategory === undefined && s.specialAdCategoryCountry === undefined, "purpose_conversion_mismatch");
+      check(s.delivery === "advantage_plus_interests" ? only(s.conversion, ["pixelId", "event"]) &&
+        numeric(s.conversion?.pixelId) && s.conversion?.event === "Lead" : s.conversion === undefined, "purpose_conversion_mismatch");
+    }
   } else if (s.provider === "linkedin") {
     check(m.timezone === "UTC" && (!g || g.timezone === "UTC"), "linkedin_utc_required");
     // Provider runSchedule uses exact UTC instants, including existing partial days.

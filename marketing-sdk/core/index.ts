@@ -53,7 +53,7 @@ export interface Audience {
   ageMax?: number;
   keywords?: string[];
   jobTitles?: string[];
-  expansion: false;
+  expansion: boolean;
 }
 export interface Material {
   /** Omitted only for legacy inspection/compatibility. */

@@ -27,17 +27,25 @@ export function metaExpansionOff(value: unknown): boolean {
     x && typeof x === "object" && Object.keys(x).length === 2 && Object.hasOwn(x, "value") &&
     ["detailed_targeting", "lookalike"].includes(x.key) && (x.value === 0 || x.value === "0"));
 }
+/** Provider serializes these two explicit bits as an object or key/value array. */
+export function metaExpansionMatches(value: unknown, expected: {detailed_targeting: 0 | 1; lookalike: 0 | 1}): boolean {
+  const entries = Array.isArray(value) ? value : value && typeof value === "object"
+    ? Object.entries(value).map(([key, value]) => ({key,value})) : [];
+  return entries.length === 2 && new Set(entries.map(x=>x?.key)).size === 2 && entries.every(x =>
+    x && typeof x === "object" && Object.keys(x).length === 2 && ["detailed_targeting", "lookalike"].includes(x.key) &&
+    (x.value === expected[x.key as keyof typeof expected] || x.value === String(expected[x.key as keyof typeof expected])));
+}
 export function metaTargeting(c: Campaign, s: MetaSettings) {
   const { audience: a } = c.material, t = s.targeting;
   return {
-    geo_locations: { countries: a.locations }, age_min: a.ageMin, age_max: a.ageMax,
+    geo_locations: { countries: a.locations, ...(t.locationTypes ? { location_types: t.locationTypes } : {}) }, age_min: a.ageMin, age_max: a.ageMax,
     publisher_platforms: s.placements.map(p => p === "facebook_feed" ? "facebook" : "instagram"),
     ...(s.placements.includes("facebook_feed") ? { facebook_positions: ["feed"] } : {}),
     ...(s.placements.includes("instagram_feed") ? { instagram_positions: ["stream"] } : {}),
     ...(t.languages.length ? { locales: t.languages.map(x => Number(x.id)) } : {}),
     ...(t.interestGroups.length ? { flexible_spec: t.interestGroups.map(group => ({ interests: group.map(x => ({ id: x.id, name: x.label })) })) } : {}),
     ...(t.excludedCustomAudiences.length ? { excluded_custom_audiences: t.excludedCustomAudiences.map(x => ({ id: x.id, name: x.label })) } : {}),
-    targeting_automation: { advantage_audience: 0 },
+    targeting_automation: { advantage_audience: s.delivery === "advantage_plus_interests" ? 1 : 0 },
     ...(s.delivery === "strict" ? { targeting_optimization: "none" } : {}),
   };
 }

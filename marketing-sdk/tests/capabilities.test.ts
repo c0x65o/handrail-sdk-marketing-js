@@ -47,6 +47,13 @@ function metaMode(c: Campaign, row: typeof META_COMBINATIONS[number]) {
   const s = c.material.settings as MetaSettings;
   [s.delivery, s.objective, s.optimization] = row;
   if (s.delivery === "strict") s.targeting = { languages: [{ id: "6", label: "English" }], interestGroups: [[{ id: "10", label: "Gardens" }, { id: "11", label: "Design" }]], excludedCustomAudiences: [{ id: "20", label: "Existing customers" }] };
+  if (s.delivery === "advantage_plus_interests") {
+    c.material.audience.expansion = true;
+    s.targeting = {languages:[],interestGroups:[[{id:"10",label:"Gardens"}]],excludedCustomAudiences:[],expansion:{detailedTargeting:1,lookalike:0}};
+    s.conversion = {pixelId:"60",event:"Lead"};
+    s.creative = {description:"Original description",urlTags:"utm_source={{site_source_name}}",features:{image_touchups:"OPT_OUT"}};
+    s.attribution = [{eventType:"CLICK_THROUGH",windowDays:7},{eventType:"VIEW_THROUGH",windowDays:1}];
+  }
   if (s.delivery === "employment") {
     c.material.purpose = "recruitment"; c.material.applicantGoal = { event: "ApplicantRequestMOU", meaning: "completed_mou_request" };
     c.material.audience.ageMin = 18; c.material.audience.ageMax = 65;
@@ -172,6 +179,7 @@ async function native(provider: "meta" | "linkedin") {
       if (last === "permissions") return Response.json({ data: [{ permission: "ads_management", status: "granted" }] });
       if (last === "act_123") return response({ id: "act_123", currency: "USD", timezone_name: "America/Chicago", funding_source_details: { id: "fixture-only" } }, "account");
       if (last === "42") return response({ id: "42", instagram_business_account: { id: "43" } }, "page");
+      if (last === "60") return response({id:"60",owner_ad_account:{id:"123"}},"pixel");
       if (last === "61") return response({ id: "61", account_id: "123", pixel: { id: "60" }, rule: JSON.stringify({ and: [{ event: { eq: "ApplicantRequestMOU" } }] }) }, "conversion");
       if (last === "search") return response({ data: [{ id: "10", name: "Gardens" }, { id: "11", name: "Design" }] }, "taxonomy");
       if (last === "customaudiences") return response({ data: [{ id: "20", name: "Existing customers" }] }, "audiences");
@@ -244,7 +252,7 @@ for (const provider of ["meta", "linkedin"] as const) test(`${provider} every of
       t.state.objects.clear(); t.state.next = 100; t.state.loseRead = true;
       eligible(t.c, t.g); let ids: Record<string, string> = {};
       await assert.rejects(t.port.prepare(t.c, t.g, [t.a], `case-${i}`, value => { ids = { ...value }; }, () => {}), /provider_request_failed/);
-      assert.ok(ids.creative && ids.campaign); assert.equal(ids.readbackVersion, provider === "meta" ? "4" : "3"); const writes = t.state.writes;
+      assert.ok(ids.creative && ids.campaign); assert.equal(ids.readbackVersion, provider === "meta" ? (t.c.material.settings as MetaSettings).delivery === "advantage_plus_interests" ? "5" : "4" : "3"); const writes = t.state.writes;
       const payloadDigest = digest(t.port.plan(t.c, t.g, [t.a]));
       const receipt = await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest, receipt: { ids, payloadDigest, intent: "paused", delivery: "unverified", observedAt: new Date().toISOString(), evidence: "provider", providerRequestId: null } });
       assert.ok(receipt); assert.equal(t.state.writes, writes);
@@ -372,7 +380,7 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
         s.placements = i % 3 === 0 ? ["facebook_feed"] : i % 3 === 1 ? ["instagram_feed"] : ["facebook_feed", "instagram_feed"];
         const instagram = i % 3 !== 0, facebook = i % 3 !== 1;
         if (instagram) s.identity.instagramUserId = "43";
-        ids = { readbackVersion: "4", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
+        ids = { readbackVersion: row[0] === "advantage_plus_interests" ? "5" : "4", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
         const strict = row[0] === "strict", employment = row[0] === "employment", awareness = row[1] === "OUTCOME_AWARENESS";
         t.state.objects.set("100", { _kind: "campaigns", id: "100", account_id: "123", status: "PAUSED", is_adset_budget_sharing_enabled: false, objective: row[1],
           special_ad_categories: employment ? ["EMPLOYMENT"] : [], ...(employment ? { special_ad_category_country: ["US"] } : {}) });
@@ -391,6 +399,17 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
           ...(instagram ? { instagram_user_id: "43" } : {}), link_data: { image_hash: "meta-image", link: "https://example.com/kit", message: "Body", name: "Headline",
             call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com/kit" } } } } });
         t.state.objects.set("103", { _kind: "ads", id: "103", account_id: "123", adset_id: "101", creative: { id: "102" }, status: "PAUSED" });
+        if(row[0] === "advantage_plus_interests") {
+          const adset=t.state.objects.get("101"), creative=t.state.objects.get("102");
+          adset.promoted_object={pixel_id:"60",custom_event_type:"LEAD"};
+          adset.targeting.targeting_automation={advantage_audience:1};
+          adset.targeting.flexible_spec=[{interests:[{id:"10",name:"Gardens"}]}];
+          adset.targeting_optimization_types=[{key:"lookalike",value:"0"},{key:"detailed_targeting",value:"1"}];
+          adset.attribution_spec=[{event_type:"CLICK_THROUGH",window_days:7},{event_type:"VIEW_THROUGH",window_days:1}];
+          creative.object_story_spec.link_data.description="Original description";
+          creative.url_tags="utm_source={{site_source_name}}";
+          creative.degrees_of_freedom_spec={creative_features_spec:{image_touchups:{enroll_status:"OPT_OUT"}}};
+        }
       } else {
         const row = LINKEDIN_COMBINATIONS[i]!; linkedInMode(t.c, row);
         ids = { readbackVersion: "3", group: "101", campaign: "102", creative: "103", image: "urn:li:image:fixture" };
@@ -565,7 +584,7 @@ test("Meta v1/v2/v3 receipts retain exact inspection digests and safety pause, n
       assert.equal(await t.port.reconcile(c, t.g, { ...operation, receipt: { ...receipt, ids: partialIds } }), null);
     }
     assert.equal(await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest: current.payloadDigest,
-      receipt: { ...current, ids: { ...current.ids, readbackVersion: "5" } } }), null);
+      receipt: { ...current, ids: { ...current.ids, readbackVersion: "6" } } }), null);
   } finally { await t.close(); }
 });
 
@@ -749,4 +768,29 @@ test('LinkedIn exact UTC instants reject invalid dates and timezone-less times',
   for(const v of ['2026-02-30T12:00:00Z','2026-10-04T15:23:53','2026-10-04T24:00:00Z','invalid']){
     c.material.startAt=v;assert.ok(capabilityBlockers(c.material,g).includes('linkedin_schedule_requires_utc_instants'));
   }
+});
+
+
+test("Meta v5 material drift blocks activation and read-only recovery while preserving original receipts",async()=>{
+  const t=await native("meta");
+  try {
+    metaMode(t.c,META_COMBINATIONS.find(x=>x[0]==="advantage_plus_interests")!);eligible(t.c,t.g);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],"expanded-original",()=>{},()=>{});
+    assert.equal(receipt.ids.readbackVersion,"5");
+    const c={...t.c,state:"paused" as const,receipt},before=structuredClone(receipt),writes=t.state.writes;
+    for(const drift of [
+      (o:any,k:string)=>{if(k==="adcreatives")o.url_tags="changed";},
+      (o:any,k:string)=>{if(k==="adcreatives")o.object_story_spec.link_data.description="changed";},
+      (o:any,k:string)=>{if(k==="adcreatives")o.degrees_of_freedom_spec.creative_features_spec.image_touchups.enroll_status="OPT_IN";},
+      (o:any,k:string)=>{if(k==="adsets")o.targeting_optimization_types.lookalike=1;},
+      (o:any,k:string)=>{if(k==="adsets")delete o.attribution_spec;},
+      (o:any,k:string)=>{if(k==="adsets")o.promoted_object.custom_event_type="PURCHASE";},
+      (o:any,k:string)=>{if(k==="campaigns")o.is_adset_budget_sharing_enabled=true;},
+    ]) {
+      t.state.drift=drift;
+      await assert.rejects(t.port.activate(c,t.g,()=>{}));
+      assert.equal(await t.port.reconcile(c,t.g,{kind:"prepare",payloadDigest:receipt.payloadDigest,receipt}),null);
+      assert.equal(t.state.writes,writes);assert.deepEqual(receipt,before);
+    }
+  } finally {await t.close();}
 });
