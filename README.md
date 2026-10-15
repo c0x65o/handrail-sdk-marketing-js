@@ -538,3 +538,9 @@ provider filename with an explicit comparison. A different label is not a binary
 identity check: current account/hash, dimensions, active image state, original
 source bytes/rights, historical mapping and campaign readback remain required.
 Original upload bytes stay unverified even when names match.
+
+LinkedIn account discovery uses the standard advertising-account read for current
+identity, currency, status and role qualification. Optional reference/profile
+expansion is not required for custody. If no Page name is supplied, the original
+organization identity remains visible with an explicitly unavailable name; Page
+permissions still require the existing independent role checks.

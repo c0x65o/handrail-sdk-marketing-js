@@ -149,7 +149,10 @@ export class ConnectionDiscovery {
         requireThat(!seen.has(u.account), "provider_account_context_changed"); seen.add(u.account);
         const role = u.role;
         requireThat(["ACCOUNT_MANAGER", "CAMPAIGN_MANAGER", "CREATIVE_MANAGER", "VIEWER", "ACCOUNT_BILLING_ADMIN"].includes(role), "provider_account_role_missing");
-        const a = await this.read(provider, credentials, `adAccounts/${accountId}`, { fields: "id,name,reference,referenceInfo,currency,status" }, guard);
+        // Account custody needs the standard advertising-account record. Optional
+        // reference/profile expansion must not gate current role qualification.
+        // Preserve an unavailable Page label as unknown; never infer its role.
+        const a = await this.read(provider, credentials, `adAccounts/${accountId}`, {}, guard);
         requireThat(numeric(a.id) === accountId, "provider_account_context_changed");
         if (a.status !== "ACTIVE") continue;
         const organizationId = typeof a.reference === "string" ? /^urn:li:organization:(\d+)$/.exec(a.reference)?.[1] : undefined;

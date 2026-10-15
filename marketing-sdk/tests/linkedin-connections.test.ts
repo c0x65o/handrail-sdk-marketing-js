@@ -213,7 +213,7 @@ test("LinkedIn local revoke fences re-verification and retains the original gran
   } finally { await f.close(); }
 });
 
-test("LinkedIn transport uses versioned read-only finders and explicit additional-info projection", async () => {
+test("LinkedIn transport uses versioned read-only finders and standard account reads", async () => {
   const f = await connectionFixture("linkedin", true);
   try {
     const discovery = f.connections.discovery as { fetcher: typeof fetch }, original = discovery.fetcher;
@@ -223,7 +223,7 @@ test("LinkedIn transport uses versioned read-only finders and explicit additiona
         assert.equal(init!.method, "GET"); assert.equal(init!.redirect, "error");
         const headers = new Headers(init!.headers); assert.equal(headers.get("LinkedIn-Version"), "202609"); assert.equal(headers.get("X-Restli-Protocol-Version"), "2.0.0");
         assert.ok(["/rest/adAccountUsers", "/rest/adAccounts/2041", "/rest/organizationAcls"].includes(url.pathname));
-        if (url.pathname.endsWith("adAccounts/2041")) assert.equal(url.searchParams.get("fields"), "id,name,reference,referenceInfo,currency,status");
+        if (url.pathname.endsWith("adAccounts/2041")) assert.equal(url.search, "");
       }
       return original(input, init);
     };
@@ -292,4 +292,28 @@ test("account choices display full IDs and strip misleading control characters w
     assert.notEqual(choice.choiceRef, choice.displayId);
     await assert.rejects(f.call("selectConnectionAccount", { ...f.change(c), choiceRef: choice.displayId }), /invalid_account_choice/);
   } finally { await f.close(); }
+});
+
+
+test('LinkedIn account custody uses the standard account read without requiring optional reference expansion',async()=>{
+  const f=await connectionFixture('linkedin',true);let accountReads=0;
+  try{
+    const original=f.connections.discovery.fetcher;
+    (f.connections.discovery as {fetcher:typeof fetch}).fetcher=async(input,init)=>{
+      const url=new URL(String(input));
+      if(url.pathname.endsWith('/adAccounts/2041')){
+        accountReads++;
+        if(url.search) return Response.json({message:'Optional account projection unavailable'},{status:400});
+        const body=await (await original(input,init)).json();delete body.referenceInfo;return Response.json(body);
+      }
+      return original(input,init);
+    };
+    const c=await f.call('resumeConnection',f.change(await f.approved()));
+    assert.equal(c.phase,'verified',c.checkpoint);assert.ok(accountReads>0);
+    assert.equal(c.account!.currency,'USD');
+    assert.match(c.identities[0]!.label,/name unavailable/);
+    const grant:any=await f.store.get('p','grant',c.grantId!);
+    assert.equal(grant.accountId,'2041');assert.equal(grant.organizationId,'555');assert.ok(grant.permissions.includes('pause'));
+    assert.ok(!f.calls.some(path=>path.includes('/organizations/')),'No broader Page API read for a display label');
+  }finally{await f.close();}
 });
