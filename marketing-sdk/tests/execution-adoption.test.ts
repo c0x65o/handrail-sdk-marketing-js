@@ -7,6 +7,9 @@ import { testStore } from './datastore.js';
 import { fixtureSettings } from './capability-fixtures.js';
 import { CampaignExecutionAdoptions, type ExecutionAdoptionCandidate, type ExecutionAdoptionSource } from '../server/execution-adoption.js';
 import { HistoricalCampaignImports } from '../server/adoption.js';
+import { bindAdoptedMeasurementIdentity } from '../server/measurement-adoption.js';
+import { measured, unknownMeasurement, saveMeasurementRevision, readMeasurementEvidence } from '../server/measurement.js';
+import type { MeasurementInput } from '../core/measurement.js';
 import { createStoreSessionAuthority, inspectLiveSessions } from '../server/session-authority.js';
 import { byteDigest, digest } from '../server/store.js';
 import type { Asset, Campaign, Grant, Material, Receipt } from '../core/index.js';
@@ -71,6 +74,35 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     deny: () => { denied = true; }, fail: () => { failCommit = true; }, reads: () => reads,
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
+
+for (const provider of ['meta','linkedin'] as const) test(`${provider} adopted reporting binds ownership without rewriting history or inventing material intervals`,async()=>{
+  const f=await fixture(provider);try{
+    const input:MeasurementInput={identity:{projectId:'p',nativeCampaignId:'native',sdkCampaignId:null,provider,accountId:'123',campaignIds:['100'],materialVersion:null,purpose:'acquisition'},
+      window:{from:'2026-10-01T00:00:00Z',until:'2026-10-02T00:00:00Z',timezone:'UTC',currency:'USD',minorUnitsPerMajor:100},
+      source:{kind:'synthetic',collector:'fixture',apiVersion:'fixture',collectedAt:'2026-10-02T01:00:00Z',receiptIds:['original-api-read'],snapshotDigests:['a'.repeat(64)],paginationComplete:true,missingReason:null,dataThrough:'2026-10-02T00:00:00Z'},
+      rows:[{campaignId:'100',day:'2026-10-01',placement:null,spendMinor:measured(500),impressions:measured(685),clicks:measured(1),outboundClicks:measured(1),landingViews:unknownMeasurement('unavailable'),providerConversions:unknownMeasurement('unqualified'),conversionDefinition:null,providerCpm:unknownMeasurement('unavailable'),providerOutboundCtrPercent:unknownMeasurement('unavailable')}],
+      delivery:{configuredStatus:'PAUSED',effectiveStatus:'PAUSED',evidenceRefs:['original-api-read']},outcomes:null,
+      maturity:{state:'unknown',reason:'attribution_unknown',evidenceRefs:[],reportingLagEndsAt:null,attributionEndsAt:null,rereadAt:null,coverageVerified:false}};
+    assert.deepEqual(await bindAdoptedMeasurementIdentity(f.store,input),input);
+    const original=await saveMeasurementRevision(f.store,input),adoption=await f.service.adopt(f.principal,'p','native','measurement-adoption');
+    assert.deepEqual(await bindAdoptedMeasurementIdentity(f.store,input),input,'old collection is not relabeled');
+    const fresh={...input,source:{...input.source,collectedAt:new Date(Date.parse(adoption.adoptedAt)+1000).toISOString()}};
+    const bound=await bindAdoptedMeasurementIdentity(f.store,fresh);
+    assert.equal(fresh.identity.sdkCampaignId,null);assert.equal(bound.identity.sdkCampaignId,adoption.sdkCampaignId);
+    assert.equal(bound.identity.materialVersion,null);assert.deepEqual(bound.source.receiptIds,['original-api-read',adoption.id,adoption.historyImportId,original.id]);
+    const saved=await saveMeasurementRevision(f.store,bound);
+    assert.equal((await saveMeasurementRevision(f.store,await bindAdoptedMeasurementIdentity(f.store,fresh))).id,saved.id);
+    const revised=await saveMeasurementRevision(f.store,await bindAdoptedMeasurementIdentity(f.store,{...fresh,source:{...fresh.source,collectedAt:new Date(Date.parse(fresh.source.collectedAt)+1000).toISOString()}}));
+    assert.equal(revised.previousEvidenceId,saved.id);assert.equal(revised.metrics.weightedCpm.value,1000*5/685);
+    assert.deepEqual(await readMeasurementEvidence(f.store,'p',original.id),original);
+    assert.equal(revised.maturity.state,'unknown');assert.equal(revised.metrics.costPerQualifiedMinor.value,null);
+    for(const patch of [{accountId:'456'},{campaignIds:['other']},{sdkCampaignId:'other'},{purpose:'recruitment' as const},{materialVersion:'1'}])
+      await assert.rejects(bindAdoptedMeasurementIdentity(f.store,{...fresh,identity:{...fresh.identity,...patch}}),/measurement_adoption_/);
+    await f.store.put('p','campaignExecutionOwner','native',{receiptId:adoption.id,executor:'legacy'});
+    await assert.rejects(bindAdoptedMeasurementIdentity(f.store,fresh),/measurement_execution_owner_invalid/);
+    for(const kind of ['decision','operation','advertisingBudgetReservation'])assert.equal((await f.store.list('p',kind)).length,0);
+  }finally{await f.close();}
+});
 
 for (const name of ['meta','linkedin'] as const) test(`${name} daily-only open-ended adoption preserves absent caps and schedule without authority`, async () => {
   const f=await fixture(name);try {

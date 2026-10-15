@@ -220,6 +220,19 @@ disposable PostgreSQL; live consumer adoption remains separate qualification.
 
 ## Measurement evidence
 
+`bindAdoptedMeasurementIdentity(store, input)` connects a fresh native collection
+to the SDK's saved execution owner, adoption receipt and verified history. The
+host must retain its current read-authority checks around binding and persistence.
+Account, provider, campaign, purpose and adoption-origin conflicts fail explicitly.
+Collections made before adoption remain unchanged. New collections include the
+SDK campaign ID and adoption/history receipt references; the first enriched
+identity also links the preceding unbound evidence head through source receipt
+references. Each identity retains its own immutable revision chain. This lookup
+does not grant execution or spending authority, require a live execution grant,
+or promote unknown attribution maturity. Material version remains unknown until
+independent interval evidence establishes which material served in the window;
+the current campaign revision is not historical attribution.
+
 The server exports `collectProviderMeasurement`, `buildMeasurementEvidence`,
 `saveMeasurementRevision`, `readMeasurementEvidence` and
 `readLatestMeasurementEvidence`. Core exports their typed measurement contracts.

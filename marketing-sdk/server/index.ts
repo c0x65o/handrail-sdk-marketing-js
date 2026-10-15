@@ -31,6 +31,7 @@ export * from "./tracking.js";
 export { createNativeTextPlanning, createSyntheticTextPlanning, createTextPlanningAccess } from './text-planning.js';
 export type { NativeTextPlanning, NativeTextPlanningOptions, TextPlanningAccess, TextPurposePermission } from './text-planning.js';
 export * from "./measurement.js";
+export * from "./measurement-adoption.js";
 export * from "./measurement-collectors.js";
 export * from "./adoption.js";
 export * from "./execution-adoption.js";
