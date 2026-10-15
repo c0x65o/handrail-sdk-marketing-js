@@ -60,7 +60,10 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     campaign.is_adset_budget_sharing_enabled===false && adset.billing_event==="IMPRESSIONS" &&
     adset.optimization_goal==="OFFSITE_CONVERSIONS" && adset.bid_strategy==="LOWEST_COST_WITHOUT_CAP" && adset.destination_type==="WEBSITE",
     "existing_material_delivery_unsupported");
-  if(source.conversion.event!=="Lead" || !exactTargeting(adset.promoted_object,{pixel_id:source.conversion.pixelId,custom_event_type:"LEAD"})) {
+  const hasSmartPse=Object.hasOwn(adset.promoted_object??{},'smart_pse_enabled');
+  requireThat(!hasSmartPse||typeof adset.promoted_object.smart_pse_enabled==='boolean','existing_material_smart_pse_invalid');
+  if(source.conversion.event!=="Lead" || !exactTargeting(adset.promoted_object,{pixel_id:source.conversion.pixelId,custom_event_type:"LEAD",
+    ...(hasSmartPse?{smart_pse_enabled:adset.promoted_object.smart_pse_enabled}:{})})) {
     const promoted=adset.promoted_object,object=promoted&&typeof promoted==='object'&&!Array.isArray(promoted);
     const keys=object?Object.keys(promoted):[];
     // Bounded schema diagnostics only: never copy unknown provider values,
@@ -109,7 +112,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   requireThat(Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
   const settings:MetaSettings={version:CAPABILITY_VERSION,provider:"meta",apiVersion:"v26.0",accountId:grant.accountId,format:"single_image",
     objective:"OUTCOME_LEADS",optimization:"OFFSITE_CONVERSIONS",delivery:"advantage_plus_interests",nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
-    placements:[],identity:{pageId:grant.pageId!},conversion:structuredClone(source.conversion),
+    placements:[],identity:{pageId:grant.pageId!},conversion:{pixelId:source.conversion.pixelId,event:"Lead",...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})},
     attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
       ...(t.geo_locations?.location_types ? {locationTypes:structuredClone(t.geo_locations.location_types)}:{}),

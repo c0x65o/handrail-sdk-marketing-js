@@ -33,8 +33,8 @@ export interface MetaSettings extends SettingsBase {
   };
   specialAdCategory?: "EMPLOYMENT";
   specialAdCategoryCountry?: "US";
-  conversion?: { pixelId: string; customConversionId: string; event: "ApplicantRequestMOU" }
-    | { pixelId: string; event: "Lead" };
+  conversion?: ({ pixelId: string; customConversionId: string; event: "ApplicantRequestMOU" }
+    | { pixelId: string; event: "Lead" }) & { smartPseEnabled?: boolean };
   attribution?: { eventType: "CLICK_THROUGH" | "VIEW_THROUGH"; windowDays: 1 | 7 | 28 }[];
   creative?: {
     description?: string;
@@ -161,13 +161,14 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
       check(m.audience.locations?.length === 1 && m.audience.locations[0] === "US", "meta_country_contract_unverified");
     }
     if (s.delivery === "ordinary") check(t?.interestGroups?.length === 0 && t?.excludedCustomAudiences?.length === 0, "ordinary_traffic_not_strict");
+    check(s.conversion?.smartPseEnabled === undefined || typeof s.conversion.smartPseEnabled === "boolean", "invalid_meta_smart_pse_setting");
     if (s.delivery === "employment") {
       check(m.purpose === "recruitment" && s.specialAdCategory === "EMPLOYMENT" && s.specialAdCategoryCountry === "US", "employment_category_country_required");
       check(m.audience.locations?.length === 1 && m.audience.locations[0] === "US" && m.audience.ageMin === 18 && m.audience.ageMax === 65 && t?.languages?.length === 0 && t?.interestGroups?.length === 0 && t?.excludedCustomAudiences?.length === 0, "employment_narrowing_unsupported");
-      check(only(s.conversion, ["pixelId", "customConversionId", "event"]) && numeric(s.conversion?.pixelId) && numeric(s.conversion && "customConversionId" in s.conversion ? s.conversion.customConversionId : undefined) && s.conversion?.event === "ApplicantRequestMOU", "applicant_conversion_required");
+      check(only(s.conversion, ["pixelId", "customConversionId", "event", "smartPseEnabled"]) && numeric(s.conversion?.pixelId) && numeric(s.conversion && "customConversionId" in s.conversion ? s.conversion.customConversionId : undefined) && s.conversion?.event === "ApplicantRequestMOU", "applicant_conversion_required");
     } else {
       check(m.purpose === "acquisition" && s.specialAdCategory === undefined && s.specialAdCategoryCountry === undefined, "purpose_conversion_mismatch");
-      check(s.delivery === "advantage_plus_interests" ? only(s.conversion, ["pixelId", "event"]) &&
+      check(s.delivery === "advantage_plus_interests" ? only(s.conversion, ["pixelId", "event", "smartPseEnabled"]) &&
         numeric(s.conversion?.pixelId) && s.conversion?.event === "Lead" : s.conversion === undefined, "purpose_conversion_mismatch");
     }
   } else if (s.provider === "linkedin") {

@@ -325,7 +325,7 @@ test("provider-specific mappings: no silent targeting translation; hard total bu
         g,
         [asset],
       ),
-    /unsupported_targeting/,
+    /explicit_expansion_settings_required/,
   );
   assert.throws(
     () =>

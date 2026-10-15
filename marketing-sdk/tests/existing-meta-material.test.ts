@@ -28,6 +28,10 @@ function fixture() {
     const url=new URL(String(input));calls.push(url.pathname);assert.equal(init?.method,"GET");assert.equal(init?.redirect,"error");
     let body:any;
     if(url.pathname==="/v26.0/act_123")body={id:"act_123",currency:"USD",timezone_name:"America/Chicago"};
+    else if(url.pathname==='/v26.0/act_123/adimages')body={data:[{hash:ids.image,status:'ACTIVE'}]};
+    else if(url.pathname==='/v26.0/100/adsets')body={data:[observed.adset]};
+    else if(url.pathname==='/v26.0/100/ads')body={data:[{id:'103',account_id:'123',campaign_id:'100',adset_id:'101',creative:{id:'102'},status:'PAUSED',effective_status:'PAUSED'}]};
+    else if(url.pathname==='/v26.0/103')body={id:'103',account_id:'123',campaign_id:'100',adset_id:'101',creative:{id:'102'},status:'PAUSED',effective_status:'PAUSED'};
     else {const key=Object.keys(ids).find(k=>ids[k as keyof typeof ids]===url.pathname.split("/").at(-1));assert.ok(key);body=observed[key];}
     const response=Response.json(body);afterFetch();return response;
   });
@@ -161,4 +165,27 @@ test('conversion mismatch exposes bounded schema diagnostics without unknown pro
     assert.deepEqual(e.materialDiagnostic.fields.find((x:any)=>x.field==='extra_provider_field'),{field:'extra_provider_field',type:'object'});
     assert.doesNotMatch(JSON.stringify(e),/never-print-this|private.invalid/);return true;
   });
+});
+
+
+for(const flag of [undefined,false,true])test(`Meta Smart PSE ${flag} survives current capture, plan, exact readback and historical comparison`,async()=>{
+  const f=fixture(),{retainedProviderTerms,...source}=f.source;
+  if(flag!==undefined)f.observed.adset.promoted_object.smart_pse_enabled=flag;
+  const result=await f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...source,retainedObservations:[{key:'adset.promotedObject',value:retainedProviderTerms.adset.promoted_object,provenance:'legacy_observation',historyRecordId:'a'.repeat(64)}]},async()=>{});
+  const settings=result.material.settings!;if(settings.provider!=='meta')throw Error('Meta required');
+  const review=renderToStaticMarkup(createElement(MaterialReview,{material:result.material,assets:[],client:{assetUrl:()=>'/fixture'} as any,grant:f.grant}));
+  if(flag===undefined)assert.doesNotMatch(review,/Meta Smart PSE/);else assert.match(review,new RegExp('Meta Smart PSE</dt><dd>'+ (flag?'Enabled':'Disabled')));
+  assert.equal(settings.conversion?.smartPseEnabled,flag);assert.equal(Object.hasOwn(settings.conversion!,'smartPseEnabled'),flag!==undefined);
+  assert.equal(result.materialReconciliation.comparisons.find(x=>x.key==='adset.promotedObject')!.status,flag===undefined?'equal':'different');
+  f.grant.targetingOptions=result.targetingOptions;
+  const c={id:'c',projectId:'p',grantId:'g',material:result.material,state:'paused',receipt:null} as Campaign;
+  const assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  const plan:any=providerPlan(c,f.grant,assets);assert.deepEqual(plan.adset.promoted_object,f.observed.adset.promoted_object);
+  assert.equal((await f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{})).candidateReceipt.intent,'paused');
+  f.observed.adset.promoted_object.smart_pse_enabled=flag===true?false:true;
+  await assert.rejects(f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{}),/promoted_object_mismatch/);
+});
+for(const value of [null,0,1,'false',{},[]])test(`Meta rejects non-Boolean Smart PSE ${JSON.stringify(value)}`,async()=>{
+  const f=fixture();f.observed.adset.promoted_object.smart_pse_enabled=value;
+  f.source.retainedProviderTerms=existingMetaTerms(f.observed);await assert.rejects(f.capture(),/existing_material_smart_pse_invalid/);
 });
