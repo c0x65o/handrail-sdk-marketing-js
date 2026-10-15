@@ -173,6 +173,12 @@ for(const flag of [undefined,false,true])test(`Meta Smart PSE ${flag} survives c
   if(flag!==undefined)f.observed.adset.promoted_object.smart_pse_enabled=flag;
   const result=await f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...source,retainedObservations:[{key:'adset.promotedObject',value:retainedProviderTerms.adset.promoted_object,provenance:'legacy_observation',historyRecordId:'a'.repeat(64)}]},async()=>{});
   const settings=result.material.settings!;if(settings.provider!=='meta')throw Error('Meta required');
+  let edited:any;
+  const tree=GuidedFields({value:result.material,grant:f.grant,onChange:m=>{edited=m;}});
+  const find=(node:any):any=>Array.isArray(node)?node.map(find).find(Boolean):node?.props?.label==='Lead Pixel'?node:node?.props?find(node.props.children):null;
+  find(tree).props.onChange('61');assert.equal(edited.settings.conversion.pixelId,'61');
+  assert.equal(edited.settings.conversion.smartPseEnabled,flag);assert.equal(Object.hasOwn(edited.settings.conversion,'smartPseEnabled'),flag!==undefined);
+
   const review=renderToStaticMarkup(createElement(MaterialReview,{material:result.material,assets:[],client:{assetUrl:()=>'/fixture'} as any,grant:f.grant}));
   if(flag===undefined)assert.doesNotMatch(review,/Meta Smart PSE/);else assert.match(review,new RegExp('Meta Smart PSE</dt><dd>'+ (flag?'Enabled':'Disabled')));
   assert.equal(settings.conversion?.smartPseEnabled,flag);assert.equal(Object.hasOwn(settings.conversion!,'smartPseEnabled'),flag!==undefined);

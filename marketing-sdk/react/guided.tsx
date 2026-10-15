@@ -121,7 +121,7 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
         <ResolvedSelect label="Exclude existing custom audiences" kind="customAudiences" selected={s.targeting.excludedCustomAudiences} grant={g} onChange={excludedCustomAudiences => settings({ targeting: { ...s.targeting, excludedCustomAudiences } })} />
         </>}
         {s.delivery === "advantage_plus_interests" && <>
-          <IdentifierField label="Lead Pixel" kind="pixel" grant={g} value={s.conversion?.pixelId || ""} onChange={pixelId => settings({ conversion: {pixelId, event:"Lead"} })} />
+          <IdentifierField label="Lead Pixel" kind="pixel" grant={g} value={s.conversion?.pixelId || ""} onChange={pixelId => settings({ conversion: {pixelId, event:"Lead", ...(s.conversion?.smartPseEnabled !== undefined ? {smartPseEnabled:s.conversion.smartPseEnabled} : {})} })} />
           <p>Expanded acquisition audience; interests are suggestions. Conversion goal: Lead.</p>
           {(["detailedTargeting", "lookalike"] as const).map(key => <Select key={key} label={key === "detailedTargeting" ? "Detailed targeting expansion" : "Lookalike expansion"}
             value={s.targeting.expansion?.[key] === undefined ? "" : String(s.targeting.expansion[key])} choices={["0","1"]}
