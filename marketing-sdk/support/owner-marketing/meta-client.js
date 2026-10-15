@@ -13,19 +13,22 @@ export function redactProviderMessage(message, secrets = []) {
 }
 
 export class MetaMarketingError extends Error {
-  constructor(message, { code = "provider_error", status = 502, providerCode = null, retryable = false } = {}) {
+  constructor(message, { code = "provider_error", status = 502, providerCode = null, httpStatus = null, providerSubcode = null, retryAfterMs = null, retryable = false } = {}) {
     super(redactProviderMessage(message));
     this.name = "MetaMarketingError";
     this.code = code;
     this.statusCode = status;
     this.providerCode = providerCode;
+    this.httpStatus = Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null;
+    this.providerSubcode = Number.isSafeInteger(providerSubcode) && providerSubcode >= 0 ? providerSubcode : null;
+    this.retryAfterMs = Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0 ? retryAfterMs : null;
     this.retryable = retryable;
   }
 }
 
-function classifyError(status, payload) {
+function classifyError(status, payload, method) {
   const providerCode = payload?.error?.code ?? null;
-  if (status === 429 || providerCode === 4 || providerCode === 17 || providerCode === 32) return { code: "rate_limited", status: 429, retryable: true, providerCode };
+  if (status === 429 || providerCode === 4 || providerCode === 17 || providerCode === 32 || method === 'GET' && providerCode === 80004) return { code: "rate_limited", status: 429, retryable: true, providerCode };
   if (status === 401 || status === 403 || providerCode === 10 || providerCode === 190 || providerCode === 200) return { code: "permission_error", status: 403, providerCode };
   if (providerCode === 100) return { code: "provider_error", status: 422, retryable: false, providerCode };
   if (status >= 500) return { code: "provider_unavailable", status: 503, retryable: true, providerCode };
@@ -76,7 +79,11 @@ export class MetaMarketingClient {
     } finally { clearTimeout(timer); }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.error) {
-      const info = classifyError(response.status, payload);
+      const info = {...classifyError(response.status, payload, method), httpStatus:response.status, providerSubcode:payload?.error?.error_subcode};
+      if(info.code==='rate_limited' && method==='GET'){
+        const after=response.headers?.get?.('retry-after');
+        if(after)info.retryAfterMs=/^\d+$/.test(after)?Number(after)*1000:Math.max(0,Date.parse(after)-Date.now());
+      }
       const message = redactProviderMessage(payload?.error?.error_user_msg || payload?.error?.message || "Meta request failed", [this.accessToken, this.appSecret]);
       throw new MetaMarketingError(message, info);
     }

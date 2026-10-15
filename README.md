@@ -505,3 +505,11 @@ attribution, location types and other targeting fields through capture, review,
 planning and exact readback. It cannot silently drop supplied interests or repair
 malformed groups. Existing authority, daily-budget qualification and provider
 capability gates remain required for execution.
+
+Existing-campaign read failures carry bounded `providerReadDiagnostic` fields
+(reason, HTTP status, provider code/subcode and retry timing), never transport
+messages or credential-bearing URLs. Meta GET error 80004 is a rate limit;
+recognizing it does not retry a request or alter write uncertainty handling.
+Unknown-upload adoption failures expose `providerImageDiagnostic` comparisons,
+expected/observed dimensions and snapshot identity without weakening the image,
+account, filename, active-status or retained-history checks.

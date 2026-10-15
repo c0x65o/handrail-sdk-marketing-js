@@ -26,3 +26,11 @@ test('Meta image read accounts for pagination and rechecks revocation during rea
  const g=fixture();let revoked=false;g.after(()=>{revoked=true;});await assert.rejects(g.read(async()=>{if(revoked)throw Error('revoked');}),/revoked/);
  const h=fixture();h.after(()=>{h.g.accountId='act_999';});await assert.rejects(h.read(),/existing_campaign_scope_changed/);
 });
+test('Meta image inspection preserves safe rate-limit evidence without retrying or exposing provider messages',async()=>{
+ const f=fixture();f.pages[0]={error:{code:80004,error_subcode:2446079,message:'private-token-and-provider-text'}};
+ await assert.rejects(f.read(),(error:any)=>{
+  assert.equal(error.code,'existing_media_read_unavailable');assert.equal(error.status,429);
+  assert.deepEqual(error.providerReadDiagnostic,{reason:'rate_limited',httpStatus:200,providerCode:80004,providerSubcode:2446079,retryAfterMs:null});
+  assert.doesNotMatch(JSON.stringify(error),/private-token-and-provider-text|synthetic-private-token/);return true;
+ });assert.equal(f.calls.length,2);
+});

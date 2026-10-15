@@ -227,12 +227,18 @@ export class CampaignExecutionAdoptions {
       providerImage=await provider.inspectExistingMetaImage(grant,media.providerImageId,guard);
       await guard();
       const image=providerImage.image;
-      requireThat(providerImage.providerImageReadbackVerified===true && providerImage.originalUploadBytesVerified===false &&
-        providerImage.executionTransferred===false && providerImage.spendingAuthorityGranted===false &&
-        providerImage.providerSnapshotDigest===digest(image) && Number.isFinite(Date.parse(providerImage.observedAt)) &&
-        measurementAccountId("meta",image.accountId)===measurementAccountId("meta",grant.accountId) &&
-        image.hash===media.providerImageId && image.name===media.retainedSource!.providerFilename &&
-        image.width===asset.width && image.height===asset.height && image.status==="ACTIVE", "adoption_provider_image_mismatch");
+      const comparisons={readbackVerified:providerImage.providerImageReadbackVerified===true,
+        originalBytesUnknown:providerImage.originalUploadBytesVerified===false,
+        noTransferOrSpending:providerImage.executionTransferred===false&&providerImage.spendingAuthorityGranted===false,
+        snapshotDigestMatches:providerImage.providerSnapshotDigest===digest(image),
+        collectionTimeValid:Number.isFinite(Date.parse(providerImage.observedAt)),
+        accountMatches:measurementAccountId("meta",image.accountId)===measurementAccountId("meta",grant.accountId),
+        imageMatches:image.hash===media.providerImageId,filenameMatches:image.name===media.retainedSource!.providerFilename,
+        dimensionsMatch:image.width===asset.width&&image.height===asset.height,active:image.status==="ACTIVE"};
+      if(!Object.values(comparisons).every(Boolean))throw Object.assign(new DomainError("adoption_provider_image_mismatch"),
+        {providerImageDiagnostic:{comparisons,expectedDimensions:{width:asset.width,height:asset.height},
+          observedDimensions:{width:image.width,height:image.height},providerSnapshotDigest:providerImage.providerSnapshotDigest,
+          observedAt:providerImage.observedAt}});
     }
     const receipt: ExecutionAdoptionReceipt = { id: `adoption_${digest([project, nativeCampaignId, candidateDigest])}`, projectId: project,
       nativeCampaignId, sdkCampaignId: campaign.id, historyImportId: history.id, sourceRevision: candidate.sourceRevision, candidateDigest,

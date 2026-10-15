@@ -151,7 +151,7 @@ async function unknownUploadFixture() {
       providerFilename:'legacy-image.jpg',missingReason:'historical_filename_hash_is_lossy_text'}};
   const image={accountId:'123',hash:f.candidate.providerIds.image!,name:'legacy-image.jpg',width:320,height:180,status:'ACTIVE',updatedAt:null};
   f.provider.inspectExistingMetaImage=async(g,id,guard)=>{
-    assert.equal(g.id,f.grant.id);assert.equal(id,image.hash);await guard();
+    assert.equal(g.id,f.grant.id);assert.equal(id,f.candidate.providerIds.image);await guard();
     return {image:structuredClone(image),providerSnapshotDigest:digest(image),observedAt:new Date().toISOString(),
       originalUploadBytesVerified:false,providerImageReadbackVerified:true,executionTransferred:false,spendingAuthorityGranted:false};
   };
@@ -198,7 +198,11 @@ for(const failure of ['no-source','source-digest','source-history','bytes','miss
         if(failure==='claimed-byte-proof')(r as any).originalUploadBytesVerified=true;
         if(failure==='grant-during-read')await f.store.put('p','grant',f.grant.id,{...f.grant,revision:2});return r;};
     }
-    await assert.rejects(f.service.adopt(f.principal,'p','native','reject-unknown-upload'));
+    await assert.rejects(f.service.adopt(f.principal,'p','native','reject-unknown-upload'),(error:any)=>{
+      const fields:Record<string,string>={account:'accountMatches',image:'imageMatches',filename:'filenameMatches',dimensions:'dimensionsMatch',inactive:'active','claimed-byte-proof':'originalBytesUnknown'};
+      if(fields[failure]){assert.equal(error.code,'adoption_provider_image_mismatch');assert.equal(error.providerImageDiagnostic.comparisons[fields[failure]!],false);}
+      return true;
+    });
     for(const kind of ['campaign','asset','campaignExecutionOwner','providerExecutionOwner','executionAdoption'])assert.equal((await f.store.list('p',kind)).length,0);
     assert.deepEqual((await f.historical.read(f.principal,'p',f.history.id)).receipt,f.history);
   }finally{await f.close();}

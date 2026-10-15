@@ -28,6 +28,14 @@ import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
 import { LinkedInMarketingClient } from "../support/owner-marketing/linkedin-client.js";
+// Only structured provider status survives read failures; never raw error text or URLs.
+function existingReadFailure(code:string,error:unknown) {
+  const e=error as {code?:unknown;httpStatus?:unknown;statusCode?:unknown;providerCode?:unknown;providerSubcode?:unknown;retryAfterMs?:unknown};
+  const integer=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:null;
+  const reason=typeof e?.code==='string'&&['rate_limited','permission_error','disconnected','provider_unavailable'].includes(e.code)?e.code:'provider_read_failed';
+  return Object.assign(new DomainError(code,reason==='rate_limited'?429:409),{providerReadDiagnostic:{reason,
+    httpStatus:integer(e?.httpStatus),providerCode:integer(e?.providerCode),providerSubcode:integer(e?.providerSubcode),retryAfterMs:integer(e?.retryAfterMs)}});
+}
 export interface Credentials {
   accessToken: string;
   appSecret?: string;
@@ -369,7 +377,7 @@ export class NativeProvider implements ProviderPort {
     }).catch(async error => {
       await current();
       if (error instanceof DomainError) throw error;
-      throw new DomainError("existing_campaign_read_unavailable");
+      throw existingReadFailure("existing_campaign_read_unavailable",error);
     });
   }
   /** State/identity evidence for historical effect reconciliation. Material,
@@ -403,7 +411,7 @@ export class NativeProvider implements ProviderPort {
         observedAt:new Date().toISOString(),inventoryComplete:true as const,allPaused:true as const,
         scope:"exact_campaign_and_complete_children" as const,historicalEffectsSettled:false as const,
         materialVerified:false as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
-    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_campaign_read_unavailable");});
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_campaign_read_unavailable",error);});
   }
   /** Capture original Meta acquisition terms without writes, persistence or authority expansion. */
   async captureExistingMetaMaterial(g: Grant, ids: {campaign:string; adset:string; creative:string; image:string}, source: ExistingMetaMaterialSource, guard: () => Promise<void>) {
@@ -437,7 +445,7 @@ export class NativeProvider implements ProviderPort {
       const result=build(observed);await current();
       return {...result,providerMaterialDigest:digest(observed),observedAt:new Date().toISOString(),executionReady:false as const,
         missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred","meta_daily_budget_semantics_unverified"]};
-    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_campaign_read_unavailable");});
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_campaign_read_unavailable",error);});
   }
   /** Account-scoped current provider image metadata. Never claims original binary
    * upload bytes from a provider hash/name, and never retrieves a signed CDN URL. */
@@ -464,7 +472,7 @@ export class NativeProvider implements ProviderPort {
       const image={accountId:String(row.account_id),hash:row.hash,name:row.name,width:row.original_width,height:row.original_height,status:row.status,updatedAt:row.updated_time??null};
       await current();return {image,providerSnapshotDigest:digest(image),observedAt:new Date().toISOString(),
         originalUploadBytesVerified:false as const,providerImageReadbackVerified:true as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
-    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_media_read_unavailable");});
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_media_read_unavailable",error);});
   }
   private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
@@ -1118,7 +1126,7 @@ export class NativeProvider implements ProviderPort {
       await current();
       let response: Response;
       try { response = await this.fetcher(input, init); }
-      catch { throw new DomainError("existing_campaign_read_unavailable"); }
+      catch(error) { throw existingReadFailure("existing_campaign_read_unavailable",error); }
       await current(); return response;
     };
     await current();
@@ -1142,7 +1150,7 @@ export class NativeProvider implements ProviderPort {
       // Recheck authority and never expose transport/credential error text.
       await current();
       if (error instanceof DomainError) throw error;
-      throw new DomainError("existing_campaign_read_unavailable");
+      throw existingReadFailure("existing_campaign_read_unavailable",error);
     });
   }
   private async snapshot(
