@@ -12,8 +12,8 @@ function fixture() {
   const source: ExistingLinkedInMaterialSource = {name:'Original',headline:'Original headline',body:'Original copy',destination:'https://example.com/landing?utm_campaign=original',
     destinationDigest:'a'.repeat(64),assetId:'original-asset',purpose:'acquisition',campaignDailyCeiling:1500,
     policy:{nondiscriminationAccepted:true,politicalConsent:true,receiptRefs:['native-plan-policy']},
-    conversion:{id:'urn:lla:llaPartnerConversion:789',type:'LEAD',event:'Lead'}};
-  let campaign: any = {id:111,status:'PAUSED',account:'urn:li:sponsoredAccount:123',associatedEntity:'urn:li:organization:456',
+    conversion:{id:'urn:lla:llaPartnerConversion:789',type:'LEAD',event:'Lead'},retainedProviderTerms:null as any};
+  let campaign: any = {id:111,status:'PAUSED',campaignGroup:'urn:li:sponsoredCampaignGroup:100',locale:{country:'US',language:'en'},account:'urn:li:sponsoredAccount:123',associatedEntity:'urn:li:organization:456',
     format:'STANDARD_UPDATE',type:'SPONSORED_UPDATES',audienceExpansionEnabled:false,offsiteDeliveryEnabled:false,connectedTelevisionOnly:false,
     politicalIntent:'NOT_POLITICAL',objectiveType:'WEBSITE_CONVERSION',optimizationTargetType:'NONE',costType:'CPC',
     unitCost:{amount:'5.00',currencyCode:'USD'},dailyBudget:{amount:'10.00',currencyCode:'USD'},
@@ -22,6 +22,8 @@ function fixture() {
       {or:{'urn:li:adTargetingFacet:locations':['urn:li:geo:103644278']}},
       {or:{'urn:li:adTargetingFacet:interfaceLocales':['urn:li:locale:en_US']}},
     ]}}};
+  source.retainedProviderTerms=structuredClone(Object.fromEntries(['campaignGroup','associatedEntity','objectiveType','format','type','costType','unitCost','dailyBudget','runSchedule','targetingCriteria','locale','audienceExpansionEnabled','offsiteDeliveryEnabled','politicalIntent'].map(key=>[key,campaign[key]]))) as any;
+  source.retainedProviderTerms.runSchedule.end=null;
   let calls=0,afterFetch=()=>{};
   const vault:VaultPort={use:async()=>{throw Error('write custody must never open');},useReadOnly:async(g,guard,fn)=>{
     assert.equal(g,grant);await guard();return fn({accessToken:'private-fixture',clientId:'fixture-client',clientSecret:'fixture-secret',expiresAt:Date.parse(grant.expiresAt),scopes:['r_ads']});}};
@@ -43,11 +45,14 @@ test('existing LinkedIn capture preserves original copy, daily exposure ceiling,
   assert.equal(result.material.destination,f.source.destination);assert.deepEqual(result.material.assetIds,['original-asset']);
   assert.equal(result.targetingOptions.length,4);assert.equal(result.providerCampaignDigest.length,64);
   assert.deepEqual(f.grant.permissions,['pause','report']);assert.equal(f.grant.targetingOptions,undefined);
-  f.campaign.totalBudget={amount:'25.00',currencyCode:'USD'};f.campaign.runSchedule.end=1791213833318;
+  f.campaign.totalBudget={amount:'25.00',currencyCode:'USD'};f.campaign.runSchedule.end=1791213833318;f.source.retainedProviderTerms.runSchedule.end=1791213833318;
   const capped=await f.capture();assert.deepEqual(capped.material.budget,{currency:'USD',minor:2500});
   assert.equal(capped.material.endAt,'2026-10-05T15:23:53.318Z');
 });
 for(const [label,change] of Object.entries({
+  changedSpend:(f:ReturnType<typeof fixture>)=>{f.campaign.dailyBudget.amount='9.00';},
+  changedSchedule:(f:ReturnType<typeof fixture>)=>{f.campaign.runSchedule.start+=1000;},
+  changedTarget:(f:ReturnType<typeof fixture>)=>{f.campaign.targetingCriteria.include.and[1].or['urn:li:adTargetingFacet:locations']=['urn:li:geo:1'];},
   currency:(f:ReturnType<typeof fixture>)=>{f.campaign.dailyBudget.currencyCode='EUR';},
   fraction:(f:ReturnType<typeof fixture>)=>{f.campaign.dailyBudget.amount='10.001';},
   missingBudget:(f:ReturnType<typeof fixture>)=>{delete f.campaign.dailyBudget;},

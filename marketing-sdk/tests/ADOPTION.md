@@ -172,3 +172,9 @@ provider reports the end. Extra children, duplicate IDs, active children, missin
 elements, incomplete pages and repeated cursors reject transfer. The receipt
 retains an inventory digest. This follows LinkedIn's documented cursor contract:
 https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/cursor-based-pagination?view=li-lms-2026-09
+
+The source also supplies its retained provider observation. Current daily budget,
+bid, schedule, organization/group, locale, objective/format, political setting and
+Boolean targeting must reconcile with that observation; drift is not silently
+adopted. Missing historical optimization/lifetime facts remain in original history;
+current capture does not turn them into historical facts or spending authority.

@@ -1,6 +1,6 @@
 import { CAPABILITY_VERSION, type Grant, type LinkedInSettings, type Material, type TargetingOption } from "../core/index.js";
 import { exactLinkedInTargeting, linkedInTargeting } from "./capabilities.js";
-import { requireThat } from "./store.js";
+import { requireThat, digest } from "./store.js";
 import { material as validateMaterial } from "./validation.js";
 
 /** Trusted native source, bound to retained history by the host. These are
@@ -11,6 +11,13 @@ export interface ExistingLinkedInMaterialSource {
   campaignDailyCeiling: number;
   policy: { nondiscriminationAccepted: boolean; politicalConsent: boolean; receiptRefs: string[] };
   conversion?: LinkedInSettings["conversion"];
+  /** Last retained provider observation, not a desired/new campaign proposal. */
+  retainedProviderTerms: {
+    campaignGroup: string; associatedEntity: string; objectiveType: string; format: string; type: string; costType: string;
+    unitCost: {amount: string; currencyCode: string}; dailyBudget: {amount: string; currencyCode: string};
+    runSchedule: {start: number; end: number | null}; targetingCriteria: unknown; locale: unknown;
+    audienceExpansionEnabled: boolean; offsiteDeliveryEnabled: boolean; politicalIntent: string;
+  };
 }
 
 /** Account/campaign-scoped child inventory. Pagination must finish before a
@@ -62,6 +69,12 @@ export function existingLinkedInMaterial(source: ExistingLinkedInMaterialSource,
   };
   const daily = money(campaign.dailyBudget), lifetime = campaign.totalBudget == null ? null : money(campaign.totalBudget);
   const bid = money(campaign.unitCost);
+  const retained=source.retainedProviderTerms;
+  requireThat(retained&&digest(money(retained.dailyBudget))===digest(daily)&&digest(money(retained.unitCost))===digest(bid)&&
+    retained.runSchedule?.start===campaign.runSchedule?.start&&(retained.runSchedule?.end??null)===(campaign.runSchedule?.end??null)&&
+    ["campaignGroup","associatedEntity","objectiveType","format","type","costType","locale","audienceExpansionEnabled","offsiteDeliveryEnabled","politicalIntent"]
+      .every(key=>Object.hasOwn(retained,key)&&digest({value:(retained as any)[key]})===digest({value:campaign[key]}))&&
+    exactLinkedInTargeting(retained.targetingCriteria,campaign.targetingCriteria),"existing_material_retained_terms_changed");
   requireThat(daily.minor > 0 && (!lifetime || lifetime.minor > 0), "existing_material_money_invalid");
   const settings: LinkedInSettings = { version: CAPABILITY_VERSION, provider: "linkedin", apiVersion: "202609",
     accountId: grant.accountId, format: "STANDARD_UPDATE", objective: campaign.objectiveType, optimization: campaign.optimizationTargetType,
