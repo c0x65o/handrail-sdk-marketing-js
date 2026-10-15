@@ -105,7 +105,17 @@ export class MarketingServer {
   private trackingService?: MarketingTracking;
   get tracking(): MarketingTracking { return this.trackingService ??= new MarketingTracking(this.store, this.studio.sessions, this.options.tracking ?? {}, (project, input) => this.recordEvent(project, input), this.mode, this.now); }
   private studioService?: CampaignStudio;
-  get studio(): CampaignStudio { return this.studioService ??= new CampaignStudio(this.store, { ...this.options.studio, tracking: (p, project, owner) => this.tracking.tracking(p, project, { owner }), withTracking: (p, project, view, local) => this.tracking.withCurrentView(p, project, view, local), withPromotion: (p, project, draftId, local) => this.tracking.withPromotion(p, project, draftId, local) }, this.mode, this.now); }
+  get studio(): CampaignStudio { return this.studioService ??= new CampaignStudio(this.store, { ...this.options.studio, tracking: (p, project, owner) => this.tracking.tracking(p, project, { owner }), withTracking: (p, project, view, local) => this.tracking.withCurrentView(p, project, view, local), withPromotion: (p, project, draftId, local) => {
+    // Host identity/ownership guards precede SDK session/source/SQL guards. Both
+    // retain callbacks execute inside Studio's one promotion transaction. The
+    // host callback must use that transaction for local identity writes, never
+    // commit an independent ledger or perform provider I/O here.
+    const tracked = (retainHost: (campaign: Campaign) => Promise<void>) => this.tracking.withPromotion(p, project, draftId,
+      retainTracking => local(async campaign => { await retainHost(campaign); await retainTracking(campaign); }));
+    return this.options.studio?.withPromotion
+      ? this.options.studio.withPromotion(p, project, draftId, tracked)
+      : tracked(async () => {});
+  } }, this.mode, this.now); }
   private defaultConnections?: MarketingConnectionsService;
   get connections() { return this.options.connections ?? (this.defaultConnections ??= createConnections({ store: this.store, evidence: this.mode === "fixture" ? "fixture" : "provider" })); }
   get advertisingBudgets() { return new AdvertisingBudgets(this.store, this.now, this.mode === "fixture" ? "fixture" : "provider"); }

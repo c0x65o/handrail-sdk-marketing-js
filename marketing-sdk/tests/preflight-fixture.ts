@@ -1,18 +1,18 @@
 import { readFileSync } from "node:fs";
 import { emptyBrief, type Grant, type Commands } from "../core/index.js";
-import { MarketingServer, NativeProvider } from "../server/index.js";
+import { MarketingServer, NativeProvider, type StudioOptions } from "../server/index.js";
 import { connectionFixture } from "./connection-fixture.js";
 import { fixtureSettings } from "./capability-fixtures.js";
 import { trackingFixture } from "./tracking-fixture.js";
 import { metaPreflightHttp } from "./meta-preflight-http.js";
-export async function nativePreflightFixture(external = false) {
+export async function nativePreflightFixture(external = false, studioOptions: (f: Awaited<ReturnType<typeof connectionFixture>>) => Omit<StudioOptions,"sessions"> = () => ({})) {
   const f=await connectionFixture('meta',true,external);
   const connection=await f.call('resumeConnection',f.change(await f.approved()));
   const g=await f.store.get<Grant>('p','grant',connection.grantId!);
   const source=await trackingFixture(f.store,'http://127.0.0.1:12345');
   const http=metaPreflightHttp(f.connections.discovery.fetcher);
   const provider=new NativeProvider("meta",f.custody,f.store,http.fetch);
-  const server=new MarketingServer(f.store,{meta:provider,google:provider,linkedin:provider},f.server.generation,f.server.agent,'fixture',undefined,undefined,{connections:f.connections,studio:{sessions:f.connections.sessionAuthority},tracking:source.options});
+  const server=new MarketingServer(f.store,{meta:provider,google:provider,linkedin:provider},f.server.generation,f.server.agent,'fixture',undefined,undefined,{connections:f.connections,studio:{...studioOptions(f),sessions:f.connections.sessionAuthority},tracking:source.options});
   const call=<K extends keyof Commands>(command:K,input:Commands[K]['input'])=>server.call(f.principal,'p',command,input);
   const destination=source.source.destinations[0]!.url;
   let d=await call('saveBrief',{requestKey:'brief',brief:{...emptyBrief(),name:'Same campaign journey',offer:'Tour',destination}});

@@ -558,6 +558,19 @@ rewriting campaign material or approvals. Hosts adopting existing campaigns use
 `destinationSnapshot` and `retainDestinationSnapshot` inside their existing
 authorized Store transaction; raw blobs remain content-addressed.
 
+`MarketingServer` composes `StudioOptions.withPromotion` with SDK tracking
+retention. The host guard runs first and may reject creation or hold current
+identity/ownership authority while invoking `local(retainHost)`. The host's
+`retainHost(campaign)` and SDK tracking retention run inside the same Store SQL
+transaction as the new draft campaign, assets, material version and promotion
+receipt. Use that Store connection for native identity writes; a separate database
+commit cannot roll back with promotion. Neither callback should perform provider
+I/O. A retention failure rolls back all promotion records, including the copied
+tracking binding. A completed request replay returns its original campaign without
+repeating either retention callback. This creates a draft, not provider objects or
+spending authority. Hosts must still bind their native campaign identity and
+execution workflow before exposing promotion.
+
 A host source may declare `destinationScopes: [{origin, pathPrefix}]` from its
 current owned deployment contract. The SDK resolves the draft/campaign's existing
 URL against those explicit scopes and returns `TrackingView.destinations`, keyed
