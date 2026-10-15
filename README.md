@@ -709,3 +709,36 @@ seven offered objective/delivery combinations across seven independent Feed/Reel
 placement documents, native preparation, lost read recovery, activation/pause,
 missing/duplicate/extra readback rejection and original historical capture. These
 are synthetic provider responses, not live campaign writes or delivery evidence.
+
+### Bind a planned campaign to host execution custody
+
+`CampaignExecutionConnections` is a trusted server API. It binds one unpublished
+Studio campaign to a new campaign-scoped grant for the same provider account,
+identity, currency and timezone. The shared planning grant must have no execution
+permissions and remains unchanged. The new grant has `campaignId`, revision 1,
+separate opaque Vault custody and exactly `prepare`, `pause`, `report`; it supplies
+no activation approval. No HTTP/agent command exposes the trusted candidate.
+
+Supply the real `SessionAuthority` and `CampaignExecutionConnectionAuthority`.
+The host's `withBinding` must guard current native preparation permission, budget,
+identity and credential custody through the local commit, including revocation.
+Read/refresh provider credentials outside that guard. A current login, historical
+policy or imported receipt does not establish execution permission. The SDK does
+not create host authority, perform provider I/O, or qualify provider prerequisites.
+
+`bind` preserves campaign ID, material, assets, attribution and Studio origin,
+advances the campaign revision, and atomically retains the grant, campaign version,
+audit event and request receipt. Existing provider operations (including blocked
+attempts), prepared/adopted/archived campaigns, reused grants, changed accounts or
+previously occupied version IDs are rejected. `readRequest` reads an original
+receipt after an uncertain commit before any retry or credential refresh. Replays
+require the original request payload; they do not assert current execution rights.
+
+The scoped grant is rejected for other campaigns and new draft promotion. Shared
+Studio/promotion account selectors omit campaign-specific grants. Existing grants
+without `campaignId` preserve their scope. Tracking records remain readable and
+unchanged; old revision/grant-based readiness becomes stale. Use the existing
+tracking configuration/test APIs and current prerequisite checks for the bound
+campaign, retaining old tests and evidence rather than upgrading their meaning.
+Activation still requires the normal exact packet decision, applicable current
+host authority and budget reservations. This local binding is not a launch.

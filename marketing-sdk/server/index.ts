@@ -51,3 +51,5 @@ export {HistoricalEffectResolutions,readHistoricalEffectResolution,type Historic
 
 export * from "./meta-image.js";
 export {inspectMetaDeliveryInventory,type MetaDeliveryTarget,type MetaDeliveryObject} from './delivery-inventory.js';
+
+export * from "./campaign-execution-connection.js";

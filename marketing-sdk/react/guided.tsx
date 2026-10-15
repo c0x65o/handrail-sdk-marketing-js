@@ -251,7 +251,7 @@ export function DraftPromotion({ draft, grants, client, scope, disabled, onCance
   onSaved: (c: Campaign) => Promise<void>; renderReview: (m: Material) => ReactNode;
 }) {
   const [grantId, setGrantId] = useState("");
-  const eligible = grants.filter(g => !g.revokedAt && Date.parse(g.expiresAt) > Date.now() && (!draft.material.audience?.provider || draft.material.audience.provider === g.provider));
+  const eligible = grants.filter(g => !g.campaignId && !g.revokedAt && Date.parse(g.expiresAt) > Date.now() && (!draft.material.audience?.provider || draft.material.audience.provider === g.provider));
   const g = eligible.find(x => x.id === grantId);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, []);

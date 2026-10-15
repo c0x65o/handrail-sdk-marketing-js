@@ -298,6 +298,7 @@ export class CampaignStudio {
       requireThat(digest(d)===digest(original),'revision_conflict');
       for(const [hash,bytes] of observed)requireThat(await this.store.db.prepare('SELECT 1 AS present FROM blobs WHERE project_id=? AND digest=? AND bytes=?').get(project,hash,bytes),'asset_bytes_missing_or_changed');
       requireThat(g.revision===i.expectedGrantRevision&&!g.revokedAt&&Date.parse(g.expiresAt)>this.now(),'grant_changed');
+      requireThat(!g.campaignId,'campaign_specific_grant_cannot_promote');
       const chosen=d.studio.options.find(o=>o.id===d.studio.selection?.optionId);
       requireThat(chosen&&chosen.revision===d.studio.selection?.revision&&chosen.briefDigest===d.studio.briefDigest,'option_stale');
       const m=structuredClone(d.material) as Material; material(m,g.provider);

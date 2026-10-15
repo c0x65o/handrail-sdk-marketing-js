@@ -174,6 +174,7 @@ export class MarketingServer {
     project: string,
     grantId: string,
     permission?: Permission,
+    campaignId?: string,
   ): Promise<Grant> {
     const g = await this.store.get<Grant>(project, "grant", grantId);
     requireThat(
@@ -185,6 +186,7 @@ export class MarketingServer {
       "grant_permission_denied",
       403,
     );
+    requireThat(!g.campaignId || g.campaignId === campaignId, "campaign_grant_scope_mismatch", 403);
     return g;
   }
   private async assets(c: Campaign, decode = true, observed?: Map<string, Buffer>): Promise<Asset[]> {
@@ -576,7 +578,7 @@ export class MarketingServer {
     const prepared = await this.legacyGuard(p, project, session, async () => {
       const recovered = await replay?.();
       if (recovered) return { recovered };
-      const g = await this.grant(project, input.grantId);
+      const g = await this.grant(project, input.grantId, undefined, input.id);
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g);
       requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
@@ -594,7 +596,7 @@ export class MarketingServer {
     const observed = new Map<string, Buffer>();
     prepared.assets = digest(await this.assets(prepared.c, true, observed));
     return this.legacyGuard(p, project, session, async () => {
-      const g = await this.grant(project, input.grantId);
+      const g = await this.grant(project, input.grantId, undefined, input.id);
       requireThat(await this.legacySetupBinding(project, g) === prepared.grant, "grant_changed");
       const old = input.id ? await this.store.get<Campaign>(project, "campaign", input.id) : null;
       requireThat((old ? digest(old) : null) === prepared.previous, "revision_conflict");
@@ -614,7 +616,7 @@ export class MarketingServer {
   }
   async saveCampaign(p: Principal, project: string, input: Commands["saveCampaign"]["input"]) {
     return this.withCampaignSave(p, project, input, prepared => this.saveCampaignLocal(p, project, input, prepared), async () => {
-      const g = await this.grant(project, input.grantId);
+      const g = await this.grant(project, input.grantId, undefined, input.id);
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g); requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
       if (input.requestKey === undefined) return null;
@@ -626,7 +628,7 @@ export class MarketingServer {
   private async saveCampaignLocal(p: Principal, project: string, input: Commands["saveCampaign"]["input"], prepared: CampaignSave) {
     return await this.store.transaction(async () => {
       await this.auth(p, project, true);
-      const g = await this.grant(project, input.grantId);
+      const g = await this.grant(project, input.grantId, undefined, input.id);
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g);
       requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
@@ -664,7 +666,7 @@ export class MarketingServer {
         const c = prepared.c;
         requireThat(c.grantId === g.id && digest(c.material) === digest(input.material), "material_changed");
         await this.auth(p, project, true);
-        const currentGrant = await this.grant(project, g.id);
+        const currentGrant = await this.grant(project, g.id, undefined, input.id);
         requireThat(digest(currentGrant) === digest(g), "grant_changed");
         await this.store.put(project, "campaign", c.id, c, old?.revision);
         await this.store.put(
@@ -705,7 +707,7 @@ export class MarketingServer {
     const c = await this.store.get<Campaign>(project, "campaign", campaignId);
     if (kind === "pause") requireThat(c.receipt, "provider_objects_required");
     else requireThat(!c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
-    const g = await this.grant(project, c.grantId, kind);
+    const g = await this.grant(project, c.grantId, kind, c.id);
     const a = await this.assets(c, false); // Decode during unlocked dispatch; retain byte/ownership checks here.
     if (kind === "prepare" && c.receipt) {
       const provider = this.providers[g.provider];
@@ -895,7 +897,7 @@ export class MarketingServer {
   private async checkContext(p: Principal, project: string, campaignId: string, credentialExpiry?: number) {
     await this.auth(p, project, true);
     const c = await this.store.get<Campaign>(project, "campaign", campaignId);
-    const g = await this.grant(project, c.grantId, "prepare");
+    const g = await this.grant(project, c.grantId, "prepare", c.id);
     requireThat(g.provider === "meta" || g.provider === "linkedin", "campaign_prerequisite_tuple_unqualified", 422);
     const authority = await this.readCampaignAuthority(p, g, credentialExpiry);
     const tracking = await this.tracking.campaignConfiguration(p, project, c.id);
@@ -952,7 +954,7 @@ export class MarketingServer {
     const attempt = await this.reportGuard(p, session, true, () => this.request<PrerequisiteRecord>(project, requestKey,
       { actorId: p.userId, ...input }, "campaignCheck", async () => {
         const c = await this.store.get<Campaign>(project, "campaign", input.campaignId);
-        const g = await this.grant(project, c.grantId, "prepare");
+        const g = await this.grant(project, c.grantId, "prepare", c.id);
         requireThat(c.revision === input.expectedRevision && g.revision === input.expectedGrantRevision, "stale_revision");
         const previous = await this.store.get<{id:string;generation:number}>(project, "campaignCheckCurrent", c.id).catch(() => null);
         const record: PrerequisiteRecord = { id: id(), projectId: project, campaignId: c.id, actorId: p.userId,
@@ -1071,7 +1073,7 @@ export class MarketingServer {
         "campaign",
         input.campaignId,
       );
-      const g = await this.grant(project, c.grantId, "activate");
+      const g = await this.grant(project, c.grantId, "activate", c.id);
       requireThat(
         c.state === "paused" && c.receipt?.intent === "paused",
         "paused_preparation_required",
@@ -1140,7 +1142,7 @@ export class MarketingServer {
         }),
       "packet_corrupt",
     );
-    const g = await this.grant(project, packet.grantId, "activate");
+    const g = await this.grant(project, packet.grantId, "activate", packet.campaignId);
     const c = await this.store.get<Campaign>(
       project,
       "campaign",
@@ -1329,7 +1331,7 @@ export class MarketingServer {
     requireThat(o.kind === "pause" || !c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
     let g: Grant;
     try {
-      g = await this.grant(project, c.grantId, o.kind);
+      g = await this.grant(project, c.grantId, o.kind, c.id);
       requireThat(
         g.revision === o.grantRevision && g.accountId === o.accountId,
         "grant_changed",
@@ -1378,7 +1380,7 @@ export class MarketingServer {
         );
       }
       // Recheck after asynchronous preflight, immediately before claiming effects.
-      const currentGrant = await this.grant(project, g.id, o.kind);
+      const currentGrant = await this.grant(project, g.id, o.kind, c.id);
       requireThat(
         currentGrant.revision === o.grantRevision &&
           currentGrant.accountId === o.accountId,
@@ -1392,7 +1394,7 @@ export class MarketingServer {
       );
       await this.executionTransaction(p, project, c.id, o.kind, async () => {
         await this.store.db.assertExecutionOwner();
-        const current = await this.grant(project, g.id, o.kind);
+        const current = await this.grant(project, g.id, o.kind, c.id);
         requireThat(
           current.revision === o.grantRevision &&
             current.accountId === o.accountId,
@@ -1470,7 +1472,7 @@ export class MarketingServer {
         ? await this.consumeCampaignCheck(actor, c, g) : null;
       const local = () => this.store.transaction(async () => {
         await this.store.db.assertExecutionOwner();
-        const current = await this.grant(project, g.id, o.kind);
+        const current = await this.grant(project, g.id, o.kind, c.id);
         requireThat(
           current.revision === o.grantRevision &&
             current.accountId === o.accountId,
@@ -1663,7 +1665,7 @@ export class MarketingServer {
         "campaign",
         o.campaignId,
       );
-      const g = await this.grant(project, c.grantId, "report");
+      const g = await this.grant(project, c.grantId, "report", c.id);
       // A safety-pause readback may use refreshed current report authority for
       // the same account. It never replays a write or changes the original claim.
       requireThat(c.revision === o.campaignRevision && (g.revision === o.grantRevision ||
@@ -1677,7 +1679,7 @@ export class MarketingServer {
     await this.assertExecutionAuthority(p, c, "reconcile");
     const receipt = await this.providers[g.provider].reconcile(c, g, o);
     return guard(async () => {
-      requireThat(digest(await this.grant(project, g.id, "report")) === digest(g) &&
+      requireThat(digest(await this.grant(project, g.id, "report", c.id)) === digest(g) &&
         digest(await this.assets(c, false)) === digest(assets), "reconciliation_material_changed");
       const current = await this.store.get<Operation>(project, "operation", o.id);
       const campaign = await this.store.get<Campaign>(project, "campaign", c.id);
@@ -2215,7 +2217,7 @@ export class MarketingServer {
     const { c, g, reportingBasis } = await this.reportGuard(p, session, true, async () => {
       this.window(input.from, input.until);
       const c = await this.store.get<Campaign>(project, "campaign", input.campaignId);
-      const g = await this.grant(project, c.grantId, "report");
+      const g = await this.grant(project, c.grantId, "report", c.id);
       const reportingBasis = this.providers[g.provider].evidence === "provider"
         ? { ...providerDayWindow(input.from, input.until, g.timezone, this.now()),
           ...(g.provider === "linkedin" ? { timezoneSource: "provider_reporting_and_budget_policy" as const } : g.provider === "meta" ? { timezoneSource: "provider_account" as const } : {}) }
@@ -2226,7 +2228,7 @@ export class MarketingServer {
     const values = await this.providers[g.provider].metrics(c, g, input.from, input.until);
     return this.reportGuard(p, session, true, async () => {
       requireThat(values.currency === materialCurrency(c.material) && values.timezone === c.material.timezone && values.from === input.from && values.until === input.until, "metrics_scope_mismatch");
-      const currentGrant = await this.grant(project, g.id, "report");
+      const currentGrant = await this.grant(project, g.id, "report", c.id);
       requireThat(digest(currentGrant) === digest(g) && (await this.store.get<Campaign>(project, "campaign", c.id)).revision === c.revision, "metrics_scope_changed");
       const { measurement, ...metrics } = values;
       if (measurement) requireThat(measurement.identity.provider === g.provider && measurement.identity.projectId === project && measurement.identity.sdkCampaignId === c.id &&

@@ -129,6 +129,8 @@ export interface Receipt {
   evidence: "fixture" | "provider";
 }
 export interface Grant {
+  /** Optional host-bound campaign scope; never reusable for another campaign or draft. */
+  campaignId?: string;
   id: string;
   projectId: string;
   revision: number;
