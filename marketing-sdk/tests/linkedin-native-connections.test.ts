@@ -76,6 +76,28 @@ function nativeTransport(f: Fixture) {
   return { objects, writes: () => writes, loseRead: () => { loseRead = true; }, conflict: () => { postConflict = true; } };
 }
 
+test("host account discovery preserves current LinkedIn member and role without provider writes", async () => {
+  const f = await connectionFixture("linkedin", true);
+  try {
+    const grant = await connected(f);
+    let guards = 0;
+    const account = await f.native.discoverCampaignAccount(grant, async () => { guards++; });
+    assert.equal(account.id, grant.accountId);
+    assert.equal(account.organizationId, grant.organizationId);
+    assert.ok(account.memberUrn?.startsWith('urn:li:person:'));
+    assert.equal(account.accountUrn, `urn:li:sponsoredAccount:${grant.accountId}`);
+    assert.equal(account.accountRole, 'ACCOUNT_MANAGER');
+    assert.ok(guards > 1);
+    await assert.rejects(f.native.discoverCampaignAccount({...grant,currency:'EUR'},async()=>{}), /provider_account_context_changed/);
+    await assert.rejects(f.native.discoverCampaignAccount({...grant,organizationId:'999'},async()=>{}), /provider_account_context_changed/);
+    changeResponse(f, (url, body) => { if(url.pathname.endsWith('adAccountUsers')) body.elements[0].role='VIEWER';return body; });
+    const changed = await f.native.discoverCampaignAccount(grant, async()=>{});
+    assert.equal(changed.accountRole,'VIEWER');
+    assert.ok(!changed.permissions.includes('prepare'));
+    await assert.rejects(f.native.discoverCampaignAccount(grant,async()=>{throw Error('host_revoked');}),/host_revoked/);
+  } finally { await f.close(); }
+});
+
 test("NEW reporting Connection uses actual NativeProvider/client verification and persisted metrics with r_ads only", async () => {
   const f = await connectionFixture("linkedin");
   try {

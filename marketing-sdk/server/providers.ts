@@ -573,6 +573,33 @@ export class NativeProvider implements ProviderPort {
   }
   /** SDK-owned read-only producer. It does not call verify(), which consumes
    * existing proof. Each provider verifies its supported material and authority. */
+  /** Current account membership for host-owned custody. This read does not issue
+   * a grant, qualify publishing identities, or authorize any provider effect.
+   * Hosts retain the observed member/role facts for the later exact-plan check. */
+  async discoverCampaignAccount(g: Grant, guard: () => Promise<void>): Promise<DiscoveredAccount> {
+    requireThat(this.name === g.provider && ["meta", "linkedin"].includes(g.provider), "provider_account_context_changed");
+    requireThat(this.vault.useReadOnly, "read_only_credential_custody_required");
+    return this.vault.useReadOnly(g, guard, async credentials => {
+      const discovery = new ConnectionDiscovery(this.fetcher);
+      const accounts: DiscoveredAccount[] = [], cursors = new Set<string>(), observed = new Set<string>();
+      let cursor: string | undefined;
+      for (let n = 0; n < 40; n++) {
+        const page = await discovery.accounts(g.provider, credentials, cursor, guard, observed);
+        accounts.push(...page.rows);
+        if (!page.next) { cursor = undefined; break; }
+        requireThat(!cursors.has(page.next), "provider_discovery_incomplete");
+        cursors.add(page.next); cursor = page.next;
+      }
+      requireThat(!cursor, "provider_discovery_incomplete");
+      requireThat(new Set(accounts.map(a => a.id)).size === accounts.length, "provider_discovery_conflict");
+      const account = accounts.find(a => a.id === g.accountId);
+      requireThat(account && account.currency === g.currency && account.timezone === g.timezone &&
+        (g.provider !== "linkedin" || account.organizationId === g.organizationId), "provider_account_context_changed");
+      await guard();
+      return account;
+    });
+  }
+
   async inspectPrerequisites(c: Campaign, g: Grant, assets: Asset[], account: DiscoveredAccount,
     identities: DiscoveredIdentity[], guard: () => Promise<void>) {
     this.plan(c, g, assets);

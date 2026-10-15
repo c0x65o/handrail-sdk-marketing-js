@@ -718,6 +718,14 @@ are synthetic provider responses, not live campaign writes or delivery evidence.
 
 ### Bind a planned campaign to host execution custody
 
+Hosts composing private credential custody use
+`NativeProvider.discoverCampaignAccount(grant, guard)` to obtain current provider
+membership through SDK-owned reads before constructing `CampaignAccess`.
+Retain the returned LinkedIn member, account role and organization facts in the
+access snapshot; configured account IDs alone are insufficient. Discovery does
+not grant permissions or qualify publication. The exact campaign check freshly
+verifies the snapshot, selected publishing identity, material and current custody.
+
 `CampaignExecutionConnections` is a trusted server API. It binds one unpublished
 Studio campaign to a new campaign-scoped grant for the same provider account,
 identity, currency and timezone. The shared planning grant must have no execution
