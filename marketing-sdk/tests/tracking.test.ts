@@ -346,3 +346,58 @@ test('a fresh authenticated checkpoint recovers completeness after collector rot
     assert.deepEqual((await f.store.list<ValidatedCoverage>('p','validatedCoverage')).slice(0,1),history);
   } finally {await f.close();}
 });
+
+test('declared destination scopes retain exact campaign URLs without creating tests or coverage',async()=>{
+ const f=await fixture();try{
+  const origin=f.origin.replace('http:','https:');
+  const source={...f.source.source,revision:'2',destinationScopes:[{origin,pathPrefix:'/owned'}]};
+  await f.source.saveSource(source);
+  const raw=origin+'/owned/landing?utm_campaign=original&value=a%2Bb&utm_source=linkedin#form';
+  const draft=await f.service.call(f.p,'p','saveBrief',{requestKey:randomUUID(),brief:{...emptyBrief(),name:'Original destination',offer:'Tour',audience:'Customers',destination:raw}});
+  const owner={kind:'draft' as const,id:draft.id};
+  const view=await f.service.call(f.p,'p','tracking',{owner});
+  const destination=view.destinations.find(d=>d.sourceId===source.id&&d.url===raw)!;
+  assert.ok(destination);assert.equal(destination.testUrl,null);assert.equal(destination.url,raw);
+  assert.deepEqual(view.sources[0],source,'source identity and its complete registered catalogue remain canonical');
+  const intent={owner,expectedRevision:draft.revision,expectedBindingRevision:0,sourceId:source.id,sourceRevision:source.revision,destinationId:destination.id,outcome:'inquiry' as const,refundTreatment:null,requestKey:randomUUID()};
+  const binding=await f.service.call(f.p,'p','bindTracking',intent);assert.equal(binding.destination,raw);
+  f.restart();assert.deepEqual(await f.service.call(f.p,'p','bindTracking',intent),binding);
+  assert.equal((await f.service.call(f.p,'p','tracking',{owner})).destinations.find(d=>d.url===raw)?.id,destination.id);
+  assert.deepEqual(await f.store.get('p','campaignDraft',draft.id),draft,'binding does not rewrite material or attribution parameters');
+  await assert.rejects(f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:1,requestKey:randomUUID()}),/no_send_test_destination_required/);
+  f.advance(1000);
+  const fact:CollectorCompletion={sourceReceipt:'scoped-receipt',eventId:'scoped-event',domain:source.domain,environment:'production',destinationId:destination.id,destinationUrl:raw,outcome:'inquiry',occurredAt:new Date().toISOString(),personId:'opaque',consent:{basis:'consent',receipt:'retained-consent'},completionReceipt:'retained-completion',testId:null,qa:true,clickId:null,revenue:null,refundTreatment:null};
+  await f.source.retainCompletion(fact);
+  const received=await f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:fact.sourceReceipt,testId:null});assert.equal(received.diagnostic,null);
+  assert.equal((await f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:fact.sourceReceipt,testId:null})).deduplicated,true);
+  for(const changed of [{destinationUrl:undefined},{destinationUrl:origin+'/outside'},{destinationUrl:raw+'&different'}]){
+   const receipt={...fact,...changed,sourceReceipt:randomUUID()};
+   await f.source.retainCompletion(receipt);
+   await assert.rejects(f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:receipt.sourceReceipt,testId:null}),/collector_scope_mismatch/);
+  }
+  assert.equal((await f.store.list('p','trackingTest')).length,0);assert.equal((await f.store.list('p','validatedCoverage')).length,0);
+  assert.equal((await f.service.call(f.p,'p','tracking',{owner})).readiness,'not_tested');
+  await f.source.saveSource({...source,revision:'3',destinationScopes:[]});
+  assert.equal((await f.service.call(f.p,'p','tracking',{owner})).readiness,'stale');
+ }finally{await f.close();}
+});
+
+test('destination scopes reject off-origin paths, prefix confusion, encoded separators and malformed declarations',async()=>{
+ const f=await fixture();try{
+  const origin=f.origin.replace('http:','https:'),source={...f.source.source,revision:'2',destinationScopes:[{origin,pathPrefix:'/owned'}]};
+  await f.source.saveSource(source);
+  await assert.rejects(f.service.call(f.p,'p','saveBrief',{requestKey:randomUUID(),brief:{...emptyBrief(),name:'HTTP rejected',offer:'Tour',audience:'Customers',destination:f.origin+'/owned'}}),/https_destination_required/);
+  for(const raw of [origin+'/ownedness',origin+'/owned/../outside',origin+'/owned/%2e%2e/outside',origin+'/owned/%2f..%2foutside',origin+'/owned/%5c..%5coutside',origin.replace('127.0.0.1','example.invalid')+'/owned']){
+   const draft=await f.service.call(f.p,'p','saveBrief',{requestKey:randomUUID(),brief:{...emptyBrief(),name:'Scope rejection',offer:'Tour',audience:'Customers',destination:raw}});
+   const owner={kind:'draft' as const,id:draft.id},view=await f.service.call(f.p,'p','tracking',{owner});
+   assert.ok(!view.destinations.some(d=>d.url===raw));
+   await assert.rejects(f.service.call(f.p,'p','bindTracking',{owner,expectedRevision:1,expectedBindingRevision:0,sourceId:source.id,sourceRevision:source.revision,destinationId:'destination_'+digest([source.id,raw]),outcome:'inquiry',refundTreatment:null,requestKey:randomUUID()}),/tracking_destination_mismatch/);
+  }
+  await f.source.saveSource(f.source.source);
+  const {owner}=await f.bind();
+  for(const scope of [{origin:'not a URL',pathPrefix:'/owned'},{origin:'https://unowned.example',pathPrefix:'/owned'},{origin,pathPrefix:'//unowned.example'},{origin,pathPrefix:'/owned/../outside'},{origin,pathPrefix:'/owned?query=1'}]){
+   await f.source.saveSource({...f.source.source,destinationScopes:[scope]});
+   await assert.rejects(f.service.call(f.p,'p','tracking',{owner}),/invalid_tracking_destination_scope/);
+  }
+ }finally{await f.close();}
+});

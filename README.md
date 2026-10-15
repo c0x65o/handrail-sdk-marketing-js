@@ -544,3 +544,26 @@ identity, currency, status and role qualification. Optional reference/profile
 expansion is not required for custody. If no Page name is supplied, the original
 organization identity remains visible with an explicitly unavailable name; Page
 permissions still require the existing independent role checks.
+
+## Exact campaign destinations in Tracking
+
+A host source may declare `destinationScopes: [{origin, pathPrefix}]` from its
+current owned deployment contract. The SDK resolves the draft/campaign's existing
+URL against those explicit scopes and returns `TrackingView.destinations`, keyed
+by source. It preserves URL spelling, path, query ordering/encoding and fragment;
+selecting a tracking destination never edits campaign material. Explicitly
+registered destinations remain available alongside the exact campaign URL.
+
+Scopes are structured ownership facts, not instructions supplied by the browser.
+The SDK rejects off-origin URLs, path-prefix lookalikes, normalized traversal,
+encoded path separators and malformed scopes. Existing session/source guards
+protect binding and revalidation. Revoking or changing a scope makes saved
+bindings stale. The canonical source object remains shared across campaigns;
+resolving one campaign does not change another campaign's source revision.
+
+A resolved URL has no inferred no-send test URL. It cannot pass a test or attest
+coverage from ownership alone. For a collector receipt at a scoped destination,
+`CollectorCompletion.destinationUrl` must come from the retained authenticated
+completion and match its exact SDK destination ID. A missing or mismatched URL
+is rejected. Consent, qualification, provider transport and completeness remain
+separate evidence requirements.

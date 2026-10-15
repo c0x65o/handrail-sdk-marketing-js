@@ -11,12 +11,16 @@ export const TRACKING_OUTCOMES = {
 } as const satisfies Record<string, { label: string; purpose: MarketingPurpose; kind: FirstPartyEvent['kind'] }>;
 export type TrackingOutcome = keyof typeof TRACKING_OUTCOMES;
 export interface TrackingOwner { kind: 'draft' | 'campaign'; id: string }
+export interface TrackingDestination { id: string; label: string; url: string; testUrl: string | null }
 export interface TrackingSource {
   id: string; projectId: string; revision: string; label: string; domain: string;
   environment: 'test' | 'production'; active: boolean;
   collector: 'available' | 'missing' | 'unavailable'; reason: string | null;
   outcomes: TrackingOutcome[];
-  destinations: { id: string; label: string; url: string; testUrl: string | null }[];
+  destinations: TrackingDestination[];
+  /** Host-declared ownership only. Resolving a URL never proves collection,
+   * consent, a no-send destination, provider delivery or production coverage. */
+  destinationScopes?: { origin: string; pathPrefix: string }[];
   instructions: string[];
 }
 export interface TrackingBinding {
@@ -42,6 +46,7 @@ export interface TrackingTest {
 export interface TrackingView {
   owner: TrackingOwner; ownerRevision: number; purpose: MarketingPurpose; destination: string | null;
   sources: TrackingSource[]; binding: TrackingBinding | null; tests: TrackingTest[];
+  destinations: (TrackingDestination & { sourceId: string })[];
   diagnostics: TrackingDiagnostic[]; readiness: 'missing_integration' | 'not_tested' | 'pending' | 'passed' | 'stale' | 'cancelled' | 'expired';
   reason: string; canEdit: boolean;
 }

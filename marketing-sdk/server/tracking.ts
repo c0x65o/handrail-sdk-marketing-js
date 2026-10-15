@@ -27,6 +27,9 @@ export interface CollectorInspection {
 export interface CollectorCompletion {
   sourceReceipt: string; eventId: string; domain: string; environment: TrackingSource['environment'];
   destinationId: string; outcome: TrackingOutcome; occurredAt: string; personId: string;
+  /** Required for a destination resolved from a declared host/path scope.
+   * Comes from the retained authenticated completion, never the browser. */
+  destinationUrl?: string;
   consent: { basis: 'consent' | 'contract' | 'legitimate_interest'; receipt: string };
   completionReceipt: string; testId: string | null; qa: boolean;
   clickId: string | null; revenue: Money | null; refundTreatment: 'gross_before_refunds' | null;
@@ -92,6 +95,15 @@ export class MarketingTracking {
     requireThat(['test','production'].includes(s.environment) && ['available','missing','unavailable'].includes(s.collector),'invalid_tracking_source',422);
     requireThat(s.outcomes.length <= 7 && s.outcomes.every(o => Object.hasOwn(TRACKING_OUTCOMES,o)) && s.destinations.length <= 50 && s.instructions.length <= 20,'invalid_tracking_source',422);
     for(const instruction of s.instructions) text(instruction,2000);
+    requireThat(!s.destinationScopes || Array.isArray(s.destinationScopes) && s.destinationScopes.length<=50,'invalid_tracking_destination_scope',422);
+    for(const scope of s.destinationScopes??[]) {
+      keys(scope,['origin','pathPrefix']);text(scope.origin,2048);text(scope.pathPrefix,2048);
+      let u:URL|undefined;try{u=new URL(scope.origin);}catch{/* rejected below */}
+      requireThat(u,'invalid_tracking_destination_scope',422);
+      requireThat(u.origin===scope.origin && u.hostname===s.domain && (u.protocol==='https:' || this.mode==='fixture'&&u.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(u.hostname))
+        && scope.pathPrefix.startsWith('/') && !scope.pathPrefix.includes('?') && !scope.pathPrefix.includes('#')
+        && new URL(scope.pathPrefix,u).pathname===scope.pathPrefix && !this.encodedSeparator(scope.pathPrefix),'invalid_tracking_destination_scope',422);
+    }
     for(const d of s.destinations) {
       for(const v of [d.id,d.label]) text(v,500);
       for(const raw of [d.url,d.testUrl].filter((u):u is string=>u!==null)) {
@@ -100,6 +112,18 @@ export class MarketingTracking {
           (u.protocol === 'https:' || this.mode === 'fixture' && u.protocol === 'http:' && ['127.0.0.1','localhost','[::1]'].includes(u.hostname)),'invalid_tracking_destination',422);
       }
     }
+  }
+  private encodedSeparator(path:string) {const value=path.toLowerCase();return value.includes('%2f')||value.includes('%5c');}
+  private destinations(source:TrackingSource,raw:string|null|undefined) {
+    const known=source.destinations;
+    if(!raw||raw.length>2048||known.some(d=>d.url===raw))return known;
+    let url:URL;try{url=new URL(raw);}catch{return known;}
+    if(url.username||url.password||this.encodedSeparator(url.pathname))return known;
+    if(!(source.destinationScopes??[]).some(scope=>url.origin===scope.origin &&
+      (url.pathname===scope.pathPrefix||url.pathname.startsWith(scope.pathPrefix.endsWith('/')?scope.pathPrefix:scope.pathPrefix+'/'))))return known;
+    // Preserve the original spelling, path, query order and fragment. The ID
+    // identifies this exact destination, independently of other campaigns.
+    return [...known,{id:'destination_'+digest([source.id,raw]),label:'Current campaign destination',url:raw,testUrl:null}];
   }
   private async withSource<T>(s: TrackingSource, local: () => Promise<T>) {
     requireThat(this.options.sources,'tracking_source_integration_required');
@@ -250,7 +274,8 @@ export class MarketingTracking {
           try { requireThat(digest(last.session)===digest(s),'original_setup_session_required'); await inspectLiveSessions(this.sessions,[last.session]); readiness='passed'; reason='First-party test passed for this exact configuration. Provider delivery and production coverage remain separate.'; } catch { readiness='stale'; reason='The original setup session or permissions changed. Start a new test with current authority.'; }
         }
       }
-      return {owner:i.owner,ownerRevision:owner.revision,purpose:owner.purpose,destination:owner.material.destination??null,sources,binding,tests,diagnostics,readiness,reason,canEdit:s.kind==='human'&&['admin','editor'].includes(s.role)};
+      const destinations=sources.flatMap(source=>this.destinations(source,owner.material.destination).map(d=>({...d,sourceId:source.id})));
+      return {owner:i.owner,ownerRevision:owner.revision,purpose:owner.purpose,destination:owner.material.destination??null,sources,destinations,binding,tests,diagnostics,readiness,reason,canEdit:s.kind==='human'&&['admin','editor'].includes(s.role)};
     },sources);
     return local();
   }
@@ -260,7 +285,7 @@ export class MarketingTracking {
     const source=(await this.options.sources.catalogue(s)).find(x=>x.id===i.sourceId); requireThat(source,'tracking_source_not_authorized',403);this.validateSource(source,project);
     requireThat(source.revision===i.sourceRevision,'tracking_source_changed');
     return this.guarded(p,s,true,()=>this.once(project,s,'bind',i,async()=>{
-      const owner=await this.owner(project,i.owner), old=await this.binding(project,i.owner), destination=source.destinations.find(d=>d.id===i.destinationId);
+      const owner=await this.owner(project,i.owner), old=await this.binding(project,i.owner), destination=this.destinations(source,owner.material.destination).find(d=>d.id===i.destinationId);
       requireThat(owner.revision===i.expectedRevision && (old?.revision??0)===i.expectedBindingRevision,'revision_conflict');
       requireThat(destination && destination.url===owner.material.destination,'tracking_destination_mismatch');
       requireThat(Object.hasOwn(TRACKING_OUTCOMES,i.outcome) && source.outcomes.includes(i.outcome) && TRACKING_OUTCOMES[i.outcome].purpose===owner.purpose,'tracking_outcome_mismatch');
@@ -278,7 +303,7 @@ export class MarketingTracking {
     return this.guarded(p,s,true,()=>this.once(project,s,'test',i,async()=>{
       await this.exact(project,binding); requireThat(binding.revision===i.expectedBindingRevision,'revision_conflict');
       requireThat(binding.source.collector==='available' && this.options.collector,'authenticated_collector_required');
-      const destination=binding.source.destinations.find(d=>d.id===binding.destinationId);requireThat(destination?.testUrl,'no_send_test_destination_required');
+      const destination=this.destinations(binding.source,binding.destination).find(d=>d.id===binding.destinationId);requireThat(destination?.testUrl,'no_send_test_destination_required');
       const prior=(await this.store.list<TestRecord>(project,'trackingTest')).find(r=>r.binding.id===binding.id && r.test.bindingRevision===binding.revision && !r.test.cancelledAt && Date.parse(r.test.expiresAt)>this.now());
       if(prior) {requireThat(digest(prior.session)===digest(s),'test_in_progress_in_another_session');return prior.test;}
       const testId=id(), url=new URL(destination.testUrl);url.searchParams.set('marketing_test',testId);url.searchParams.set('marketing_outcome',binding.outcome);
@@ -313,9 +338,10 @@ export class MarketingTracking {
     keys(input,['sourceReceipt','testId']);text(input.sourceReceipt,200);if(input.testId!==null)text(input.testId,160);
     const c=await this.collectorContext(request,'completion'), fact=await this.options.collector!.verifyCompletion(c,input.sourceReceipt), project=c.source.projectId;
     requireThat(Buffer.byteLength(JSON.stringify(fact))<=8192,'collector_evidence_limit',413);
-    keys(fact,['sourceReceipt','eventId','domain','environment','destinationId','outcome','occurredAt','personId','consent','completionReceipt','testId','qa','clickId','revenue','refundTreatment']);
+    keys(fact,['sourceReceipt','eventId','domain','environment','destinationId','destinationUrl','outcome','occurredAt','personId','consent','completionReceipt','testId','qa','clickId','revenue','refundTreatment']);
+    if(fact.destinationUrl!==undefined)text(fact.destinationUrl,2048);
     requireThat(fact.sourceReceipt===input.sourceReceipt && fact.testId===input.testId && typeof fact.qa==='boolean','collector_receipt_mismatch',422);
-    requireThat(fact.domain===c.source.domain && fact.environment===c.source.environment && c.source.destinations.some(d=>d.id===fact.destinationId) && c.source.outcomes.includes(fact.outcome),'collector_scope_mismatch',403);
+    requireThat(fact.domain===c.source.domain && fact.environment===c.source.environment && this.destinations(c.source,fact.destinationUrl).some(d=>d.id===fact.destinationId && (fact.destinationUrl===undefined||d.url===fact.destinationUrl)) && c.source.outcomes.includes(fact.outcome),'collector_scope_mismatch',403);
     for(const value of [fact.eventId,fact.personId,fact.completionReceipt,fact.consent.receipt])text(value,200);
     keys(fact.consent,['basis','receipt']);requireThat(['consent','contract','legitimate_interest'].includes(fact.consent.basis),'verified_consent_required',422);
     if(fact.clickId!==null)text(fact.clickId,200);if(fact.revenue)keys(fact.revenue,['minor','currency']);
