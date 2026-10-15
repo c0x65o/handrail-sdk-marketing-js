@@ -157,13 +157,14 @@ async function unknownUploadFixture() {
   };
   return {...f,image};
 }
-test('paused adoption retains unknown upload provenance, original source bytes and independent image readback across replay and reopen',async()=>{
-  const f=await unknownUploadFixture();try{
+for(const name of ['legacy-image.jpg','legacy-image.jpg_105','renamed campaign image'])test(`paused adoption retains unknown upload provenance and provider name ${name} across replay and reopen`,async()=>{
+  const f=await unknownUploadFixture();f.image.name=name;try{
     const receipt=await f.service.adopt(f.principal,'p','native','unknown-upload');
     assert.equal(receipt.mediaProvenance![0]!.originalUploadBytesVerified,false);
     assert.equal(receipt.mediaProvenance![0]!.uploadedDigest,null);
     assert.equal(receipt.mediaProvenance![0]!.missingReason,'historical_filename_hash_is_lossy_text');
     assert.deepEqual(receipt.mediaProvenance![0]!.providerImage!.image,f.image);
+    assert.deepEqual(receipt.mediaProvenance![0]!.providerFilenameComparison,{retained:'legacy-image.jpg',current:name,matches:name==='legacy-image.jpg'});
     assert.deepEqual(await f.store.get('p','asset','source-asset'),f.nativeMedia[0]!.asset);
     assert.equal((await f.store.list('p','asset')).length,1,'No guessed upload or re-encoded asset is persisted');
     const blob=await f.store.db.prepare('SELECT bytes FROM blobs WHERE project_id=? AND digest=?').get('p',f.nativeMedia[0]!.asset.digest);
@@ -176,7 +177,7 @@ test('paused adoption retains unknown upload provenance, original source bytes a
     const reopened=await testStore(f.path);try{assert.deepEqual(await reopened.get('p','executionAdoption',receipt.id),receipt);}finally{await reopened.close();}
   }finally{await f.close();}
 });
-for(const failure of ['no-source','source-digest','source-history','bytes','missing-reason','provider-unavailable','account','image','filename','dimensions','inactive','changed-during-image-read','claimed-byte-proof','grant-during-read','missing-settlement'])test(`unknown upload adoption refuses ${failure} without transferring ownership`,async()=>{
+for(const failure of ['no-source','source-digest','source-history','bytes','missing-reason','provider-unavailable','account','image','missing-provider-filename','dimensions','inactive','changed-during-image-read','claimed-byte-proof','grant-during-read','missing-settlement'])test(`unknown upload adoption refuses ${failure} without transferring ownership`,async()=>{
   const f=await unknownUploadFixture();try{
     const m=f.candidate.media[0]!;
     if(failure==='no-source')delete m.retainedSource;
@@ -187,7 +188,7 @@ for(const failure of ['no-source','source-digest','source-history','bytes','miss
     if(failure==='provider-unavailable')delete f.provider.inspectExistingMetaImage;
     if(failure==='account')f.image.accountId='999';
     if(failure==='image')f.image.hash='other';
-    if(failure==='filename')f.image.name='other.jpg';
+    if(failure==='missing-provider-filename')f.image.name='';
     if(failure==='dimensions')f.image.width=1;
     if(failure==='inactive')f.image.status='DELETED';
     if(failure==='missing-settlement')f.candidate.settlements=[];
@@ -199,7 +200,7 @@ for(const failure of ['no-source','source-digest','source-history','bytes','miss
         if(failure==='grant-during-read')await f.store.put('p','grant',f.grant.id,{...f.grant,revision:2});return r;};
     }
     await assert.rejects(f.service.adopt(f.principal,'p','native','reject-unknown-upload'),(error:any)=>{
-      const fields:Record<string,string>={account:'accountMatches',image:'imageMatches',filename:'filenameMatches',dimensions:'dimensionsMatch',inactive:'active','claimed-byte-proof':'originalBytesUnknown'};
+      const fields:Record<string,string>={account:'accountMatches',image:'imageMatches','missing-provider-filename':'filenameRecorded',dimensions:'dimensionsMatch',inactive:'active','claimed-byte-proof':'originalBytesUnknown'};
       if(fields[failure]){assert.equal(error.code,'adoption_provider_image_mismatch');assert.equal(error.providerImageDiagnostic.comparisons[fields[failure]!],false);}
       return true;
     });

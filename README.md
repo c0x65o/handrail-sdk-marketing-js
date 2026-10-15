@@ -532,3 +532,9 @@ When original conversion configuration was not retained, the host can declare
 Lead conversion and keeps the historical promoted-object comparison unknown.
 Known retained conversion bindings still must match. No capture grants approval,
 tracking readiness, execution ownership or spending authority.
+
+Unknown-upload adoption retains both the historical upload filename and current
+provider filename with an explicit comparison. A different label is not a binary
+identity check: current account/hash, dimensions, active image state, original
+source bytes/rights, historical mapping and campaign readback remain required.
+Original upload bytes stay unverified even when names match.

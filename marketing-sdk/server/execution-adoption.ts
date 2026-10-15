@@ -41,7 +41,8 @@ export interface ExecutionAdoptionReceipt {
   purposeResolutionId?:string;
   materialReconciliation?:MetaMaterialReconciliation;
   mediaProvenance?: {assetId:string; sourceDigest:string; uploadedDigest:string|null;
-    originalUploadBytesVerified:boolean; missingReason:string|null; providerImage:ExistingMetaImageInspection|null}[];
+    originalUploadBytesVerified:boolean; missingReason:string|null; providerImage:ExistingMetaImageInspection|null;
+    providerFilenameComparison?:{retained:string;current:string;matches:boolean}}[];
   executionOwner: "sdk"; state: "paused"; spendingAuthorityGranted: false;
 }
 export interface ExecutionAdoptionMedia {
@@ -222,6 +223,7 @@ export class CampaignExecutionAdoptions {
       inspection.candidateReceipt.ids.readbackDigest && inspection.candidateReceipt.payloadDigest === digest(provider.plan(campaign, grant, assets)) &&
       Object.entries(candidate.providerIds).every(([key,value]) => inspection.candidateReceipt.ids[key] === value), "adoption_provider_receipt_mismatch");
     let providerImage:ExistingMetaImageInspection|null=null;
+    let providerFilenameComparison:{retained:string;current:string;matches:boolean}|undefined;
     if (unknownUpload) {
       requireThat(provider.inspectExistingMetaImage,"adoption_provider_image_inspection_required");
       providerImage=await provider.inspectExistingMetaImage(grant,media.providerImageId,guard);
@@ -233,9 +235,13 @@ export class CampaignExecutionAdoptions {
         snapshotDigestMatches:providerImage.providerSnapshotDigest===digest(image),
         collectionTimeValid:Number.isFinite(Date.parse(providerImage.observedAt)),
         accountMatches:measurementAccountId("meta",image.accountId)===measurementAccountId("meta",grant.accountId),
-        imageMatches:image.hash===media.providerImageId,filenameMatches:image.name===media.retainedSource!.providerFilename,
+        imageMatches:image.hash===media.providerImageId,filenameRecorded:typeof image.name==="string"&&image.name.length>0,filenameMatches:image.name===media.retainedSource!.providerFilename,
         dimensionsMatch:image.width===asset.width&&image.height===asset.height,active:image.status==="ACTIVE"};
-      if(!Object.values(comparisons).every(Boolean))throw Object.assign(new DomainError("adoption_provider_image_mismatch"),
+      // Provider filename is retained metadata, not image identity or binary
+      // provenance. Keep discrepancies; account/hash/source/readback still bind.
+      const {filenameMatches,...identityAndEvidence}=comparisons;
+      providerFilenameComparison={retained:media.retainedSource!.providerFilename,current:image.name,matches:filenameMatches};
+      if(!Object.values(identityAndEvidence).every(Boolean))throw Object.assign(new DomainError("adoption_provider_image_mismatch"),
         {providerImageDiagnostic:{comparisons,expectedDimensions:{width:asset.width,height:asset.height},
           observedDimensions:{width:image.width,height:image.height},providerSnapshotDigest:providerImage.providerSnapshotDigest,
           observedAt:providerImage.observedAt}});
@@ -248,7 +254,8 @@ export class CampaignExecutionAdoptions {
       retirementReceiptRefs: candidate.retirement.receiptRefs, settlementReceiptRefs: candidate.settlements.flatMap(x => x.receiptRefs),
       mediaRecordIds: candidate.media.flatMap(x => [x.historyRecordId,...(x.original?[x.original.historyRecordId]:[]),...(x.retainedSource?[x.retainedSource.historyRecordId]:[])]),
       mediaProvenance:[{assetId:asset.id,sourceDigest:original?.asset.digest??asset.digest,uploadedDigest:media.uploadedDigest,
-        originalUploadBytesVerified:!unknownUpload,missingReason:media.retainedSource?.missingReason??null,providerImage}],
+        originalUploadBytesVerified:!unknownUpload,missingReason:media.retainedSource?.missingReason??null,providerImage,
+        ...(providerFilenameComparison?{providerFilenameComparison}:{})}],
       mediaAssetsDigest: assetsDigest, adoptedAt: new Date().toISOString(), adoptedBy: principal.userId,
       executionOwner: "sdk", state: "paused", spendingAuthorityGranted: false };
     return this.sessions.withLiveSessions([session], () => this.source.withRetiredExecution(principal, candidate, () => this.store.transaction(async () => {
