@@ -218,3 +218,37 @@ for(const value of [null,[],{},[{interests:[]}]])test(`Meta broad mode never rep
   const f=fixture();f.observed.adset.targeting.flexible_spec=value;f.source.retainedProviderTerms=existingMetaTerms(f.observed);
   await assert.rejects(f.capture());
 });
+
+for(const [objective,optimization] of [['OUTCOME_AWARENESS','REACH'],['OUTCOME_TRAFFIC','LINK_CLICKS'],['OUTCOME_TRAFFIC','IMPRESSIONS'],['OUTCOME_TRAFFIC','REACH']])test(`existing Meta ${objective}/${optimization} retains non-conversion delivery through capture, plans and readback`,async()=>{
+  const f=fixture();delete f.source.conversion;
+  f.observed.campaign.objective=objective;f.observed.adset.optimization_goal=optimization;
+  f.observed.adset.destination_type=objective==='OUTCOME_AWARENESS'?'UNDEFINED':'WEBSITE';
+  if(objective==='OUTCOME_AWARENESS')f.observed.adset.promoted_object={page_id:'42'};else delete f.observed.adset.promoted_object;
+  f.observed.adset.targeting.targeting_automation.advantage_audience=0;
+  if(optimization==='LINK_CLICKS')delete f.observed.adset.targeting.flexible_spec;else f.observed.adset.targeting.targeting_optimization='none';
+  f.observed.adset.targeting_optimization_types=[{key:'detailed_targeting',value:0},{key:'lookalike',value:0}];
+  f.observed.adset.attribution_spec=[];
+  f.source.retainedProviderTerms=existingMetaTerms(f.observed);
+  const r=await f.capture(),m=r.material;
+  if(m.settings?.provider!=='meta')throw Error('Meta required');
+  assert.equal(m.settings.objective,objective);assert.equal(m.settings.optimization,optimization);
+  assert.equal(m.settings.delivery,optimization==='LINK_CLICKS'?'ordinary':'strict');assert.equal(m.settings.conversion,undefined);
+  assert.equal(m.audience.expansion,false);assert.deepEqual(m.settings.attribution,[]);
+  const c={id:'c',projectId:'p',grantId:'g',material:m,state:'paused',receipt:null} as Campaign;
+  f.grant.targetingOptions=r.targetingOptions;
+  const g=f.grant,assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  const plan:any=providerPlan(c,g,assets);assert.equal(plan.campaign.objective,objective);assert.equal(plan.adset.optimization_goal,optimization);
+  assert.deepEqual(plan.adset.attribution_spec,[]);assert.deepEqual(plan.adset.targeting,f.observed.adset.targeting);
+  assert.equal(plan.adset.promoted_object?.pixel_id,undefined);
+  assert.equal((await f.provider.inspectExistingCampaign(c,g,assets,{...f.ids,ad:'103'},async()=>{})).candidateReceipt.intent,'paused');
+  const review=renderToStaticMarkup(createElement(MaterialReview,{material:m,assets:[],client:{assetUrl:()=>'/fixture'} as any,grant:g}));
+  assert.match(review,/None configured/);assert.doesNotMatch(review,/Standard Lead event/);
+  f.source.conversion={pixelId:'60',event:'Lead'};
+  await assert.rejects(f.capture(),/existing_material_conversion_mismatch/);delete f.source.conversion;
+  f.observed.adset.targeting_optimization_types[0].value=1;f.source.retainedProviderTerms=existingMetaTerms(f.observed);
+  await assert.rejects(f.capture(),/existing_material_expansion_unknown/);
+});
+test('existing Lead capture cannot treat empty attribution as unknown or non-conversion',async()=>{
+  const f=fixture();f.observed.adset.attribution_spec=[];f.source.retainedProviderTerms=existingMetaTerms(f.observed);
+  await assert.rejects(f.capture(),/explicit_attribution_required/);
+});

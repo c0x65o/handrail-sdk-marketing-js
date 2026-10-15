@@ -148,7 +148,7 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
       check((s.delivery === "advantage_plus_broad" ? t.interestGroups.length === 0 : t.interestGroups.length > 0) && only(t.expansion, ["detailedTargeting", "lookalike"]) &&
         [t.expansion?.detailedTargeting, t.expansion?.lookalike].every(x => x === 0 || x === 1), "explicit_expansion_required");
     } else check(t.expansion === undefined, "unexpected_expansion_settings");
-    check(s.attribution === undefined || Array.isArray(s.attribution) && s.attribution.length > 0 &&
+    check(s.attribution === undefined || Array.isArray(s.attribution) && (s.attribution.length > 0 || s.conversion === undefined) &&
       new Set(s.attribution.map(x => x.eventType)).size === s.attribution.length && s.attribution.every(x =>
         only(x, ["eventType", "windowDays"]) && ["CLICK_THROUGH", "VIEW_THROUGH"].includes(x.eventType) && [1, 7, 28].includes(x.windowDays)), "invalid_attribution_spec");
     const creative = s.creative;

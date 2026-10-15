@@ -513,3 +513,11 @@ recognizing it does not retry a request or alter write uncertainty handling.
 Unknown-upload adoption failures expose `providerImageDiagnostic` comparisons,
 expected/observed dimensions and snapshot identity without weakening the image,
 account, filename, active-status or retained-history checks.
+
+Existing Meta material capture also preserves the supported acquisition awareness
+(REACH) and traffic (LINK_CLICKS, IMPRESSIONS, REACH) combinations. Strict audiences
+require explicit expansion-off evidence; ordinary traffic retains its own audience
+contract. Conversion-less campaigns cannot acquire a Lead binding during adoption.
+An explicit empty attribution list is retained through plans, readback and review;
+missing attribution remains unknown, and Lead capture still requires explicit
+nonempty attribution. Existing approval and budget qualification are unchanged.

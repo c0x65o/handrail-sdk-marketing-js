@@ -1,5 +1,5 @@
 import { CAPABILITY_VERSION, type Grant, type Material, type MetaSettings, type TargetingOption } from "../core/index.js";
-import { exactTargeting, metaExpansionMatches, metaTargeting } from "./capabilities.js";
+import { exactTargeting, metaExpansionMatches, metaExpansionOff, metaTargeting } from "./capabilities.js";
 import { digest, requireThat, DomainError } from "./store.js";
 import { material as validateMaterial } from "./validation.js";
 import {reconcileMetaObservations,type RetainedMetaObservation} from './meta-material-observations.js';
@@ -10,7 +10,7 @@ export interface ExistingMetaMaterialSource {
   name: string; headline: string; body: string; destination: string; destinationDigest: string;
   assetId: string; purpose: Material["purpose"]; campaignDailyCeiling: number;
   policy: { nondiscriminationAccepted: boolean|null; receiptRefs: string[]; missingReason?:string };
-  conversion: NonNullable<MetaSettings["conversion"]>;
+  conversion?: NonNullable<MetaSettings["conversion"]>;
   retainedProviderTerms: { campaign: Record<string, unknown>; adset: Record<string, unknown>; creative: Record<string, unknown> };
 }
 export interface ReconciledMetaMaterialSource extends Omit<ExistingMetaMaterialSource,'retainedProviderTerms'> {
@@ -55,15 +55,19 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     campaign.id===ids.campaign && adset.id===ids.adset && creative.id===ids.creative && adset.campaign_id===ids.campaign, "existing_material_account_mismatch");
   requireThat(campaign.status==="PAUSED" && campaign.effective_status==="PAUSED" && adset.status==="PAUSED" &&
     ["PAUSED","CAMPAIGN_PAUSED"].includes(adset.effective_status), "existing_campaign_not_paused");
-  requireThat(campaign.objective==="OUTCOME_LEADS" && exactTargeting(campaign.special_ad_categories,[]) &&
+  const lead=campaign.objective==="OUTCOME_LEADS",awareness=campaign.objective==="OUTCOME_AWARENESS";
+  const deliverySupported=lead?adset.optimization_goal==="OFFSITE_CONVERSIONS"&&adset.destination_type==="WEBSITE":
+    awareness?adset.optimization_goal==="REACH"&&adset.destination_type==="UNDEFINED":
+    campaign.objective==="OUTCOME_TRAFFIC"&&["LINK_CLICKS","IMPRESSIONS","REACH"].includes(adset.optimization_goal)&&adset.destination_type==="WEBSITE";
+  requireThat(deliverySupported && exactTargeting(campaign.special_ad_categories,[]) &&
     (campaign.special_ad_category_country===undefined || exactTargeting(campaign.special_ad_category_country,[])) &&
     campaign.is_adset_budget_sharing_enabled===false && adset.billing_event==="IMPRESSIONS" &&
-    adset.optimization_goal==="OFFSITE_CONVERSIONS" && adset.bid_strategy==="LOWEST_COST_WITHOUT_CAP" && adset.destination_type==="WEBSITE",
+    adset.bid_strategy==="LOWEST_COST_WITHOUT_CAP",
     "existing_material_delivery_unsupported");
   const hasSmartPse=Object.hasOwn(adset.promoted_object??{},'smart_pse_enabled');
   requireThat(!hasSmartPse||typeof adset.promoted_object.smart_pse_enabled==='boolean','existing_material_smart_pse_invalid');
-  if(source.conversion.event!=="Lead" || !exactTargeting(adset.promoted_object,{pixel_id:source.conversion.pixelId,custom_event_type:"LEAD",
-    ...(hasSmartPse?{smart_pse_enabled:adset.promoted_object.smart_pse_enabled}:{})})) {
+  if(lead && (source.conversion?.event!=="Lead" || !exactTargeting(adset.promoted_object,{pixel_id:source.conversion?.pixelId,custom_event_type:"LEAD",
+    ...(hasSmartPse?{smart_pse_enabled:adset.promoted_object.smart_pse_enabled}:{})}))) {
     const promoted=adset.promoted_object,object=promoted&&typeof promoted==='object'&&!Array.isArray(promoted);
     const keys=object?Object.keys(promoted):[];
     // Bounded schema diagnostics only: never copy unknown provider values,
@@ -71,10 +75,12 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     const fields=keys.slice(0,30).map(key=>({field:/^[a-z_]{1,64}$/.test(key)?key:'[unrecognized]',
       type:promoted[key]===null?'null':Array.isArray(promoted[key])?'array':typeof promoted[key]}));
     throw Object.assign(new DomainError('existing_material_conversion_mismatch'),{materialDiagnostic:{phase:'provider_conversion',
-      expectedEvent:'LEAD',sourceEventSupported:source.conversion.event==='Lead',promotedObjectPresent:promoted!==undefined&&promoted!==null,
-      promotedObjectIsObject:Boolean(object),pixelIdentityMatches:object&&promoted.pixel_id===source.conversion.pixelId,
+      expectedEvent:'LEAD',sourceEventSupported:source.conversion?.event==='Lead',promotedObjectPresent:promoted!==undefined&&promoted!==null,
+      promotedObjectIsObject:Boolean(object),pixelIdentityMatches:object&&promoted.pixel_id===source.conversion?.pixelId,
       eventMatches:object&&promoted.custom_event_type==='LEAD',fieldCount:keys.length,fields,fieldsTruncated:keys.length>30}});
   }
+  if(!lead)requireThat(source.conversion===undefined && (awareness?exactTargeting(adset.promoted_object,{page_id:grant.pageId}):
+    adset.promoted_object===undefined||exactTargeting(adset.promoted_object,{})),"existing_material_conversion_mismatch");
   const money=(raw:unknown,required=false)=>{
     requireThat(raw===undefined&&!required || typeof raw==="string"&&/^\d+$/.test(raw), "existing_material_money_unknown");
     if(raw===undefined)return null;
@@ -84,7 +90,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const daily=money(adset.daily_budget,true), lifetime=money(campaign.spend_cap);
   requireThat(daily && !money(adset.lifetime_budget), "existing_material_budget_mode_unsupported");
   const t=adset.targeting;
-  requireThat(t && t.targeting_automation?.advantage_audience===1 && (t.flexible_spec===undefined || Array.isArray(t.flexible_spec) && t.flexible_spec.length>0),
+  requireThat(t && t.targeting_automation?.advantage_audience===(lead?1:0) && (t.flexible_spec===undefined || Array.isArray(t.flexible_spec) && t.flexible_spec.length>0),
     "existing_material_targeting_unsupported");
   const options:TargetingOption[]=[];
   const option=(kind:TargetingOption["kind"],id:unknown,label:unknown=id)=>{
@@ -103,6 +109,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     Object.entries(adset.targeting_optimization_types??{}).map(([key,value])=>({key,value}));
   const bits=Object.fromEntries(expansionEntries.map((x:any)=>[x.key,x.value]));
   requireThat([bits.detailed_targeting,bits.lookalike].every(x=>x===0||x===1) && metaExpansionMatches(adset.targeting_optimization_types,bits as any),"existing_material_expansion_unknown");
+  if(!lead)requireThat(metaExpansionOff(adset.targeting_optimization_types),"existing_material_expansion_unknown");
   const story=creative.object_story_spec, link=story?.link_data;
   requireThat(story?.page_id===grant.pageId && link?.image_hash===ids.image && link?.name===source.headline && link?.message===source.body &&
     link?.link===source.destination && exactTargeting(link?.call_to_action,{type:"LEARN_MORE",value:{link:source.destination}}),"existing_material_original_creative_mismatch");
@@ -111,12 +118,15 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     Object.values(features).every((v:any)=>v&&Object.keys(v).length===1&&["OPT_IN","OPT_OUT"].includes(v.enroll_status)),"existing_material_creative_features_unknown");
   requireThat(Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
   const settings:MetaSettings={version:CAPABILITY_VERSION,provider:"meta",apiVersion:"v26.0",accountId:grant.accountId,format:"single_image",
-    objective:"OUTCOME_LEADS",optimization:"OFFSITE_CONVERSIONS",delivery:interestGroups.length?"advantage_plus_interests":"advantage_plus_broad",nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
-    placements:[],identity:{pageId:grant.pageId!},conversion:{pixelId:source.conversion.pixelId,event:"Lead",...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})},
+    objective:campaign.objective,optimization:adset.optimization_goal,
+    delivery:lead?(interestGroups.length?"advantage_plus_interests":"advantage_plus_broad"):(adset.optimization_goal==="LINK_CLICKS"?"ordinary":"strict"),
+    nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
+    placements:[],identity:{pageId:grant.pageId!},
+    ...(lead?{conversion:{pixelId:source.conversion!.pixelId,event:"Lead" as const,...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})}}:{}),
     attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
       ...(t.geo_locations?.location_types ? {locationTypes:structuredClone(t.geo_locations.location_types)}:{}),
-      expansion:{detailedTargeting:bits.detailed_targeting,lookalike:bits.lookalike}},
+      ...(lead?{expansion:{detailedTargeting:bits.detailed_targeting,lookalike:bits.lookalike}}:{})},
     creative:{...(link.description!==undefined?{description:link.description}:{}),...(creative.url_tags!==undefined?{urlTags:creative.url_tags}:{}),
       ...(features?{features:Object.fromEntries(Object.entries(features).map(([k,v]:[string,any])=>[k,v.enroll_status]))}:{})}};
   requireThat(Array.isArray(t.publisher_platforms),"existing_material_placement_unknown");
@@ -128,7 +138,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const instant=(value:unknown)=>{requireThat(typeof value==="string"&&/T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(value)&&Number.isFinite(Date.parse(value)),"existing_material_schedule_unknown");return new Date(value as string).toISOString();};
   const material:Material={name:source.name,headline:source.headline,body:source.body,destination:source.destination,destinationDigest:source.destinationDigest,
     assetIds:[source.assetId],purpose:source.purpose,settings,
-    audience:{provider:"meta",locations:structuredClone(t.geo_locations?.countries),ageMin:t.age_min,ageMax:t.age_max,expansion:true},
+    audience:{provider:"meta",locations:structuredClone(t.geo_locations?.countries),ageMin:t.age_min,ageMax:t.age_max,expansion:lead},
     budget:lifetime,advertisingBudget:{daily:daily!,...(lifetime?{lifetime}:{}),campaignDailyCeiling:{currency:grant.currency,minor:source.campaignDailyCeiling}},
     startAt:instant(adset.start_time),endAt:adset.end_time==null?null:instant(adset.end_time),timezone:grant.timezone};
   validateMaterial(material,"meta");
