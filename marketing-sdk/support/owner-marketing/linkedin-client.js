@@ -175,6 +175,15 @@ export function linkedInObjectName(value, fallback = "Handrail campaign") {
   return result.trimEnd();
 }
 
+/** A fixed reason only; provider token fields never become diagnostics. */
+export function linkedInTokenVerificationReason(token, clientId, now = Date.now()) {
+  return token?.active === false ? "token_inactive" : token?.active !== true ? "token_active_unverified" :
+    token.status !== undefined && token.status !== "active" ? "token_status_unverified" :
+    token.client_id !== undefined && token.client_id !== clientId ? "token_client_mismatch" :
+    token.auth_type !== undefined && token.auth_type !== "3L" ? "token_auth_type_unverified" :
+    token.expires_at !== undefined && (!Number.isFinite(token.expires_at) || token.expires_at * 1000 <= now) ? "token_expiry_unverified" : null;
+}
+
 export class LinkedInMarketingError extends Error {
   constructor(message, { code = "provider_error", status = 502, providerStatus = null, providerCode = null, providerDetails = [], retryable = false, secrets = [] } = {}) {
     super(redactLinkedInMessage(message, secrets));
@@ -784,11 +793,7 @@ export class LinkedInMarketingClient {
     // denial. Historical rw_ads grants remain readable; missing or contradictory
     // current evidence requires fresh qualification.
     const assertToken = () => {
-      const reason = token.active !== true ? "token_inactive" : inspectedAccessToken !== this.accessToken ? "token_changed" :
-        token.status !== undefined && token.status !== "active" ? "token_status_unverified" :
-        token.client_id !== undefined && token.client_id !== this.clientId ? "token_client_mismatch" :
-        token.auth_type !== undefined && token.auth_type !== "3L" ? "token_auth_type_unverified" :
-        token.expires_at !== undefined && (!Number.isFinite(token.expires_at) || token.expires_at * 1000 <= this.now()) ? "token_expiry_unverified" : null;
+      const reason = inspectedAccessToken !== this.accessToken ? "token_changed" : linkedInTokenVerificationReason(token, this.clientId, this.now());
       if (reason) {
         const error = new LinkedInMarketingError("Current token authority was not verified", { code: "verification_failed", status: 403 });
         error.verificationReason = reason;

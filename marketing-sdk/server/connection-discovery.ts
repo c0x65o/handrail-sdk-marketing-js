@@ -1,6 +1,7 @@
 import type { AccountChoice, IdentityChoice, Permission, Provider } from "../core/index.js";
 import type { Credentials } from "./providers.js";
 import { requireThat, DomainError } from "./store.js";
+import { linkedInTokenVerificationReason } from "../support/owner-marketing/linkedin-client.js";
 
 /** Native reads only. Cursors and provider IDs stay behind opaque, session-bound choices. */
 export interface DiscoveredAccount {
@@ -113,10 +114,8 @@ export class ConnectionDiscovery {
     let token: any; try { token = await response.json(); } catch { throw new DomainError("provider_read_unavailable", 502); }
     await guard();
     const scopes: string[] = typeof token.scope === "string" ? token.scope.split(/[ ,]+/).filter(Boolean) : [];
-    requireThat(token.active === true && (token.status === undefined || token.status === "active") &&
-      (token.client_id === undefined || token.client_id === credentials.clientId) &&
-      (token.auth_type === undefined || token.auth_type === "3L") &&
-      (token.expires_at === undefined || Number.isFinite(token.expires_at) && token.expires_at * 1000 > Date.now()), "provider_access_expired_or_denied");
+    const tokenFailure = linkedInTokenVerificationReason(token, credentials.clientId);
+    if (tokenFailure) throw new DomainError(`provider_${tokenFailure}`, 403);
     // Pre-grant custody carries the exact reviewed scope envelope, including
     // when the exchange omitted scope. Only this fresh provider observation can
     // qualify it; extra authority also requires another exact human review.

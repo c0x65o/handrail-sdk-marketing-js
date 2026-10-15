@@ -572,7 +572,7 @@ export class MarketingConnectionsService {
       const current = await this.store.get<PrivateConnection>(c.projectId, "connection", c.id);
       if (current.revision !== c.revision) return this.view(p, current);
       await this.guard(p, current);
-      const code = error instanceof DomainError && ["provider_access_expired_or_denied", "provider_account_context_changed", "provider_identity_mismatch", "provider_account_role_missing", "project_access_decision_stale", "provider_scope_missing", "provider_page_role_missing", "provider_member_mismatch", "provider_member_or_role_changed", "provider_discovery_incomplete"].includes(error.code) ? error.code : "provider_read_unavailable";
+      const code = error instanceof DomainError && ["provider_token_inactive", "provider_token_active_unverified", "provider_token_changed", "provider_token_status_unverified", "provider_token_client_mismatch", "provider_token_auth_type_unverified", "provider_token_expiry_unverified", "provider_access_expired_or_denied", "provider_account_context_changed", "provider_identity_mismatch", "provider_account_role_missing", "project_access_decision_stale", "provider_scope_missing", "provider_page_role_missing", "provider_member_mismatch", "provider_member_or_role_changed", "provider_discovery_incomplete"].includes(error.code) ? error.code : "provider_read_unavailable";
       await this.store.transaction(async () => { await this.guard(p, current); current.effect = null; await this.save(current, "failed_retryable", code); });
       return this.view(p, current);
     }

@@ -258,7 +258,8 @@ for (const field of ["client_id", "expires_at", "active", "auth_type"]) test(`co
   try {
     const c = await account(f);
     override(f, (url, body) => { if (url.pathname.endsWith("introspectToken")) body[field] = field === "active" ? false : field === "expires_at" ? 1 : "wrong"; return body; });
-    const result = await f.call("connectionIdentities", f.change(c)); assert.equal(result.checkpoint, "provider_access_expired_or_denied");
+    const reasons: Record<string,string> = {client_id:"provider_token_client_mismatch",expires_at:"provider_token_expiry_unverified",active:"provider_token_inactive",auth_type:"provider_token_auth_type_unverified"};
+    const result = await f.call("connectionIdentities", f.change(c)); assert.equal(result.checkpoint, reasons[field]);
     assert.ok(!f.calls.some(p => p.endsWith("organizationAcls")));
   } finally { await f.close(); }
 });

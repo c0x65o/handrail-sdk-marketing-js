@@ -412,7 +412,7 @@ export class NativeProvider implements ProviderPort {
       // Partial object IDs have already been retained inside prepare's write boundary.
       if (error instanceof DomainError) throw error;
       const failure = error as { code?: unknown; verificationReason?: unknown; providerStatus?: unknown };
-      const tokenReasons = ["token_inactive", "token_changed", "token_status_unverified", "token_client_mismatch", "token_auth_type_unverified", "token_expiry_unverified"];
+      const tokenReasons = ["token_inactive", "token_active_unverified", "token_changed", "token_status_unverified", "token_client_mismatch", "token_auth_type_unverified", "token_expiry_unverified"];
       if (failure?.code === "verification_failed" && typeof failure.verificationReason === "string" && tokenReasons.includes(failure.verificationReason))
         throw new DomainError(`provider_${failure.verificationReason}`, 403);
       throw new DomainError("provider_request_failed", 502);

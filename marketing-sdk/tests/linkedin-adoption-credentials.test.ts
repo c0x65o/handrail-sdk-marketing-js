@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 import { LinkedInMeasurementClient } from '../server/measurement-collectors.js';
 
 const now=Date.parse('2026-10-15T00:00:00Z'),epoch=now/1000;
+for (const active of [undefined,false] as const) test(`token denial distinguishes missing active evidence from explicit inactivity (${active})`,async()=>{
+  let reads=0;
+  const client=new LinkedInMeasurementClient({accessToken:'fixture-access',clientId:'fixture-client',clientSecret:'fixture-secret',fetchImpl:async(input:any)=>{
+    assert.equal(new URL(String(input)).pathname,'/oauth/v2/introspectToken');reads++;
+    return Response.json(active===undefined?{}:{active});
+  }});
+  await assert.rejects(client.verifyConnection({adAccountId:'123'}),{code:'verification_failed',verificationReason:active===false?'token_inactive':'token_active_unverified'});
+  assert.equal(reads,1);
+});
 for(const [label,refresh,inspection,expected] of [
   ['introspection expires first',3600,epoch+120,epoch+120],
   ['refresh expires first',120,epoch+3600,epoch+120],
