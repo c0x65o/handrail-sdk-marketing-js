@@ -577,3 +577,20 @@ test('scoped no-send query declarations cannot replace reserved SDK identity or 
   assert.equal(view.destinations.find(d=>d.url===raw)!.testUrl,null);
  }finally{await f.close();}
 });
+
+
+test('source-retained admission digest binds the original test snapshot and preserves late QA evidence',async()=>{
+ const f=await fixture();try{
+  const {owner}=await f.bind();const t=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:1,requestKey:'retained-admission'});
+  const admission=await f.service.tracking.inspectTest(f.collectorRequest(),{testId:t.id,interactionUrl:t.destinationUrl});
+  const changed=await f.interact(t.id,'inquiry','changed-admission',{testAdmissionDigest:digest({...admission,outcome:'qualified'})});
+  assert.equal(changed.status,422);assert.equal(changed.body.error,'tracking_admission_mismatch');
+  assert.equal((await f.store.list('p','event')).length,0);
+  f.advance(300001);
+  const accepted=await f.interact(t.id,'inquiry','late-attested',{testAdmissionDigest:digest(admission)});
+  assert.equal(accepted.status,200);assert.equal(accepted.body.diagnostic.eligibleAtReceipt,false);
+  assert.equal((await f.service.call(f.p,'p','tracking',{owner})).readiness,'expired');
+  f.restart();const repeated=await f.service.tracking.acceptReceipt(f.collectorRequest(),{sourceReceipt:'late-attested',testId:t.id});assert.equal(repeated.deduplicated,true);
+  const events=await f.store.list<FirstPartyEvent>('p','event');assert.equal(events.length,1);assert.equal(events[0]!.productionMetricsExcluded,true);
+ }finally{await f.close();}
+});

@@ -632,3 +632,10 @@ query bytes and fragments are preserved while these control parameters are added
 Reserved controls cannot be overridden; removing/changing the declaration makes
 existing test bindings stale. A link still requires authenticated test admission
 and an actual source completion; it grants no production metric or send authority.
+
+A no-send producer can retain the admission and set CollectorCompletion's
+`testAdmissionDigest` to its canonical SDK digest. The SDK checks the entire
+original test/binding snapshot before accepting that receipt. Late observations
+remain excluded QA history and cannot qualify expired/cancelled/stale readiness.
+Changed owner, material, source, destination or outcome claims are rejected even
+when a caller reuses a real test ID.

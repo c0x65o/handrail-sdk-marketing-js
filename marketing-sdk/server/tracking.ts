@@ -54,6 +54,9 @@ export interface CollectorCompletion {
   destinationUrl?: string;
   consent: { basis: 'consent' | 'contract' | 'legitimate_interest'; receipt: string };
   completionReceipt: string; testId: string | null; qa: boolean;
+  /** Digest of the original authenticated SDK admission retained by the source.
+   * Compared with the immutable test/binding snapshot, including late receipts. */
+  testAdmissionDigest?: string;
   clickId: string | null; revenue: Money | null; refundTreatment: 'gross_before_refunds' | null;
 }
 export interface CollectorCheckpoint {
@@ -399,13 +402,16 @@ export class MarketingTracking {
         && Date.parse(record.test.createdAt)<=this.now(),'tracking_test_closed',409);
       requireThat(record.test.destinationUrl===input.interactionUrl,'tracking_test_destination_mismatch',422);
       await this.exact(project,record.binding);
-      const b=record.binding,t=record.test;
-      return {testId:t.id,sourceId:c.source.id,sourceRevision:c.source.revision,domain:c.source.domain,
-        environment:c.source.environment,bindingId:b.id,bindingRevision:b.revision,owner:b.owner,
+      return this.testAdmission(record);
+    },true));
+  }
+  private testAdmission(record:TestRecord):CollectorTestAdmission {
+    const b=record.binding,t=record.test;
+      return {testId:t.id,sourceId:b.source.id,sourceRevision:b.source.revision,domain:b.source.domain,
+        environment:b.source.environment,bindingId:b.id,bindingRevision:b.revision,owner:b.owner,
         ownerRevision:b.ownerRevision,materialDigest:b.materialDigest,destinationId:b.destinationId,
         destinationUrl:b.destination,interactionUrl:t.destinationUrl,purpose:b.purpose,outcome:b.outcome,
         createdAt:t.createdAt,expiresAt:t.expiresAt,productionMetricsExcluded:true} as CollectorTestAdmission;
-    },true));
   }
   /** Server-only receipt admission; never a browser setup command. */
   async acceptClick(request: Request, input: { sourceReceipt: string }) {
@@ -455,12 +461,13 @@ export class MarketingTracking {
     keys(input,['sourceReceipt','testId']);text(input.sourceReceipt,200);if(input.testId!==null)text(input.testId,160);
     const c=await this.collectorContext(request,'completion'), fact=await this.options.collector!.verifyCompletion(c,input.sourceReceipt), project=c.source.projectId;
     requireThat(Buffer.byteLength(JSON.stringify(fact))<=8192,'collector_evidence_limit',413);
-    keys(fact,['sourceReceipt','eventId','domain','environment','destinationId','destinationUrl','outcome','occurredAt','personId','consent','completionReceipt','testId','qa','clickId','revenue','refundTreatment']);
+    keys(fact,['sourceReceipt','eventId','domain','environment','destinationId','destinationUrl','outcome','occurredAt','personId','consent','completionReceipt','testId','qa','clickId','revenue','refundTreatment','testAdmissionDigest']);
     if(fact.destinationUrl!==undefined)text(fact.destinationUrl,2048);
     requireThat(fact.sourceReceipt===input.sourceReceipt && fact.testId===input.testId && typeof fact.qa==='boolean','collector_receipt_mismatch',422);
     requireThat(fact.domain===c.source.domain && fact.environment===c.source.environment && this.destinations(c.source,fact.destinationUrl).some(d=>d.id===fact.destinationId && (fact.destinationUrl===undefined||d.url===fact.destinationUrl)) && c.source.outcomes.includes(fact.outcome),'collector_scope_mismatch',403);
     for(const value of [fact.eventId,fact.personId,fact.completionReceipt,fact.consent.receipt])text(value,200);
     keys(fact.consent,['basis','receipt']);requireThat(['consent','contract','legitimate_interest'].includes(fact.consent.basis),'verified_consent_required',422);
+    if(fact.testAdmissionDigest!==undefined){text(fact.testAdmissionDigest,200);requireThat(fact.testId,'tracking_receipt_mismatch',422);}
     if(fact.clickId!==null)text(fact.clickId,200);if(fact.revenue)keys(fact.revenue,['minor','currency']);
     instant(fact.occurredAt);requireThat(Date.parse(fact.occurredAt)<=this.now(),'future_event',422);
     requireThat(fact.outcome==='purchase'?fact.revenue && fact.refundTreatment==='gross_before_refunds':fact.revenue===null && fact.refundTreatment===null,'purchase_receipt_required',422);
@@ -473,6 +480,7 @@ export class MarketingTracking {
       if (setup) await inspectLiveSessions(this.sessions,[setup]);
       const record=input.testId?await this.store.get<TestRecord>(project,'trackingTest',input.testId):null;
       if(record)requireThat(record.binding.source.id===c.source.id && record.binding.source.environment===fact.environment && record.binding.source.domain===fact.domain && record.binding.destinationId===fact.destinationId && record.binding.outcome===fact.outcome,'tracking_receipt_mismatch',422);
+      if(fact.testAdmissionDigest!==undefined)requireThat(record && digest(this.testAdmission(record))===fact.testAdmissionDigest,'tracking_admission_mismatch',422);
       // Test classification is derived from the verified source record, forever.
       const qa=!!record || fact.qa || c.source.environment==='test';
       const identity=digest([c.source.id,fact.sourceReceipt]), previous=(await this.store.list<{id:string;digest:string;event:FirstPartyEvent;diagnostic:TrackingDiagnostic|null}>(project,'trackingReceipt')).find(r=>r.id===identity);
