@@ -429,3 +429,12 @@ value as a legacy observation, with original upload digest unknown.
 through read-only Vault custody and complete pagination. It reports current
 identity, name, original dimensions and status separately from original-byte
 proof; it does not download signed media URLs, mutate images or authorize spend.
+
+Paused historical material may retain an unknown Meta nondiscrimination
+acknowledgement as `null`, with its missing reason and original source references.
+The guided editor displays that uncertainty explicitly. Structural material
+validation and read-only provider planning do not manufacture acceptance.
+`capabilityBlockers`, preflight, preparation and activation still require actual
+acceptance; importing paused material creates neither approval nor spend authority.
+`ExistingMetaMaterialSource.policy` retains the acknowledgement observation and
+returns it as `policyEvidence` separately from current provider material.

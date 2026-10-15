@@ -74,7 +74,6 @@ for(const [label,mutate] of Object.entries({
   duplicateExpansion:(f:ReturnType<typeof fixture>)=>{f.observed.adset.targeting_optimization_types.push(f.observed.adset.targeting_optimization_types[0]);},
   currencyCeiling:(f:ReturnType<typeof fixture>)=>{f.source.campaignDailyCeiling=1000;},
   purpose:(f:ReturnType<typeof fixture>)=>{f.source.purpose="recruitment";},
-  policy:(f:ReturnType<typeof fixture>)=>{f.source.policy.nondiscriminationAccepted=false;},
   conversion:(f:ReturnType<typeof fixture>)=>{f.source.conversion={pixelId:"999",event:"Lead"};},
   pixelMismatch:(f:ReturnType<typeof fixture>)=>{f.observed.adset.promoted_object.custom_event_type="PURCHASE";},
   creativeUnknown:(f:ReturnType<typeof fixture>)=>{f.observed.creative.object_story_spec.link_data.unmodeled=true;},
@@ -96,4 +95,23 @@ test("Meta review and editor retain acquisition outcome and expanded-audience di
   const editor=renderToStaticMarkup(createElement(GuidedFields,{value:r.material,grant:f.grant,onChange:()=>{}}));
   assert.match(editor,/Lead Pixel/);assert.match(editor,/Original description/);assert.match(editor,/Tracking tags/);
   assert.doesNotMatch(editor,/Remove unused conversion fields/);
+});
+
+
+test("paused Meta material preserves unknown or declined policy without granting operational readiness",async()=>{
+  for(const accepted of [null,false]) {
+    const f=fixture();f.source.policy={nondiscriminationAccepted:accepted,receiptRefs:['original-history-record'],...(accepted===null?{missingReason:'native_acknowledgement_not_recorded'}:{})};
+    const result=await f.capture();assert.equal(result.material.settings?.nondiscriminationAccepted,accepted);
+    assert.deepEqual(result.policyEvidence,f.source.policy);
+    if(accepted===null)assert.match(renderToStaticMarkup(createElement(GuidedFields,{value:result.material,grant:f.grant,onChange:()=>{}})),/Historical nondiscrimination acknowledgement is unknown/);
+    assert.ok(capabilityStatus(result.material,f.grant).blockers.includes('nondiscrimination_notice_required'));
+    const c={id:'c',projectId:'p',grantId:'g',material:result.material,state:'paused',receipt:null} as Campaign;
+    const grant={...f.grant,targetingOptions:result.targetingOptions};
+    const asset={id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset;
+    assert.doesNotThrow(()=>providerPlan(c,grant,[asset]));
+    const calls=f.calls.length;
+    await assert.rejects(f.provider.prepare(c,grant,[asset],'not-authorized',async()=>{},async()=>{}),/nondiscrimination_notice_required/);
+    assert.equal(f.calls.length,calls);assert.deepEqual(grant.permissions,['pause','report']);
+  }
+  const f=fixture();f.source.policy.nondiscriminationAccepted=null;await assert.rejects(f.capture(),/existing_material_policy_unverified/);
 });

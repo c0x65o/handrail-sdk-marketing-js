@@ -11,7 +11,8 @@ export interface ApplicantGoal {
 interface SettingsBase {
   version: typeof CAPABILITY_VERSION;
   accountId: string;
-  nondiscriminationAccepted: boolean;
+  /** null preserves an unknown historical acknowledgement; actions still require true. */
+  nondiscriminationAccepted: boolean | null;
 }
 export interface MetaSettings extends SettingsBase {
   provider: "meta";
@@ -112,7 +113,7 @@ const facetPatterns: Record<ProfessionalFacet, RegExp> = {
   staffCountRanges: /^urn:li:staffCountRange:\((1,1|2,10|11,50|51,200|201,500|501,1000|1001,5000|5001,10000|10001,2147483647)\)$/,
 };
 /** Shared browser/headless/agent validation. Does not infer or repair user intent. */
-export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "applicantGoal" | "audience"> & Partial<Pick<Material, "timezone" | "startAt" | "endAt">>, g?: PublicGrant): string[] {
+export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purpose" | "applicantGoal" | "audience"> & Partial<Pick<Material, "timezone" | "startAt" | "endAt">>, g?: PublicGrant): string[] {
   const s = m.settings;
   if (!s) return m.purpose === "recruitment" ? ["recruitment_provider_unsupported"] : [];
   if (!record(s) || !record(m.audience)) return ["invalid_provider_settings"];
@@ -122,7 +123,7 @@ export function capabilityBlockers(m: Pick<Material, "settings" | "purpose" | "a
   check(s.version === CAPABILITY_VERSION && nonempty(s.accountId), "unsupported_capability_version_or_account");
   check(s.provider === m.audience.provider, "provider_settings_mismatch");
   check(m.purpose === "acquisition" || m.purpose === "recruitment", "explicit_purpose_required");
-  check(s.nondiscriminationAccepted === true, "nondiscrimination_notice_required");
+  check(typeof s.nondiscriminationAccepted === "boolean" || s.provider === "meta" && s.nondiscriminationAccepted === null, "invalid_nondiscrimination_evidence");
   if (g) check(s.provider === g.provider && s.accountId === g.accountId, "account_context_mismatch");
   if (m.purpose === "recruitment") check(only(m.applicantGoal, ["event", "meaning"]) && m.applicantGoal?.event === "ApplicantRequestMOU" && m.applicantGoal.meaning === "completed_mou_request", "applicant_goal_required");
   else check(m.applicantGoal === undefined, "purpose_outcome_mismatch");
@@ -234,4 +235,12 @@ export function dailyExposureMinor(m: Pick<Material, "settings" | "budget" | "ad
   const daily = m.advertisingBudget?.daily?.minor;
   return m.settings?.provider === "meta" && daily !== undefined ? null : daily === undefined ? null : m.settings?.provider === "linkedin"
     ? Math.min(m.budget?.minor ?? Infinity, Math.ceil(daily * 1.5)) : daily;
+}
+
+/** Operational readiness includes acknowledgement; representing a paused imported
+ * campaign with unknown history is not acceptance of that acknowledgement. */
+export function capabilityBlockers(...args: Parameters<typeof capabilityStructureBlockers>): string[] {
+  const errors=capabilityStructureBlockers(...args);
+  if(args[0].settings&&args[0].settings.nondiscriminationAccepted!==true)errors.push("nondiscrimination_notice_required");
+  return errors;
 }

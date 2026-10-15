@@ -153,7 +153,8 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
         <label className="check"><input type="checkbox" checked={s.politicalConsent} onChange={e => settings({ politicalConsent: e.target.checked })} />My campaign contains no political advertisements under the laws of any targeted country, including EU law. I will comply with LinkedIn policies and all applicable regulatory requirements.</label>
       </>}
       <p>LinkedIn tools may not be used to discriminate based on personal characteristics such as gender, age, race, or ethnicity. Employment ads must provide equal access to opportunities on every provider. <a href="https://www.linkedin.com/legal/ads-policy" target="_blank" rel="noreferrer">LinkedIn advertising policies</a></p>
-      <label className="check"><input type="checkbox" checked={s.nondiscriminationAccepted} onChange={e => settings({ nondiscriminationAccepted: e.target.checked })} />I acknowledge the nondiscrimination requirements.</label>
+      {s.nondiscriminationAccepted===null&&<p>Historical nondiscrimination acknowledgement is unknown. Importing this campaign does not acknowledge it.</p>}
+      <label className="check"><input type="checkbox" checked={s.nondiscriminationAccepted===true} onChange={e => settings({ nondiscriminationAccepted: e.target.checked })} />I acknowledge the nondiscrimination requirements.</label>
     </>}
     {(g.provider !== "linkedin" || !s) && <AudienceFields material={m} grant={g} value={m.audience} onChange={audience => update({ audience })} />}
     {!["USD", "EUR", "GBP", "CAD", "AUD"].includes(g.currency) && <p role="status">This account currency is not supported by the SDK money contract. Existing amounts are retained; choose a supported account.</p>}

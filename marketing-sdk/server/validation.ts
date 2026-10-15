@@ -1,4 +1,4 @@
-import { capabilityBlockers, dailyExposureMinor } from "../core/index.js";
+import { capabilityStructureBlockers, dailyExposureMinor } from "../core/index.js";
 import type { AdvertisingBudget, Audience, DraftMaterial, Material } from "../core/index.js";
 import { requireThat } from "./store.js";
 
@@ -223,7 +223,7 @@ export function material(value: Material, provider: string) {
     );
   } else requireThat(value.advertisingBudget?.daily, "daily_budget_required_without_lifetime", 422);
   requireThat(value.purpose === undefined || ["acquisition", "recruitment"].includes(value.purpose), "invalid_purpose", 422);
-  const blockers = capabilityBlockers(value);
+  const blockers = capabilityStructureBlockers(value);
   requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
   requireThat(value.settings || value.applicantGoal === undefined, "applicant_goal_requires_settings", 422);
   if (value.advertisingBudget) {

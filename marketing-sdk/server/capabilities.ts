@@ -1,6 +1,10 @@
-import { canonical, capabilityBlockers, capabilityStatus, providerBudgetBlockers, type Campaign, type Grant, type LinkedInSettings, type MetaSettings } from "../core/index.js";
+import { canonical, capabilityStructureBlockers, capabilityBlockers, capabilityStatus, providerBudgetBlockers, type Campaign, type Grant, type LinkedInSettings, type MetaSettings } from "../core/index.js";
 import { requireThat } from "./store.js";
 
+export function validateAccountStructure(c:Campaign,g:Grant) {
+  const blockers=capabilityStructureBlockers(c.material,g);
+  requireThat(!blockers.length,blockers[0]||"unsupported_capability",422);
+}
 export function validateAccountCapability(c: Campaign, g: Grant, requireEvidence = false) {
   const blockers = capabilityBlockers(c.material, g);
   requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);

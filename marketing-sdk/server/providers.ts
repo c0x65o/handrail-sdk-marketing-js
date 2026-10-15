@@ -4,7 +4,7 @@ import { currentPrerequisite } from "./preflight.js";
 import { providerBudgetBlockers } from "../core/index.js";
 import type { DiscoveredAccount, DiscoveredIdentity } from "./connection-discovery.js";
 import { selectedOptions } from "../core/index.js";
-import { validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, metaExpansionMatches, exactTargeting, exactLinkedInTargeting } from "./capabilities.js";
+import { validateAccountStructure, validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, metaExpansionMatches, exactTargeting, exactLinkedInTargeting } from "./capabilities.js";
 import type {
   Asset,
   Campaign,
@@ -60,7 +60,7 @@ const perms: Permission[] = ["setup", "prepare", "activate", "pause", "report"];
 export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
   const m = c.material;
   material(m, g.provider);
-  validateAccountCapability(c, g);
+  validateAccountStructure(c, g);
   const settings = m.settings;
   requireThat(
     g.currency === materialCurrency(m) && g.timezone === m.timezone,

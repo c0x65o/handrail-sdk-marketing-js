@@ -347,3 +347,15 @@ for(const mode of ['source-bytes','source-metadata','missing-history','parent','
     assert.equal((await f.store.list('p','asset')).length,mode==='conflicting-source'?1:0);
   }finally{await f.close();}
 });
+
+test('paused adoption retains unknown Meta policy without fabricating acknowledgement or new authority',async()=>{
+  const f=await fixture();try{
+    f.candidate.material.settings!.nondiscriminationAccepted=null;
+    const receipt=await f.service.adopt(f.principal,'p','native','unknown-policy');
+    const campaign=await f.store.get<Campaign>('p','campaign','native');
+    assert.equal(campaign.state,'paused');assert.equal(campaign.material.settings!.nondiscriminationAccepted,null);
+    assert.equal(receipt.spendingAuthorityGranted,false);assert.deepEqual((await f.store.get<Grant>('p','grant',f.grant.id)).permissions,['pause','report']);
+    assert.equal((await f.store.list('p','decision')).length,0);assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
+    assert.deepEqual(await f.service.adopt(f.principal,'p','native','unknown-policy'),receipt);
+  }finally{await f.close();}
+});

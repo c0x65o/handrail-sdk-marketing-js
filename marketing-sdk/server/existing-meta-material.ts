@@ -8,7 +8,7 @@ import { material as validateMaterial } from "./validation.js";
 export interface ExistingMetaMaterialSource {
   name: string; headline: string; body: string; destination: string; destinationDigest: string;
   assetId: string; purpose: Material["purpose"]; campaignDailyCeiling: number;
-  policy: { nondiscriminationAccepted: boolean; receiptRefs: string[] };
+  policy: { nondiscriminationAccepted: boolean|null; receiptRefs: string[]; missingReason?:string };
   conversion: NonNullable<MetaSettings["conversion"]>;
   retainedProviderTerms: { campaign: Record<string, unknown>; adset: Record<string, unknown>; creative: Record<string, unknown> };
 }
@@ -31,7 +31,8 @@ export function existingMetaMaterial(source: ExistingMetaMaterialSource, grant: 
   ids: {campaign:string; adset:string; creative:string; image:string}, observed: {campaign:any; adset:any; creative:any}) {
   const {campaign,adset,creative}=observed;
   requireThat(grant.provider==="meta" && /^act_\d+$/.test(grant.accountId) && grant.pageId, "existing_material_account_invalid");
-  requireThat(source.purpose==="acquisition" && source.policy.nondiscriminationAccepted===true &&
+  requireThat(source.purpose==="acquisition" && [true,false,null].includes(source.policy.nondiscriminationAccepted) &&
+    (source.policy.nondiscriminationAccepted!==null || typeof source.policy.missingReason==="string"&&source.policy.missingReason.length>0) &&
     source.policy.receiptRefs.length>0 && source.policy.receiptRefs.every(x=>typeof x==="string"&&x.length>0), "existing_material_policy_unverified");
   const account=grant.accountId.slice(4);
   requireThat([campaign,adset,creative].every(row=>String(row.account_id)===account) &&
@@ -83,7 +84,7 @@ export function existingMetaMaterial(source: ExistingMetaMaterialSource, grant: 
     Object.values(features).every((v:any)=>v&&Object.keys(v).length===1&&["OPT_IN","OPT_OUT"].includes(v.enroll_status)),"existing_material_creative_features_unknown");
   requireThat(Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
   const settings:MetaSettings={version:CAPABILITY_VERSION,provider:"meta",apiVersion:"v26.0",accountId:grant.accountId,format:"single_image",
-    objective:"OUTCOME_LEADS",optimization:"OFFSITE_CONVERSIONS",delivery:"advantage_plus_interests",nondiscriminationAccepted:true,
+    objective:"OUTCOME_LEADS",optimization:"OFFSITE_CONVERSIONS",delivery:"advantage_plus_interests",nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
     placements:[],identity:{pageId:grant.pageId!},conversion:structuredClone(source.conversion),
     attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
@@ -108,5 +109,5 @@ export function existingMetaMaterial(source: ExistingMetaMaterialSource, grant: 
   requireThat(exactTargeting(story,{page_id:settings.identity.pageId,...(settings.identity.instagramUserId?{instagram_user_id:settings.identity.instagramUserId}:{}),
     link_data:{image_hash:ids.image,link:source.destination,message:source.body,name:source.headline,
       ...(settings.creative?.description!==undefined?{description:settings.creative.description}:{}),call_to_action:{type:"LEARN_MORE",value:{link:source.destination}}}}),"existing_material_creative_unsupported");
-  return {material,targetingOptions:options};
+  return {material,targetingOptions:options,policyEvidence:structuredClone(source.policy)};
 }

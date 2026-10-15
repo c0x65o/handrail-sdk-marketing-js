@@ -118,7 +118,7 @@ test("review: full material, project and grant identity bind eligibility; Meta d
   assert.equal(capabilityStatus(c.material, { ...g, revokedAt: "2026-01-01T00:00:00Z" }).accountVerified, false);
   assert.equal(capabilityStatus(c.material, { ...g, expiresAt: "2026-01-01T00:00:00Z" }).accountVerified, false);
   for (const patch of [{ projectId: "other" }, { id: "other" }, { revision: 2 }]) assert.equal(capabilityStatus(c.material, { ...g, ...patch }).accountVerified, false);
-  for (const patch of [{ timezone: "America/Chicago" }, { startAt: "2026-01-01T01:00:00Z" }]) assert.throws(() => providerPlan({ ...c, material: { ...c.material, ...patch } }, g, []), /linkedin_/);
+  for (const patch of [{ timezone: "America/Chicago" }, { startAt: "2026-01-01T01:00:00+01:00" }]) assert.throws(() => providerPlan({ ...c, material: { ...c.material, ...patch } }, g, []), /linkedin_/);
   c.material.settings = fixtureSettings("meta", "act_123456", "42"); c.material.audience = { provider: "meta", locations: ["US"], ageMin: 18, ageMax: 65, expansion: false };
   Object.assign(g, { provider: "meta", accountId: "act_123456", pageId: "42" }); fixtureEligibility(c, g);
   assert.equal(dailyExposureMinor(c.material), null); assert.equal(capabilityStatus(c.material, g).accountVerified, false);
