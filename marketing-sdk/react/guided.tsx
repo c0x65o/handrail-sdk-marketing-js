@@ -109,7 +109,7 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
       <p>One image per creative set. Document and video ad publishing remain unavailable.</p>
       {s.provider === "meta" ? <>
         <IdentifierField label="Page identity" kind="page" grant={g} allowed={g.pageId || ""} value={s.identity.pageId} onChange={pageId => settings({ identity: { ...s.identity, pageId } })} />
-        <fieldset><legend>Placements</legend>{META_PLACEMENTS.map(p => <label key={p.id}>
+        <fieldset><legend>Placements</legend>{META_PLACEMENTS.map(p => <label className="check" key={p.id}>
           <input type="checkbox" checked={s.placements.includes(p.id)} onChange={e => settings({ placements: e.target.checked ? [...s.placements, p.id] : s.placements.filter(id => id !== p.id) })} />{p.label}
         </label>)}</fieldset>
         {s.placements.some(p => p === "facebook_reels" || p === "instagram_reels") && <p>Reels uses the selected image. Review a vertical 9:16 asset and safe zones; this preview does not verify provider rendering or delivery.</p>}
