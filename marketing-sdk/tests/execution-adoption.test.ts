@@ -89,6 +89,69 @@ async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
+async function unknownUploadFixture() {
+  const f=await fixture('meta',true),original=f.nativeMedia[0]!.original!;
+  f.nativeMedia[0]={asset:original.asset,bytes:original.bytes};
+  f.candidate.material.assetIds=[original.asset.id];
+  f.candidate.media[0]={assetId:original.asset.id,uploadedDigest:null,providerImageId:f.candidate.providerIds.image!,
+    historyRecordId:f.candidate.media[0]!.historyRecordId,retainedSource:{digest:original.asset.digest,
+      historyRecordId:f.history.recordRefs.find(r=>r.sourceId==='source-asset')!.digest,
+      providerFilename:'legacy-image.jpg',missingReason:'historical_filename_hash_is_lossy_text'}};
+  const image={accountId:'123',hash:f.candidate.providerIds.image!,name:'legacy-image.jpg',width:320,height:180,status:'ACTIVE',updatedAt:null};
+  f.provider.inspectExistingMetaImage=async(g,id,guard)=>{
+    assert.equal(g.id,f.grant.id);assert.equal(id,image.hash);await guard();
+    return {image:structuredClone(image),providerSnapshotDigest:digest(image),observedAt:new Date().toISOString(),
+      originalUploadBytesVerified:false,providerImageReadbackVerified:true,executionTransferred:false,spendingAuthorityGranted:false};
+  };
+  return {...f,image};
+}
+test('paused adoption retains unknown upload provenance, original source bytes and independent image readback across replay and reopen',async()=>{
+  const f=await unknownUploadFixture();try{
+    const receipt=await f.service.adopt(f.principal,'p','native','unknown-upload');
+    assert.equal(receipt.mediaProvenance![0]!.originalUploadBytesVerified,false);
+    assert.equal(receipt.mediaProvenance![0]!.uploadedDigest,null);
+    assert.equal(receipt.mediaProvenance![0]!.missingReason,'historical_filename_hash_is_lossy_text');
+    assert.deepEqual(receipt.mediaProvenance![0]!.providerImage!.image,f.image);
+    assert.deepEqual(await f.store.get('p','asset','source-asset'),f.nativeMedia[0]!.asset);
+    assert.equal((await f.store.list('p','asset')).length,1,'No guessed upload or re-encoded asset is persisted');
+    const blob=await f.store.db.prepare('SELECT bytes FROM blobs WHERE project_id=? AND digest=?').get('p',f.nativeMedia[0]!.asset.digest);
+    assert.deepEqual(Buffer.from(blob!.bytes as Uint8Array),f.nativeMedia[0]!.bytes);
+    assert.deepEqual((await f.historical.read(f.principal,'p',f.history.id)).receipt,f.history);
+    assert.equal((await f.store.get<Campaign>('p','campaign','native')).state,'paused');
+    assert.deepEqual(await f.store.get('p','grant',f.grant.id),f.grant);
+    for(const kind of ['decision','packet','operation','event','advertisingBudgetReservation'])assert.equal((await f.store.list('p',kind)).length,0);
+    const before=f.reads();assert.deepEqual(await f.service.adopt(f.principal,'p','native','unknown-upload'),receipt);assert.equal(f.reads(),before);
+    const reopened=await testStore(f.path);try{assert.deepEqual(await reopened.get('p','executionAdoption',receipt.id),receipt);}finally{await reopened.close();}
+  }finally{await f.close();}
+});
+for(const failure of ['no-source','source-digest','source-history','bytes','missing-reason','provider-unavailable','account','image','filename','dimensions','inactive','changed-during-image-read','claimed-byte-proof','grant-during-read','missing-settlement'])test(`unknown upload adoption refuses ${failure} without transferring ownership`,async()=>{
+  const f=await unknownUploadFixture();try{
+    const m=f.candidate.media[0]!;
+    if(failure==='no-source')delete m.retainedSource;
+    if(failure==='source-digest')m.retainedSource!.digest='f'.repeat(64);
+    if(failure==='source-history')m.retainedSource!.historyRecordId=m.historyRecordId;
+    if(failure==='bytes')f.nativeMedia[0]!.bytes=Buffer.from('changed');
+    if(failure==='missing-reason')m.retainedSource!.missingReason='';
+    if(failure==='provider-unavailable')delete f.provider.inspectExistingMetaImage;
+    if(failure==='account')f.image.accountId='999';
+    if(failure==='image')f.image.hash='other';
+    if(failure==='filename')f.image.name='other.jpg';
+    if(failure==='dimensions')f.image.width=1;
+    if(failure==='inactive')f.image.status='DELETED';
+    if(failure==='missing-settlement')f.candidate.settlements=[];
+    if(['changed-during-image-read','claimed-byte-proof','grant-during-read'].includes(failure)){
+      const inspect=f.provider.inspectExistingMetaImage!;
+      f.provider.inspectExistingMetaImage=async(...args)=>{const r=await inspect(...args);
+        if(failure==='changed-during-image-read')f.nativeMedia[0]!.asset.rightsReceipt='changed';
+        if(failure==='claimed-byte-proof')(r as any).originalUploadBytesVerified=true;
+        if(failure==='grant-during-read')await f.store.put('p','grant',f.grant.id,{...f.grant,revision:2});return r;};
+    }
+    await assert.rejects(f.service.adopt(f.principal,'p','native','reject-unknown-upload'));
+    for(const kind of ['campaign','asset','campaignExecutionOwner','providerExecutionOwner','executionAdoption'])assert.equal((await f.store.list('p',kind)).length,0);
+    assert.deepEqual((await f.historical.read(f.principal,'p',f.history.id)).receipt,f.history);
+  }finally{await f.close();}
+});
+
 test('adopted execution uses current host action authority, preserves uncertain effects and recovers without a browser session or replay',async()=>{
   const f=await fixture();try{
     await f.service.adopt(f.principal,'p','native','transfer');

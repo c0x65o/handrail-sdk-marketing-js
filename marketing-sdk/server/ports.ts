@@ -18,6 +18,15 @@ export interface ExistingCampaignInspection {
   executionReady: false;
   missingReasons: ["original_media_content_binding_unverified", "execution_ownership_not_transferred"];
 }
+export interface ExistingMetaImageInspection {
+  image: {accountId:string; hash:string; name:string; width:number; height:number; status:string; updatedAt:string|null};
+  providerSnapshotDigest:string;
+  observedAt:string;
+  originalUploadBytesVerified:false;
+  providerImageReadbackVerified:true;
+  executionTransferred:false;
+  spendingAuthorityGranted:false;
+}
 export interface ProviderPort {
   readonly evidence: "fixture" | "provider";
   verify(
@@ -46,6 +55,7 @@ export interface ProviderPort {
     campaign: Campaign, grant: Grant, assets: Asset[], providerIds: Record<string, string>,
     guard: () => Promise<void>,
   ): Promise<ExistingCampaignInspection>;
+  inspectExistingMetaImage?(grant:Grant, imageId:string, guard:()=>Promise<void>):Promise<ExistingMetaImageInspection>;
   prepare(
     campaign: Campaign,
     grant: Grant,

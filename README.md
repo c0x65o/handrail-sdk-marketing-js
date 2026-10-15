@@ -276,6 +276,18 @@ inside the ownership transaction. Both assets/blobs commit atomically with the
 paused execution owner; collisions, source mutation or unknown history roll back.
 This neither uploads a replacement image nor changes provider identities.
 
+When historical Meta upload bytes are unavailable, paused adoption may instead
+retain the original source with `uploadedDigest: null` and `retainedSource`:
+the original source checksum/history record, retained provider filename and an
+explicit missing reason. It verifies the source bytes and a fresh account-scoped
+provider image read (identity, filename, original dimensions and status), plus
+the full paused campaign hierarchy/material. The receipt's `mediaProvenance`
+keeps source verification separate from `originalUploadBytesVerified: false`.
+It never stores a newly encoded candidate as the historical upload, changes
+original history or grants approval/spending authority. Missing source history,
+changed bytes, mismatched provider metadata or unsettled effects still prevent
+transfer. This is representation of incomplete history, not a byte-match claim.
+
 ## Existing Meta acquisition material
 
 `NativeProvider.captureExistingMetaMaterial` uses read-only custody for the exact

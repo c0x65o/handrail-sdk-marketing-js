@@ -68,14 +68,19 @@ existing grant, original provider identities, upload provenance and retirement/
 settlement evidence; none are browser- or agent-authored approval fields.
 
 The SDK checks intact retained history, account/campaign/purpose identity, original
-uploaded bytes and media metadata, and current grant/session/source access. The
-host must verify the upload intent and accepted provider acknowledgment referenced
-by the retained media record, including the post-transcoding hash for Meta. A
-matching provider image ID alone is insufficient. The SDK's provider port then
-performs fresh read-only inspection of the exact stopped hierarchy/material.
+retained bytes and media metadata, and current grant/session/source access. Exact
+upload verification requires the accepted upload binding and post-transcoding
+checksum. Missing historical upload bytes do not require fabricating that proof:
+Meta can retain the original source with an explicitly unknown upload digest,
+source history reference, retained provider filename and missing reason. This
+path additionally requires fresh account/image metadata with matching identity,
+filename, original dimensions and active image status. A provider image ID alone
+is insufficient. Both paths require fresh read-only inspection of the exact
+stopped hierarchy/material, complete retirement and settled effects.
 
-The required host `readMedia` port returns original asset metadata and exact
-provider-upload bytes directly from native storage. No pre-existing SDK campaign,
+The required host `readMedia` port returns original asset metadata and either exact
+provider-upload bytes or the declared original source bytes directly from native
+storage. The latter cannot carry a guessed/re-encoded upload. No pre-existing SDK campaign,
 asset, or blob is required. The SDK verifies content hashes and decoded dimensions,
 rechecks current metadata/bytes during provider inspection and under the final
 source guard, then inserts the asset/blob in the ownership transaction. Existing
@@ -83,6 +88,9 @@ identical media can be reused; conflicting IDs, metadata, or bytes fail without
 overwriting them. Rights provenance remains the original receipt reference and
 is included in the adoption receipt's `mediaAssetsDigest`. A rollback leaves no
 new asset or orphan blob. This operation never calls provider upload APIs.
+`mediaProvenance` records the source checksum, nullable upload checksum and current
+image observation separately; unknown upload bytes remain explicitly unverified
+after replay/reopen. Current access/source checks surround the image read too.
 
 Transfer requires all legacy writes to be disabled monotonically and every
 historical unresolved operation to have current reconciliation evidence. The host

@@ -1,7 +1,7 @@
 import type { Asset, Campaign, Grant, Material, Receipt } from "../core/index.js";
 import type { HistoricalRecord } from "../core/adoption.js";
 import { readHistoricalCampaignSnapshot } from "./adoption.js";
-import type { ProviderPort } from "./ports.js";
+import type { ProviderPort, ExistingMetaImageInspection } from "./ports.js";
 import type { SessionAuthority } from "./session-authority.js";
 import { sessionBinding, assertSessionInspection, inspectLiveSessions } from "./session-authority.js";
 import { Store, DomainError, digest, byteDigest, requireThat, type Principal } from "./store.js";
@@ -18,7 +18,10 @@ export interface ExecutionAdoptionCandidate {
   grantId: string;
   material: Material;
   providerIds: Record<string, string>;
-  media: { assetId: string; uploadedDigest: string; providerImageId: string; historyRecordId: string;
+  media: { assetId: string; uploadedDigest: string|null; providerImageId: string; historyRecordId: string;
+    /** Original source retained when historical upload bytes/checksum are unknown.
+     * The host binds these facts to history; the SDK separately reads the image. */
+    retainedSource?: {digest:string; historyRecordId:string; providerFilename:string; missingReason:string};
     original?: {assetId:string; digest:string; historyRecordId:string} }[];
   retirement: { state: "all_legacy_writes_disabled"; receiptRefs: string[] };
   unsettledOperationIds: string[];
@@ -30,11 +33,14 @@ export interface ExecutionAdoptionReceipt {
   grantId: string; grantRevision: number; providerReceipt: Receipt;
   retirementReceiptRefs: string[]; settlementReceiptRefs: string[];
   mediaRecordIds: string[]; mediaAssetsDigest: string; adoptedAt: string; adoptedBy: string;
+  mediaProvenance?: {assetId:string; sourceDigest:string; uploadedDigest:string|null;
+    originalUploadBytesVerified:boolean; missingReason:string|null; providerImage:ExistingMetaImageInspection|null}[];
   executionOwner: "sdk"; state: "paused"; spendingAuthorityGranted: false;
 }
 export interface ExecutionAdoptionMedia {
   asset: Asset;
-  /** Exact original provider-upload bytes, not a newly transformed source. */
+  /** Original upload bytes, or retained original source bytes when the candidate
+   * explicitly declares unknown upload provenance. Never a guessed upload. */
   bytes: Uint8Array;
   /** Original pre-transcoding asset, retained separately with its original ID/version. */
   original?: {asset:Asset; bytes:Uint8Array};
@@ -124,16 +130,26 @@ export class CampaignExecutionAdoptions {
     const media = candidate.media[0]!, asset = assets[0]!;
     requireThat(candidate.material.assetIds.length === 1 && candidate.material.assetIds[0] === asset.id &&
       asset.projectId === project && asset.campaignId === campaign.id && media.assetId === asset.id &&
-      media.uploadedDigest === asset.digest && media.providerImageId === candidate.providerIds.image, "adoption_media_binding_mismatch");
+      media.providerImageId === candidate.providerIds.image, "adoption_media_binding_mismatch");
+    const unknownUpload = media.uploadedDigest === null;
+    requireThat(unknownUpload ? providerName === "meta" && Boolean(media.retainedSource) && !media.original :
+      !media.retainedSource && media.uploadedDigest === asset.digest, "adoption_media_binding_mismatch");
     const record = await this.store.get<HistoricalRecord>(project, "historicalRecord", media.historyRecordId);
     requireThat(history.recordRefs.some(r => r.digest === media.historyRecordId && ["material", "provider_object", "operation"].includes(r.kind)) &&
       digest({ project, nativeCampaignId, system: snapshot.source.system, record }) === media.historyRecordId,
       "adoption_media_history_missing");
-    // The host binds native upload intent/acknowledgment to this retained record.
-    // The SDK independently checks the exact imported upload bytes, never the
-    // pre-transcoding source hash or a provider image identifier alone.
+    // Verify exactly the bytes we retain. A source checksum or lossy filename
+    // checksum is never promoted to proof of original provider-upload bytes.
     const bytes = Buffer.from(originalMedia[0]!.bytes);
-    requireThat(byteDigest(bytes) === media.uploadedDigest, "adoption_media_bytes_changed");
+    requireThat(byteDigest(bytes) === asset.digest && (unknownUpload || asset.digest === media.uploadedDigest), "adoption_media_bytes_changed");
+    if (unknownUpload) {
+      const source=media.retainedSource!;
+      text(source.missingReason);text(source.providerFilename);
+      requireThat(source.digest===asset.digest && !originalMedia[0]!.original, "adoption_media_binding_mismatch");
+      const sourceRecord=await this.store.get<HistoricalRecord>(project,"historicalRecord",source.historyRecordId);
+      requireThat(history.recordRefs.some(r=>r.digest===source.historyRecordId&&r.kind==="material") &&
+        digest({project,nativeCampaignId,system:snapshot.source.system,record:sourceRecord})===source.historyRecordId,"adoption_original_media_history_missing");
+    }
     requireThat(asset.kind === "image" && (this.mode === "fixture" || asset.source !== "fixture"), "adoption_media_binding_mismatch");
     requireThat(Number.isSafeInteger(asset.version) && asset.version > 0 && ["fixture", "generated", "uploaded"].includes(asset.source), "adoption_media_metadata_invalid");
     text(asset.rightsReceipt);
@@ -176,11 +192,27 @@ export class CampaignExecutionAdoptions {
     requireThat(inspection.candidateReceipt.intent === "paused" && inspection.candidateReceipt.evidence === provider.evidence &&
       inspection.candidateReceipt.ids.readbackDigest && inspection.candidateReceipt.payloadDigest === digest(provider.plan(campaign, grant, assets)) &&
       Object.entries(candidate.providerIds).every(([key,value]) => inspection.candidateReceipt.ids[key] === value), "adoption_provider_receipt_mismatch");
+    let providerImage:ExistingMetaImageInspection|null=null;
+    if (unknownUpload) {
+      requireThat(provider.inspectExistingMetaImage,"adoption_provider_image_inspection_required");
+      providerImage=await provider.inspectExistingMetaImage(grant,media.providerImageId,guard);
+      await guard();
+      const image=providerImage.image;
+      requireThat(providerImage.providerImageReadbackVerified===true && providerImage.originalUploadBytesVerified===false &&
+        providerImage.executionTransferred===false && providerImage.spendingAuthorityGranted===false &&
+        providerImage.providerSnapshotDigest===digest(image) && Number.isFinite(Date.parse(providerImage.observedAt)) &&
+        measurementAccountId("meta",image.accountId)===measurementAccountId("meta",grant.accountId) &&
+        image.hash===media.providerImageId && image.name===media.retainedSource!.providerFilename &&
+        image.width===asset.width && image.height===asset.height && image.status==="ACTIVE", "adoption_provider_image_mismatch");
+    }
     const receipt: ExecutionAdoptionReceipt = { id: `adoption_${digest([project, nativeCampaignId, candidateDigest])}`, projectId: project,
       nativeCampaignId, sdkCampaignId: campaign.id, historyImportId: history.id, sourceRevision: candidate.sourceRevision, candidateDigest,
       grantId: grant.id, grantRevision: grant.revision, providerReceipt: inspection.candidateReceipt,
       retirementReceiptRefs: candidate.retirement.receiptRefs, settlementReceiptRefs: candidate.settlements.flatMap(x => x.receiptRefs),
-      mediaRecordIds: candidate.media.flatMap(x => [x.historyRecordId,...(x.original?[x.original.historyRecordId]:[])]), mediaAssetsDigest: assetsDigest, adoptedAt: new Date().toISOString(), adoptedBy: principal.userId,
+      mediaRecordIds: candidate.media.flatMap(x => [x.historyRecordId,...(x.original?[x.original.historyRecordId]:[]),...(x.retainedSource?[x.retainedSource.historyRecordId]:[])]),
+      mediaProvenance:[{assetId:asset.id,sourceDigest:original?.asset.digest??asset.digest,uploadedDigest:media.uploadedDigest,
+        originalUploadBytesVerified:!unknownUpload,missingReason:media.retainedSource?.missingReason??null,providerImage}],
+      mediaAssetsDigest: assetsDigest, adoptedAt: new Date().toISOString(), adoptedBy: principal.userId,
       executionOwner: "sdk", state: "paused", spendingAuthorityGranted: false };
     return this.sessions.withLiveSessions([session], () => this.source.withRetiredExecution(principal, candidate, () => this.store.transaction(async () => {
       await guard();
