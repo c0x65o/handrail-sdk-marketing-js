@@ -27,6 +27,16 @@ export interface ExistingMetaImageInspection {
   executionTransferred:false;
   spendingAuthorityGranted:false;
 }
+export interface ExistingMetaHierarchyInspection {
+  provider:'meta'; source:'provider_api';
+  snapshot:{account:{id:string;currency:string;timezone:string};
+    campaign:{id:string;accountId:string;status:string;effectiveStatus:string};
+    adsets:{id:string;accountId:string;campaignId:string;status:string;effectiveStatus:string}[];
+    ads:{id:string;accountId:string;campaignId:string;adsetId:string;creativeId:string;status:string;effectiveStatus:string}[]};
+  digest:string; observedAt:string; inventoryComplete:true; allPaused:true;
+  scope:'exact_campaign_and_complete_children'; historicalEffectsSettled:false;
+  materialVerified:false; executionTransferred:false; spendingAuthorityGranted:false;
+}
 export interface ProviderPort {
   readonly evidence: "fixture" | "provider";
   verify(
@@ -56,6 +66,7 @@ export interface ProviderPort {
     guard: () => Promise<void>,
   ): Promise<ExistingCampaignInspection>;
   inspectExistingMetaImage?(grant:Grant, imageId:string, guard:()=>Promise<void>):Promise<ExistingMetaImageInspection>;
+  inspectExistingMetaHierarchy?(grant:Grant, ids:{campaign:string;adset:string;ad:string;creative:string}, guard:()=>Promise<void>):Promise<ExistingMetaHierarchyInspection>;
   prepare(
     campaign: Campaign,
     grant: Grant,

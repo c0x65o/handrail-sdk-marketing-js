@@ -213,6 +213,18 @@ Its digest covers explicit identity/state facts. It does not settle historical
 effects, verify material or upload bytes, transfer ownership or grant spending.
 Hosts must bind the supplied IDs to original history and current native mappings.
 
+`HistoricalEffectResolutions` records reconciliation of a known material readback
+failure after its affected objects were durably mapped. The trusted host source
+proves the failure/mapping relationship and guards original records through commit;
+the SDK independently reads the complete paused Meta hierarchy through its provider
+port. The immutable resolution links the original import/operation/record IDs and
+provider evidence. Original partial status and unknown historical request coverage
+remain unchanged. Unknown transport outcomes require their specific recovery and
+cannot be relabelled through this source contract. Request-key replay/read APIs
+preserve a single resolution per import/operation, with source/session revocation
+checks and no provider writes, execution transfer, approvals or spending grants.
+Adoption must revalidate the native source and current provider material/state.
+
 The server export `HistoricalCampaignImports` retains a host's consistent native
 campaign snapshot through an explicit identity/source port. Core exports the
 typed snapshot, record, total and receipt contracts. The SDK reconciles source
