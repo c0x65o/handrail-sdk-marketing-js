@@ -218,6 +218,21 @@ existing authority. See [the adoption contract and validation](marketing-sdk/tes
 The normal build and 20 adoption tests plus 15 measurement regressions passed on
 disposable PostgreSQL; live consumer adoption remains separate qualification.
 
+## Native execution authority
+
+Adopted campaigns require a trusted server `ExecutionAuthority` port for SDK
+prepare/activate/pause and recovery. The host revalidates its real principal and
+exact native action, with revocation guards held through local SDK commits and
+released before provider I/O. This supports native agent actions without creating
+browser sessions or synthetic session lifetimes. The SDK still enforces current
+grants, approvals, budgets, material and exclusive executor/account leases.
+`readExecutionRequest` reads the original operation before a caller refreshes
+custody; `recoverExecution` marks only the exact interrupted claim unknown under
+the exclusive executor. Pause reconciliation may use refreshed report authority
+for the same account, preserving the original operation grant revision and never
+replaying the provider write. Failed or revoked post-write authority retains an
+unknown effect and its lease until qualified readback.
+
 ## Measurement evidence
 
 `bindAdoptedMeasurementIdentity(store, input)` connects a fresh native collection

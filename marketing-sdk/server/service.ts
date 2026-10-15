@@ -1,4 +1,5 @@
 import { materialCurrency, materialEndTime } from "../core/index.js";
+import type { ExecutionAuthority, ExecutionAction } from "./execution-authority.js";
 import { measurementAccountId } from "./measurement-collectors.js";
 import { saveMeasurementRevision, readMeasurementEvidence } from "./measurement.js";
 import type { AudienceContext, AudienceCommands, AudienceChoice, AudienceSelection, AudienceSearch } from "../core/audience.js";
@@ -78,7 +79,7 @@ const ratio = (n: number | null, d: number | null): Metric =>
 export class MarketingServer {
   /** Real local persistence with explicitly unavailable provider/generation capabilities.
    * Hosts can later construct a server with their authorized native ports. */
-  static unconnected(store: Store, options: { studio?: StudioOptions; tracking?: TrackingOptions } = {}) {
+  static unconnected(store: Store, options: { studio?: StudioOptions; tracking?: TrackingOptions; executionAuthority?: ExecutionAuthority } = {}) {
     const unavailable = (): never => { throw new DomainError("provider_connection_required"); };
     const provider: ProviderPort = {
       evidence: "provider", verify: unavailable, plan: unavailable, prepare: unavailable,
@@ -96,7 +97,7 @@ export class MarketingServer {
     readonly mode: "fixture" | "live",
     readonly now = () => Date.now(),
     readonly readDestination = capturePublicDestination,
-    readonly options: { connections?: MarketingConnectionsService; studio?: StudioOptions; tracking?: TrackingOptions } = {},
+    readonly options: { connections?: MarketingConnectionsService; studio?: StudioOptions; tracking?: TrackingOptions; executionAuthority?: ExecutionAuthority } = {},
   ) {
     requireThat(!options.connections || options.connections.store === store, "connections_store_mismatch");
     requireThat(mode === "fixture" || Object.values(providers).every(provider => provider.evidence === "provider"), "fixture_provider_requires_fixture_mode");
@@ -114,6 +115,25 @@ export class MarketingServer {
       project,
       write ? [...EDIT] : undefined,
     );
+  }
+  private async assertExecutionAuthority(p: Principal, c: Campaign, action: ExecutionAction) {
+    requireThat(!c.adoptionOrigin || this.options.executionAuthority, "adopted_execution_authority_required", 403);
+    await this.options.executionAuthority?.assertCurrent(p, c, action);
+  }
+  private async executionTransaction<T>(p: Principal, project: string, campaignId: string, action: ExecutionAction, local: () => Promise<T>): Promise<T> {
+    const authorize = () => action === "activate" ? this.store.authorize(p, project, ["admin", "editor", "approver"]) : this.auth(p, project, action !== "read");
+    await authorize();
+    const c = await this.store.get<Campaign>(project, "campaign", campaignId);
+    await this.assertExecutionAuthority(p, c, action);
+    const commit = () => this.store.transaction(async () => {
+      await authorize();
+      requireThat(digest(await this.store.get(project, "campaign", c.id)) === digest(c), "execution_campaign_changed");
+      await this.assertExecutionAuthority(p, c, action);
+      const result = await local();
+      await this.assertExecutionAuthority(p, c, action);
+      return result;
+    });
+    return this.options.executionAuthority ? this.options.executionAuthority.withCurrent(p, c, action, commit) : commit();
   }
   private async grant(
     project: string,
@@ -987,7 +1007,7 @@ export class MarketingServer {
     project: string,
     input: Commands["prepare"]["input"],
   ) {
-    return await this.store.transaction(async () => {
+    return await this.executionTransaction(p, project, input.campaignId, "prepare", async () => {
       await this.auth(p, project, true);
       const c = await this.store.get<Campaign>(
         project,
@@ -1208,7 +1228,9 @@ export class MarketingServer {
     project: string,
     input: Commands["execute"]["input"],
   ) {
-    return await this.store.transaction(async () => {
+    await this.store.authorize(p, project, ["admin", "editor", "approver"]);
+    const requestedPacket = await this.store.get<Packet>(project, "packet", input.packetId);
+    return await this.executionTransaction(p, project, requestedPacket.campaignId, "activate", async () => {
       await this.store.authorize(p, project, ["admin", "editor", "approver"]);
       const old = await this.store.db
         .prepare(
@@ -1256,7 +1278,7 @@ export class MarketingServer {
     project: string,
     input: Commands["pause"]["input"],
   ) {
-    return await this.store.transaction(async () => {
+    return await this.executionTransaction(p, project, input.campaignId, "pause", async () => {
       return await this.reserve(
         p,
         project,
@@ -1291,6 +1313,7 @@ export class MarketingServer {
       if (o.kind === "activate")
         await this.store.authorize(p, project, ["admin", "editor", "approver"]);
       else await this.auth(p, project, true);
+      await this.assertExecutionAuthority(p, c, o.kind);
       requireThat(c.revision === o.campaignRevision, "stale_material");
       if (o.kind === "prepare" && c.receipt) {
         const provider = this.providers[g.provider];
@@ -1336,7 +1359,7 @@ export class MarketingServer {
           c.revision,
         "stale_material",
       );
-      await this.store.transaction(async () => {
+      await this.executionTransaction(p, project, c.id, o.kind, async () => {
         await this.store.db.assertExecutionOwner();
         const current = await this.grant(project, g.id, o.kind);
         requireThat(
@@ -1449,11 +1472,18 @@ export class MarketingServer {
         if (o.kind === "activate") await this.advertisingBudgets.assert(c, o);
         return action();
       });
-      if (proof) {
+      const secured = async () => {
+        if (!proof) return local();
         const tracking = await this.tracking.campaignConfiguration(actor, project, c.id);
         return this.connections.sessionAuthority.withLiveSessions(proof.sessions, () => this.tracking.withCampaignConfiguration(tracking, local));
-      }
-      return local();
+      };
+      return this.options.executionAuthority
+        ? this.options.executionAuthority.withCurrent(actor, c, o.kind, async () => {
+          await this.assertExecutionAuthority(actor, c, o.kind);
+          const result = await secured();
+          await this.assertExecutionAuthority(actor, c, o.kind);
+          return result;
+        }) : secured();
     };
     const beforeWrite = () => withWriteAuthority(async () => {});
     try {
@@ -1481,14 +1511,16 @@ export class MarketingServer {
             ? await provider.activate(c, g, beforeWrite)
             : await provider.pause(c, g, beforeWrite);
       return await withWriteAuthority(() => this.finish(o, c, g, receipt));
-    } catch {
-      o = {
-        ...o,
-        state: "unknown",
-        reason: "external_outcome_unknown_reconcile_before_retry",
-      };
-      await this.store.put(project, "operation", o.id, o);
-      return o;
+    } catch (error) {
+      return this.store.transaction(async () => {
+        const current = await this.store.get<Operation>(project, "operation", o.id);
+        // A host commit acknowledgement may fail after the SDK committed its
+        // verified receipt. Preserve that receipt; the caller must read it.
+        if (current.state === "succeeded") throw error;
+        o = { ...current, state: "unknown", reason: "external_outcome_unknown_reconcile_before_retry" };
+        await this.store.put(project, "operation", o.id, o);
+        return o;
+      });
     }
   }
   private async finish(o: Operation, c: Campaign, g: Grant, receipt: Receipt) {
@@ -1550,13 +1582,45 @@ export class MarketingServer {
         }
     }
   }
+  /** Exact receipt lookup before refreshing custody or retrying a host call. */
+  async readExecutionRequest(p: Principal, project: string, campaignId: string, kind: Operation["kind"], requestKey: string): Promise<Operation | null> {
+    text(requestKey, 160);
+    return this.executionTransaction(p, project, campaignId, "read", async () => {
+      const row = await this.store.db.prepare("SELECT kind,record_id FROM requests WHERE project_id=? AND request_key=?").get(project, requestKey);
+      if (!row) return null;
+      requireThat(row.kind === "operation", "request_key_payload_conflict");
+      const operation = await this.store.get<Operation>(project, "operation", String(row.record_id));
+      const actor = await this.store.get<Principal>(project, "executionActor", operation.id);
+      requireThat(operation.campaignId === campaignId && operation.kind === kind && actor.userId === p.userId, "request_key_payload_conflict");
+      return operation;
+    });
+  }
+  /** Recovery by the exclusive executor, restricted to this authorized effect. */
+  async recoverExecution(p: Principal, project: string, operationId: string): Promise<Operation> {
+    await this.store.db.assertExecutionOwner();
+    await this.auth(p, project, true);
+    const operation = await this.store.get<Operation>(project, "operation", operationId);
+    return this.executionTransaction(p, project, operation.campaignId, "reconcile", async () => {
+      const current = await this.store.get<Operation>(project, "operation", operationId);
+      if (current.state !== "running") return current;
+      const unknown = { ...current, state: "unknown" as const, reason: "host_restarted_reconcile_required" };
+      await this.store.put(project, "operation", current.id, unknown);
+      return unknown;
+    });
+  }
   async reconcile(
     p: Principal,
     project: string,
     input: Commands["reconcile"]["input"],
   ) {
-    const session = await this.reportSession(p, project);
-    const { o, c, g } = await this.reportGuard(p, session, true, async () => {
+    await this.auth(p, project, true);
+    const requested = await this.store.get<Operation>(project, "operation", input.operationId);
+    const campaign = await this.store.get<Campaign>(project, "campaign", requested.campaignId);
+    await this.assertExecutionAuthority(p, campaign, "reconcile");
+    const session = this.options.executionAuthority ? null : await this.reportSession(p, project);
+    const guard = <T>(local: () => Promise<T>) => session ? this.reportGuard(p, session, true, local)
+      : this.executionTransaction(p, project, campaign.id, "reconcile", local);
+    const { o, c, g } = await guard(async () => {
       const o = await this.store.get<Operation>(
         project,
         "operation",
@@ -1569,15 +1633,19 @@ export class MarketingServer {
         o.campaignId,
       );
       const g = await this.grant(project, c.grantId, "report");
-      requireThat(c.revision === o.campaignRevision && g.revision === o.grantRevision && g.accountId === o.accountId &&
+      // A safety-pause readback may use refreshed current report authority for
+      // the same account. It never replays a write or changes the original claim.
+      requireThat(c.revision === o.campaignRevision && (g.revision === o.grantRevision ||
+        (o.kind === "pause" && this.options.executionAuthority && g.revision > o.grantRevision)) && g.accountId === o.accountId &&
         (o.kind === "pause" ? c.receipt?.payloadDigest : digest(this.providers[g.provider].plan(c, g, await this.assets(c, false)))) === o.payloadDigest, "reconciliation_material_changed");
       return { o, c, g };
     });
     // Readback and decoding must permit unrelated work and authority revocation.
     const assets = await this.assets(c);
-    await inspectLiveSessions(this.studio.sessions, [session]);
+    if (session) await inspectLiveSessions(this.studio.sessions, [session]);
+    await this.assertExecutionAuthority(p, c, "reconcile");
     const receipt = await this.providers[g.provider].reconcile(c, g, o);
-    return this.reportGuard(p, session, true, async () => {
+    return guard(async () => {
       requireThat(digest(await this.grant(project, g.id, "report")) === digest(g) &&
         digest(await this.assets(c, false)) === digest(assets), "reconciliation_material_changed");
       const current = await this.store.get<Operation>(project, "operation", o.id);

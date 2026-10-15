@@ -7,6 +7,9 @@ import { testStore } from './datastore.js';
 import { fixtureSettings } from './capability-fixtures.js';
 import { CampaignExecutionAdoptions, type ExecutionAdoptionCandidate, type ExecutionAdoptionSource } from '../server/execution-adoption.js';
 import { HistoricalCampaignImports } from '../server/adoption.js';
+import { MarketingServer } from '../server/service.js';
+import { DomainError } from '../server/store.js';
+import type { ExecutionAuthority } from '../server/execution-authority.js';
 import { bindAdoptedMeasurementIdentity } from '../server/measurement-adoption.js';
 import { measured, unknownMeasurement, saveMeasurementRevision, readMeasurementEvidence } from '../server/measurement.js';
 import type { MeasurementInput } from '../core/measurement.js';
@@ -74,6 +77,45 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     deny: () => { denied = true; }, fail: () => { failCommit = true; }, reads: () => reads,
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
+
+test('adopted execution uses current host action authority, preserves uncertain effects and recovers without a browser session or replay',async()=>{
+  const f=await fixture();try{
+    await f.service.adopt(f.principal,'p','native','transfer');
+    const principal=await f.store.bindExternalPrincipal('p',{issuer:'native-action',subject:'owner',kind:'agent'},'editor');
+    let held=0,revoked=false,revokeAt='',writes=0,reads=0,loseHostAck=false;
+    const check=async()=>{if(revoked)throw new DomainError('native_authority_revoked',403);};
+    const authority:ExecutionAuthority={assertCurrent:async(p,c)=>{assert.equal(p.userId,principal.userId);assert.equal(c.id,'native');await check();},
+      withCurrent:async(_p,_c,_a,local)=>{await check();held++;try{const result=await local();await check();if(loseHostAck&&(result as any)?.state==='succeeded')throw new DomainError('host_commit_ack_lost');return result;}finally{held--;}}};
+    const base=MarketingServer.unconnected(f.store);
+    const provider:ProviderPort={...f.provider,verify:async()=>{assert.equal(held,0);reads++;if(revokeAt==='verify')revoked=true;return {accountId:f.grant.accountId,currency:'USD',timezone:'UTC',permissions:['pause','report']};},
+      pause:async(c,_g,guard)=>{assert.equal(held,0);await guard();writes++;if(revokeAt==='write')revoked=true;return {...c.receipt!,observedAt:new Date().toISOString()};},
+      reconcile:async c=>{assert.equal(held,0);reads++;return {...c.receipt!,observedAt:new Date().toISOString()};}};
+    const without=new MarketingServer(f.store,{...base.providers,meta:provider},base.generation,base.agent,'fixture');
+    await assert.rejects(without.pause(principal,'p',{campaignId:'native',requestKey:'denied'}),/adopted_execution_authority_required/);
+    const service=new MarketingServer(f.store,{...base.providers,meta:provider},base.generation,base.agent,'fixture',undefined,undefined,{executionAuthority:authority});
+    await f.store.db.acquireExecutor();
+    revokeAt='verify';let o=await service.pause(principal,'p',{campaignId:'native',requestKey:'preflight'});
+    o=await service.dispatch('p',o.id);assert.equal(o.state,'blocked');assert.equal(writes,0);
+    revoked=false;revokeAt='write';o=await service.pause(principal,'p',{campaignId:'native',requestKey:'uncertain'});
+    o=await service.dispatch('p',o.id);assert.equal(o.state,'unknown');assert.equal(writes,1);
+    assert.equal((await f.store.db.prepare('SELECT operation_id FROM leases WHERE project_id=?').get('p'))!.operation_id,o.id);
+    await assert.rejects(service.reconcile(principal,'p',{operationId:o.id}),/native_authority_revoked/);
+    revoked=false;revokeAt='';
+    const grant=await f.store.get<Grant>('p','grant',f.grant.id);await f.store.put('p','grant',grant.id,{...grant,revision:grant.revision+1});
+    await f.store.put('p','operation',o.id,{...o,state:'running'});
+    o=await service.recoverExecution(principal,'p',o.id);assert.equal(o.state,'unknown');
+    o=await service.reconcile(principal,'p',{operationId:o.id});assert.equal(o.state,'succeeded');assert.equal(writes,1);
+    assert.equal(o.grantRevision,1,'original effect authority revision is retained through refreshed readback');
+    const before=reads;assert.deepEqual(await service.readExecutionRequest(principal,'p','native','pause','uncertain'),o);assert.equal(reads,before);
+    assert.equal(await service.readExecutionRequest(principal,'p','native','pause','not-sent'),null);
+    assert.equal(await f.store.db.prepare('SELECT operation_id FROM leases WHERE project_id=?').get('p'),undefined);
+    loseHostAck=true;const acknowledged=await service.pause(principal,'p',{campaignId:'native',requestKey:'lost-host-ack'});
+    await assert.rejects(service.dispatch('p',acknowledged.id),/host_commit_ack_lost/);loseHostAck=false;
+    assert.equal((await service.readExecutionRequest(principal,'p','native','pause','lost-host-ack'))!.state,'succeeded');
+    assert.equal(writes,2,'lost host acknowledgement preserves the committed SDK receipt');
+    assert.equal((await f.store.list('p','decision')).length,0);assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
+  }finally{await f.close();}
+});
 
 for (const provider of ['meta','linkedin'] as const) test(`${provider} adopted reporting binds ownership without rewriting history or inventing material intervals`,async()=>{
   const f=await fixture(provider);try{
