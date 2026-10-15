@@ -13,6 +13,29 @@ export interface ExistingLinkedInMaterialSource {
   conversion?: LinkedInSettings["conversion"];
 }
 
+/** Account/campaign-scoped child inventory. Pagination must finish before a
+ * single-creative campaign can be adopted; a saved identity is not an inventory. */
+export async function existingLinkedInChildren(client: any, accountId: string, campaignId: string, creativeId: string) {
+  let pageToken: string | null = null;
+  const tokens = new Set<string>(), rows: {id: string; campaign: string; intendedStatus: string}[] = [];
+  do {
+    const page: {elements?: any[]; metadata?: {nextPageToken?: unknown}} = await client.listCreatives(accountId,{campaignUrn:`urn:li:sponsoredCampaign:${campaignId}`,pageSize:100,pageToken});
+    requireThat(Array.isArray(page?.elements),"existing_campaign_children_incomplete");
+    for (const row of page.elements!) {
+      const id=String(row.id).replace(/^urn:li:sponsoredCreative:/,"");
+      requireThat(id===creativeId&&row.campaign===`urn:li:sponsoredCampaign:${campaignId}`&&
+        ["PAUSED","DRAFT"].includes(row.intendedStatus)&&!rows.some(r=>r.id===id),"existing_campaign_children_mismatch");
+      rows.push({id,campaign:row.campaign,intendedStatus:row.intendedStatus});
+    }
+    const next: unknown=page.metadata?.nextPageToken;
+    requireThat(next==null||typeof next==="string"&&next.length>0&&!tokens.has(next),"existing_campaign_children_incomplete");
+    pageToken=typeof next === "string" ? next : null;
+    if(pageToken)tokens.add(pageToken);
+  } while(pageToken);
+  requireThat(rows.length===1,"existing_campaign_children_mismatch");
+  return rows;
+}
+
 /** Map an actual provider campaign into the shared material contract. Unsupported
  * Boolean targeting, absent facts and fractional minor units fail explicitly.
  * This is capture, not verification: callers must inspect the complete hierarchy

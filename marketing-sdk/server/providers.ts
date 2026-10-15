@@ -20,7 +20,7 @@ import { buildMeasurementEvidence } from "./measurement.js";
 import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
-import { existingLinkedInMaterial, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
+import { existingLinkedInMaterial, existingLinkedInChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
@@ -974,7 +974,7 @@ export class NativeProvider implements ProviderPort {
     requireThat(providerIds && Object.keys(providerIds).every(k => allowed.includes(k)) && required.every(k => typeof providerIds[k] === "string" && providerIds[k]!.length > 0) &&
       Object.values(providerIds).every(v => typeof v === "string" && v.length > 0), "existing_campaign_identity_invalid", 422);
     // Readback versions/digests come from this SDK read, never supplied history.
-    const ids = { ...providerIds, readbackVersion: this.name === "meta" ? "4" : "3",
+    const ids: Record<string,string> = { ...providerIds, readbackVersion: this.name === "meta" ? "4" : "3",
       ...(this.name === "linkedin" ? { groupOwnership: "shared" } : {}) };
     const plan = this.plan(c, g, assets), scope = digest({c,g,assets,providerIds});
     const current = async () => {
@@ -995,12 +995,13 @@ export class NativeProvider implements ProviderPort {
     return this.vault.useReadOnly<ExistingCampaignInspection>(g, current, async credentials => {
       requireThat(credentials.expiresAt > Date.now(), "provider_access_expired_or_denied", 403);
       const client = this.name === "meta" ? new MetaMarketingClient({...credentials,fetchImpl:fetcher})
-        : new LinkedInMarketingClient({...credentials,fetchImpl:fetcher});
+        : new LinkedInMarketingClient({...credentials,apiVersion:"202609",fetchImpl:fetcher});
       const snapshot = await this.snapshot(client,g,ids);
       requireThat(snapshot.paused, "existing_campaign_not_paused");
       this.validateSnapshot(snapshot.material,plan,ids);
+      const inventory=this.name==="linkedin" ? await existingLinkedInChildren(client,g.accountId,ids.campaign!,ids.creative!) : null;
       await current();
-      return {candidateReceipt:{...this.receipt({...ids,readbackDigest:digest(snapshot.material)},digest(plan),"paused"),
+      return {candidateReceipt:{...this.receipt({...ids,readbackDigest:digest(snapshot.material),...(inventory?{inventoryDigest:digest(inventory)}:{})},digest(plan),"paused"),
         providerRequestId:"lastRequestId" in client && typeof client.lastRequestId === "string" ? client.lastRequestId : null},
         originalMediaContentVerified:false,executionReady:false,
         missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred"]};

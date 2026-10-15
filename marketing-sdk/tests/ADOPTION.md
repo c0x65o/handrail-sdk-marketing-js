@@ -165,3 +165,10 @@ readiness or grant. Complete hierarchy/media inspection and guarded adoption are
 still required. Identifier display fallbacks are not taxonomy eligibility receipts.
 The intercepted transport tests cover unknown/drifting facts and revocation; the
 native-writes regression distinguishes a shared group cap from a campaign cap.
+
+LinkedIn adoption additionally inventories every campaign creative before returning
+its inspection receipt, using pageSize=100 and metadata.nextPageToken until the
+provider reports the end. Extra children, duplicate IDs, active children, missing
+elements, incomplete pages and repeated cursors reject transfer. The receipt
+retains an inventory digest. This follows LinkedIn's documented cursor contract:
+https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/cursor-based-pagination?view=li-lms-2026-09

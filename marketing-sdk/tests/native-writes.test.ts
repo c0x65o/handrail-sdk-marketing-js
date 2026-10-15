@@ -346,6 +346,7 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         drift?.(objects.get(id), last);
         return Response.json({}, { status: 201, headers: { "x-restli-id": id } });
       }
+      if (path === "/rest/adAccounts/123/creatives") return Response.json({elements:[objects.get("urn:li:sponsoredCreative:103")]});
       if (path === "/rest/campaignConversions") return Response.json({ elements: [] });
       if (path === "/rest/adAccounts/123") return Response.json({ id: 123, currency: "USD", status: "ACTIVE", servingStatuses: ["RUNNABLE"], reference: "urn:li:organization:42" });
       if (path.includes("/images/")) return Response.json({ id: "urn:li:image:fixture", owner: "urn:li:organization:42", status: "AVAILABLE" });

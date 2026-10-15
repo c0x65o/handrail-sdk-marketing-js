@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { NativeProvider, type VaultPort } from '../server/providers.js';
 import { Store } from '../server/store.js';
 import type { Grant } from '../core/index.js';
+import {existingLinkedInChildren} from '../server/existing-linkedin-material.js';
 import type { ExistingLinkedInMaterialSource } from '../server/existing-linkedin-material.js';
 
 function fixture() {
@@ -72,4 +73,21 @@ test('existing LinkedIn capture fences authority changed during the actual read'
   await assert.rejects(f.capture(async()=>{if(revoked)throw Error('fixture-revoked');}),/fixture-revoked/);
   const g=fixture();g.afterFetch(()=>{g.source.body='changed';});
   await assert.rejects(g.capture(),/existing_campaign_scope_changed/);
+});
+
+for(const scenario of ['complete','extra_child','partial','cycle','active','duplicate','missing'])test(`adoption child inventory ${scenario}`,async()=>{
+  let calls=0;
+  const child={id:'urn:li:sponsoredCreative:333',campaign:'urn:li:sponsoredCampaign:111',intendedStatus:'PAUSED'};
+  const client={listCreatives:async(account:string,input:any)=>{
+    calls++;assert.equal(account,'123');assert.equal(input.campaignUrn,'urn:li:sponsoredCampaign:111');assert.equal(input.pageSize,100);
+    if(calls===1)return {elements:[child],metadata:{nextPageToken:'page-two'}};
+    assert.equal(input.pageToken,'page-two');
+    if(scenario==='partial')throw Error('interrupted inventory');
+    if(scenario==='cycle')return {elements:[],metadata:{nextPageToken:'page-two'}};
+    if(scenario==='missing')return {};
+    return {elements:scenario==='complete'?[]:[{...child,...(scenario==='extra_child'?{id:'444'}:{}),...(scenario==='active'?{intendedStatus:'ACTIVE'}:{})}]};
+  }};
+  const read=()=>existingLinkedInChildren(client,'123','111','333');
+  if(scenario==='complete')assert.deepEqual(await read(),[{id:'333',campaign:child.campaign,intendedStatus:'PAUSED'}]);
+  else await assert.rejects(read());assert.equal(calls,2);
 });
