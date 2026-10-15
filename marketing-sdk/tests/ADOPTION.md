@@ -74,6 +74,16 @@ by the retained media record, including the post-transcoding hash for Meta. A
 matching provider image ID alone is insufficient. The SDK's provider port then
 performs fresh read-only inspection of the exact stopped hierarchy/material.
 
+The required host `readMedia` port returns original asset metadata and exact
+provider-upload bytes directly from native storage. No pre-existing SDK campaign,
+asset, or blob is required. The SDK verifies content hashes and decoded dimensions,
+rechecks current metadata/bytes during provider inspection and under the final
+source guard, then inserts the asset/blob in the ownership transaction. Existing
+identical media can be reused; conflicting IDs, metadata, or bytes fail without
+overwriting them. Rights provenance remains the original receipt reference and
+is included in the adoption receipt's `mediaAssetsDigest`. A rollback leaves no
+new asset or orphan blob. This operation never calls provider upload APIs.
+
 Transfer requires all legacy writes to be disabled monotonically and every
 historical unresolved operation to have current reconciliation evidence. The host
 must hold source/identity guards through the SDK commit and prohibit competing
@@ -104,7 +114,7 @@ authority checks remain required; representing or adopting the original terms
 does not grant permission to spend.
 
 The contract is implemented and exercised with intercepted provider observations
-and disposable SQL. A consumer must implement the trusted source, media import,
+and disposable SQL. A consumer must implement the trusted source (including original-media reads),
 current Vault/grant binding and monotonic native execution guard before invoking
 it live. Passing these tests is not evidence that Handrail has transferred a
 campaign or completed an authorized live pilot.

@@ -21,7 +21,6 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
   await store.db.prepare('INSERT INTO memberships VALUES(?,?,?)').run(user, 'p', 'admin');
   const principal = await store.authenticate((await store.login('owner', 'fixture', 'fixture'))!);
   const bytes = readFileSync(new URL('../../marketing-sdk/tests/fixtures/test-pattern.png', import.meta.url)), hash = byteDigest(bytes);
-  await store.db.prepare('INSERT INTO blobs VALUES(?,?,?)').run('p', hash, bytes);
   const grant: Grant = { id: 'existing-grant', projectId: 'p', provider: providerName, revision: 1, accountId: providerName === 'meta' ? 'act_123' : '123', pageId: '42', organizationId: '42',
     label: 'Existing fixture authority', currency: 'USD', timezone: 'UTC', permissions: ['pause', 'report'],
     expiresAt: '2099-01-01T00:00:00Z', revokedAt: null, secretRef: 'retained-vault-reference' };
@@ -32,7 +31,7 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     assetIds: [asset.id], audience: { provider: 'meta', locations: ['US'], ageMin: 25, ageMax: 54, expansion: false },
     budget: { currency: 'USD', minor: 42000 }, startAt: '2026-10-01T00:00:00Z', endAt: '2026-11-01T00:00:00Z', timezone: 'UTC' };
   if(providerName==='linkedin'){material.audience={provider:'linkedin',locations:['urn:li:geo:1'],expansion:false};material.advertisingBudget={lifetime:material.budget!,daily:{currency:'USD',minor:3000}};}
-  await store.put('p', 'grant', grant.id, grant); await store.put('p', 'asset', asset.id, asset);
+  await store.put('p', 'grant', grant.id, grant);
   const row = (kind: HistoricalRecord['kind'], sourceId: string, payload: HistoricalRecord['payload']): HistoricalRecord => ({
     kind, sourceId, sourceRevision: '1', recordedAt: null, collectedAt: '2026-10-14T00:00:00Z', provenance: 'legacy_observation',
     evidenceId: null, missingReasons: ['historical_timestamp_unknown'], payload });
@@ -52,9 +51,10 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     settlements: [{ operationId: 'historical-unknown', receiptRefs: ['actual-read-only-reconciliation'] }] };
   if(providerName==='linkedin')candidate.providerIds={group:'shared-group',campaign:'100',creative:'103',image:'original-image'};
   let denied = false, failCommit = false, reads = 0;
+  const nativeMedia = [{asset, bytes}];
   const source: ExecutionAdoptionSource = { authorize: async (_p, project, campaign) => {
     assert.equal(project, 'p'); assert.equal(campaign, 'native'); if (denied) throw Error('current-native-access-revoked');
-  }, capture: async () => structuredClone(candidate), assertCurrent: async (_p, expected) => {
+  }, capture: async () => structuredClone(candidate), readMedia: async () => structuredClone(nativeMedia), assertCurrent: async (_p, expected) => {
     if (denied) throw Error('current-native-access-revoked'); assert.equal(digest(expected), digest(candidate));
   }, withRetiredExecution: async (_p, _c, commit) => { if (failCommit) throw Error('legacy-writer-not-settled'); return commit(); } };
   const unavailable = async (): Promise<never> => { throw Error('Adoption must not call a provider write or approval'); };
@@ -67,7 +67,7 @@ async function fixture(providerName: "meta" | "linkedin" = "meta") {
     } };
   const sessions = createStoreSessionAuthority(store);
   const service = new CampaignExecutionAdoptions(store, source, sessions, { meta: provider, linkedin: provider }, 'fixture');
-  return { store, path, principal, grant, candidate, history, historical, source, provider, service, sessions,
+  return { store, path, principal, grant, candidate, history, historical, source, provider, service, sessions, nativeMedia,
     deny: () => { denied = true; }, fail: () => { failCommit = true; }, reads: () => reads,
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -87,7 +87,13 @@ for (const name of ['meta','linkedin'] as const) test(`${name} daily-only open-e
 
 test('adoption persists one stopped SDK owner, original provider IDs and history without grants, approvals, events or writes', async () => {
   const f = await fixture(); try {
+    assert.equal((await f.store.list('p','asset')).length,0);
+    assert.equal((await f.store.db.prepare('SELECT * FROM blobs WHERE project_id=?').all('p')).length,0);
     const [a,b] = await Promise.all([f.service.adopt(f.principal,'p','native','adopt'), f.service.adopt(f.principal,'p','native','adopt')]);
+    assert.deepEqual(await f.store.get('p','asset',f.nativeMedia[0]!.asset.id),f.nativeMedia[0]!.asset);
+    assert.equal(a.mediaAssetsDigest,digest(f.nativeMedia.map(x=>x.asset)));
+    const blob=await f.store.db.prepare('SELECT bytes FROM blobs WHERE project_id=? AND digest=?').get('p',f.nativeMedia[0]!.asset.digest);
+    assert.deepEqual(Buffer.from(blob!.bytes as Uint8Array),f.nativeMedia[0]!.bytes);
     assert.deepEqual(a,b); assert.equal(a.executionOwner,'sdk'); assert.equal(a.spendingAuthorityGranted,false);
     const c = await f.store.get<Campaign>('p','campaign','native');
     assert.deepEqual(c.material,f.candidate.material); assert.deepEqual(c.preparedMaterial,c.material);
@@ -119,11 +125,13 @@ for (const scenario of ['retirement','unsettled','settlement','media','history',
       if (scenario==='writer') f.fail();
       if (scenario==='revoked') f.deny();
       if (scenario==='provider') f.provider.inspectExistingCampaign=async()=>{throw Error('provider-read-incomplete');};
-      if (scenario==='bytes') await f.store.db.prepare('UPDATE blobs SET bytes=? WHERE project_id=?').run(Buffer.from('changed'),'p');
+      if (scenario==='bytes') f.nativeMedia[0]!.bytes=Buffer.from('changed');
       if (scenario==='owned') await f.store.put('p','providerExecutionOwner',digest(['meta','123','campaign','100']),{sdkCampaignId:'other'});
       await assert.rejects(f.service.adopt(f.principal,'p','native','adopt'));
       assert.equal((await f.store.list('p','campaign')).length,0); assert.equal((await f.store.list('p','executionAdoption')).length,0);
       assert.equal((await f.store.list('p','executionAdoptionRequest')).length,0);
+      assert.equal((await f.store.list('p','asset')).length,0);
+      assert.equal((await f.store.db.prepare('SELECT * FROM blobs WHERE project_id=?').all('p')).length,0);
       assert.deepEqual((await f.historical.read(f.principal,'p',f.history.id)).receipt,f.history);
     } finally { await f.close(); }
   });
@@ -169,7 +177,7 @@ test('a lost adoption acknowledgment is recovered by its immutable request recei
 test('bytes changed during inspection roll back all ownership records and preserve the original history', async () => {
   const f=await fixture(); try {
     const inspect=f.provider.inspectExistingCampaign!;
-    f.provider.inspectExistingCampaign=async(...args)=>{const result=await inspect(...args);await f.store.db.prepare('UPDATE blobs SET bytes=? WHERE project_id=?').run(Buffer.from('changed-after-read'),'p');return result;};
+    f.provider.inspectExistingCampaign=async(...args)=>{const result=await inspect(...args);f.nativeMedia[0]!.bytes=Buffer.from('changed-after-read');return result;};
     await assert.rejects(f.service.adopt(f.principal,'p','native','changed'),/adoption_media_bytes_changed/);
     for(const kind of ['campaign','providerExecutionOwner','campaignExecutionOwner','executionAdoption','executionAdoptionRequest'])assert.equal((await f.store.list('p',kind)).length,0);
   } finally {await f.close();}
@@ -191,5 +199,38 @@ test('fixture inspections cannot transfer a live installation', async()=>{
     const live=new CampaignExecutionAdoptions(f.store,f.source,f.sessions,{meta:f.provider,linkedin:f.provider});
     await assert.rejects(live.adopt(f.principal,'p','native','fixture-not-live'),/fixture_provider_not_live/);
     assert.equal(f.reads(),0);
+  }finally{await f.close();}
+});
+
+for (const conflict of ['asset','blob','metadata-during-read','late-commit'] as const) test(`original media ${conflict} prevents atomic adoption`, async()=>{
+  const f=await fixture();try{
+    const original=f.nativeMedia[0]!;
+    if(conflict==='asset')await f.store.put('p','asset',original.asset.id,{...original.asset,rightsReceipt:'different-rights'});
+    if(conflict==='blob')await f.store.db.prepare('INSERT INTO blobs VALUES(?,?,?)').run('p',original.asset.digest,Buffer.from('invalid-retained-bytes'));
+    if(conflict==='metadata-during-read'){
+      const inspect=f.provider.inspectExistingCampaign!;
+      f.provider.inspectExistingCampaign=async(...args)=>{const r=await inspect(...args);original.asset.rightsReceipt='changed';return r;};
+    }
+    if(conflict==='late-commit'){
+      const put=f.store.put.bind(f.store);
+      f.store.put=async(...args)=>{if(args[1]==='executionAdoption')throw Error('receipt-write-failed');return put(...args);};
+    }
+    await assert.rejects(f.service.adopt(f.principal,'p','native','media-conflict'));
+    for(const kind of ['campaign','campaignExecutionOwner','providerExecutionOwner','executionAdoption'])assert.equal((await f.store.list('p',kind)).length,0);
+    assert.equal((await f.store.list('p','asset')).length,conflict==='asset'?1:0);
+    assert.equal((await f.store.db.prepare('SELECT * FROM blobs WHERE project_id=?').all('p')).length,conflict==='blob'?1:0);
+  }finally{await f.close();}
+});
+
+test('identical retained SDK media can be reused without replacing metadata or bytes',async()=>{
+  const f=await fixture();try{
+    const original=f.nativeMedia[0]!;
+    await f.store.put('p','asset',original.asset.id,original.asset);
+    await f.store.db.prepare('INSERT INTO blobs VALUES(?,?,?)').run('p',original.asset.digest,original.bytes);
+    await f.service.adopt(f.principal,'p','native','existing-identical');
+    await f.service.adopt(f.principal,'p','native','existing-identical-replay');
+    assert.equal((await f.store.list('p','asset')).length,1);
+    assert.equal((await f.store.db.prepare('SELECT * FROM blobs WHERE project_id=?').all('p')).length,1);
+    assert.deepEqual(await f.store.get('p','asset',original.asset.id),original.asset);
   }finally{await f.close();}
 });
