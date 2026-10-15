@@ -372,6 +372,39 @@ export class NativeProvider implements ProviderPort {
       throw new DomainError("existing_campaign_read_unavailable");
     });
   }
+  /** State/identity evidence for historical effect reconciliation. Material,
+   * historical request coverage and authority are deliberately separate facts. */
+  async inspectExistingMetaHierarchy(g: Grant, ids: {campaign:string; adset:string; ad:string; creative:string}, guard: () => Promise<void>) {
+    requireThat(this.name==="meta" && g.provider==="meta" && this.vault.useReadOnly &&
+      Object.keys(ids).length===4 && [ids.campaign,ids.adset,ids.ad,ids.creative].every(x=>typeof x==="string"&&/^\d+$/.test(x)),
+      "existing_campaign_identity_invalid",422);
+    const scope=digest({g,ids}),account=accountPath(g.accountId);
+    const current=async()=>{await guard();requireThat(digest({g,ids})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
+    const allowed=[account,ids.campaign,`${ids.campaign}/adsets`,`${ids.campaign}/ads`].map(x=>`/v26.0/${x}`);
+    const fetcher:typeof fetch=async(input,init)=>{
+      const url=new URL(String(input));
+      requireThat(url.origin==="https://graph.facebook.com"&&allowed.includes(url.pathname)&&
+        (!init?.method||init.method==="GET")&&init?.redirect==="error","existing_campaign_read_only_boundary",403);
+      await current();const response=await this.fetcher(input,init);await current();return response;
+    };
+    await current();
+    return this.vault.useReadOnly!(g,current,async credentials=>{
+      requireThat(credentials.expiresAt>Date.now(),"provider_access_expired_or_denied",403);
+      const client=new MetaMarketingClient({...credentials,fetchImpl:fetcher});
+      const accountContext=await this.accountContext(client,g);
+      const campaign=await client.getObject(ids.campaign,"id,account_id,status,effective_status");
+      requireThat(campaign.id===ids.campaign&&campaign.account_id===account.slice(4),"existing_campaign_account_mismatch");
+      requireThat(campaign.status==="PAUSED"&&campaign.effective_status==="PAUSED","existing_campaign_not_paused");
+      const children=await existingMetaChildren(client,g.accountId,ids);
+      const snapshot={account:accountContext,campaign:{id:campaign.id,accountId:campaign.account_id,
+        status:campaign.status,effectiveStatus:campaign.effective_status},...children};
+      await current();
+      return {provider:"meta" as const,source:"provider_api" as const,snapshot,digest:digest(snapshot),
+        observedAt:new Date().toISOString(),inventoryComplete:true as const,allPaused:true as const,
+        scope:"exact_campaign_and_complete_children" as const,historicalEffectsSettled:false as const,
+        materialVerified:false as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_campaign_read_unavailable");});
+  }
   /** Capture original Meta acquisition terms without writes, persistence or authority expansion. */
   async captureExistingMetaMaterial(g: Grant, ids: {campaign:string; adset:string; creative:string; image:string}, source: ExistingMetaMaterialSource, guard: () => Promise<void>) {
     requireThat(this.name === "meta" && g.provider === "meta" && this.vault.useReadOnly &&

@@ -204,6 +204,15 @@ not transferred. No provider objects, grants, approvals or conversions are
 created. Host adoption must resolve these requirements before installing its
 candidate receipt as execution state.
 
+`NativeProvider.inspectExistingMetaHierarchy` supplies narrower current state
+evidence for reconciliation without requiring a complete material candidate.
+It verifies the account/currency/timezone, exact paused campaign and complete
+unfiltered, paginated ad-set/ad edges (currently one of each), including creative
+association. Every request uses read-only Vault custody with revocation checks.
+Its digest covers explicit identity/state facts. It does not settle historical
+effects, verify material or upload bytes, transfer ownership or grant spending.
+Hosts must bind the supplied IDs to original history and current native mappings.
+
 The server export `HistoricalCampaignImports` retains a host's consistent native
 campaign snapshot through an explicit identity/source port. Core exports the
 typed snapshot, record, total and receipt contracts. The SDK reconciles source
