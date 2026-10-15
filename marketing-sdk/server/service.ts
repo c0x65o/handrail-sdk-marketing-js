@@ -1671,10 +1671,15 @@ export class MarketingServer {
         o.campaignId,
       );
       const g = await this.grant(project, c.grantId, "report", c.id);
-      // A safety-pause readback may use refreshed current report authority for
-      // the same account. It never replays a write or changes the original claim.
+      // Host-bound readback may use refreshed report authority for the same
+      // account. Preparation renewal must be campaign-scoped and report-only:
+      // it cannot extend the old permission to create or spend. Original effect
+      // revision and payload stay immutable; this path never dispatches a write.
+      const renewedRead = this.options.executionAuthority && g.revision > o.grantRevision &&
+        (o.kind === "pause" || (o.kind === "prepare" && g.campaignId === c.id &&
+          g.permissions.length === 1 && g.permissions[0] === "report"));
       requireThat(c.revision === o.campaignRevision && (g.revision === o.grantRevision ||
-        (o.kind === "pause" && this.options.executionAuthority && g.revision > o.grantRevision)) && g.accountId === o.accountId &&
+        renewedRead) && g.accountId === o.accountId &&
         (o.kind === "pause" ? c.receipt?.payloadDigest : digest(this.providers[g.provider].plan(c, g, await this.assets(c, false)))) === o.payloadDigest, "reconciliation_material_changed");
       return { o, c, g };
     });

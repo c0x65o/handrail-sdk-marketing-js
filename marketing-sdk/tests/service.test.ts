@@ -33,6 +33,43 @@ import { agentTools } from "../agent/index.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 const time = Date.now();
+test("host preparation reconciliation accepts only scoped report-only renewal and retains the original effect",async()=>{
+  const t=await setupTest();try{
+    await ready(t);const c=await campaign(t);
+    const original=await t.store.get<Grant>('qa-alpha','grant',c.grantId);
+    await t.store.put('qa-alpha','grant',original.id,{...original,campaignId:c.id});
+    t.provider.loseNextResponse=true;
+    const queued=await t.service.prepare(t.admin,'qa-alpha',{campaignId:c.id,requestKey:'original-prepare'});
+    const operation=await t.service.dispatch('qa-alpha',queued.id);assert.equal(operation.state,'unknown');
+    let reads=0,revoked=false;
+    const reconcile=t.provider.reconcile.bind(t.provider);
+    t.provider.reconcile=async(...args)=>{reads++;return reconcile(...args);};
+    const check=async()=>{if(revoked)throw Error('host_read_revoked');};
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      executionAuthority:{assertCurrent:check,withCurrent:async(_p,_c,_a,local)=>{await check();const value=await local();await check();return value;}},
+    });
+    const renewed:Grant={...original,campaignId:c.id,revision:original.revision+1,permissions:['report']};
+    for(const invalid of [{...renewed,permissions:['prepare','report'] as Grant['permissions']},
+      {...renewed,campaignId:undefined},{...renewed,campaignId:'another'},
+      {...renewed,accountId:'other-account'}, {...renewed,expiresAt:'2000-01-01T00:00:00Z'},
+      {...renewed,revokedAt:new Date().toISOString()}]){
+      await t.store.put('qa-alpha','grant',original.id,invalid);
+      await assert.rejects(service.reconcile(t.admin,'qa-alpha',{operationId:operation.id}));assert.equal(reads,0);
+      assert.equal((await t.store.get<Operation>('qa-alpha','operation',operation.id)).state,'unknown');
+    }
+    await t.store.put('qa-alpha','grant',original.id,renewed);
+    await assert.rejects(t.service.reconcile(t.admin,'qa-alpha',{operationId:operation.id}),/reconciliation_material_changed/);
+    revoked=true;await assert.rejects(service.reconcile(t.admin,'qa-alpha',{operationId:operation.id}),/host_read_revoked/);revoked=false;
+    await t.store.put('qa-alpha','campaign',c.id,{...c,material:{...c.material,headline:'Changed'}});
+    await assert.rejects(service.reconcile(t.admin,'qa-alpha',{operationId:operation.id}),/reconciliation_material_changed/);
+    await t.store.put('qa-alpha','campaign',c.id,c);assert.equal(reads,0);
+    const recovered=await service.reconcile(t.admin,'qa-alpha',{operationId:operation.id});
+    assert.equal(recovered.state,'succeeded');assert.equal(recovered.id,operation.id);assert.equal(reads,1);
+    assert.equal(recovered.grantRevision,original.revision);assert.equal(recovered.payloadDigest,operation.payloadDigest);
+    assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),[]);
+    assert.equal((await t.store.list('qa-alpha','operation')).length,1);
+  }finally{await t.close();}
+});
 test("generation byte validation fences MIME mismatch and malformed output without resubmission", async () => {
   for (const malformed of [false, true]) {
     const t = await setupTest();
