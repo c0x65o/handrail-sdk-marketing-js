@@ -1,4 +1,4 @@
-import { canonical, capabilityStructureBlockers, capabilityBlockers, capabilityStatus, providerBudgetBlockers, type Campaign, type Grant, type LinkedInSettings, type MetaSettings } from "../core/index.js";
+import { META_PLACEMENTS, canonical, capabilityStructureBlockers, capabilityBlockers, capabilityStatus, providerBudgetBlockers, type Campaign, type Grant, type LinkedInSettings, type MetaSettings } from "../core/index.js";
 import { requireThat } from "./store.js";
 
 export function validateAccountStructure(c:Campaign,g:Grant) {
@@ -41,11 +41,16 @@ export function metaExpansionMatches(value: unknown, expected: {detailed_targeti
 }
 export function metaTargeting(c: Campaign, s: MetaSettings) {
   const { audience: a } = c.material, t = s.targeting;
+  const placements = s.placements.map(id => {
+    const placement = META_PLACEMENTS.find(p => p.id === id);
+    requireThat(placement, "unsupported_placement", 422);
+    return placement;
+  });
+  const platforms = [...new Set(placements.map(p => p.platform))];
   return {
     geo_locations: { countries: a.locations, ...(t.locationTypes ? { location_types: t.locationTypes } : {}) }, age_min: a.ageMin, age_max: a.ageMax,
-    publisher_platforms: s.placements.map(p => p === "facebook_feed" ? "facebook" : "instagram"),
-    ...(s.placements.includes("facebook_feed") ? { facebook_positions: ["feed"] } : {}),
-    ...(s.placements.includes("instagram_feed") ? { instagram_positions: ["stream"] } : {}),
+    publisher_platforms: platforms,
+    ...Object.fromEntries(platforms.map(platform => [`${platform}_positions`, placements.filter(p => p.platform === platform).map(p => p.position)])),
     ...(t.languages.length ? { locales: t.languages.map(x => Number(x.id)) } : {}),
     ...(t.interestGroups.length ? { flexible_spec: t.interestGroups.map(group => ({ interests: group.map(x => ({ id: x.id, name: x.label })) })) } : {}),
     ...(t.excludedCustomAudiences.length ? { excluded_custom_audiences: t.excludedCustomAudiences.map(x => ({ id: x.id, name: x.label })) } : {}),

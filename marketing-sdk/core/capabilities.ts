@@ -14,6 +14,18 @@ interface SettingsBase {
   /** null preserves an unknown historical acknowledgement; actions still require true. */
   nondiscriminationAccepted: boolean | null;
 }
+/** Explicit single-image placements. This catalogue describes request/readback
+ * representation; every exact account/material still needs eligibility evidence. */
+export const META_PLACEMENTS = [
+  { id: "facebook_feed", label: "Facebook Feed", platform: "facebook", position: "feed" },
+  { id: "instagram_feed", label: "Instagram Feed", platform: "instagram", position: "stream" },
+  { id: "facebook_reels", label: "Facebook Reels", platform: "facebook", position: "facebook_reels" },
+  { id: "instagram_reels", label: "Instagram Reels", platform: "instagram", position: "reels" },
+] as const;
+export type MetaPlacement = typeof META_PLACEMENTS[number]["id"];
+export function usesInstagram(placements: readonly string[]): boolean {
+  return placements.some(id => META_PLACEMENTS.some(p => p.id === id && p.platform === "instagram"));
+}
 export interface MetaSettings extends SettingsBase {
   provider: "meta";
   apiVersion: "v26.0";
@@ -21,7 +33,7 @@ export interface MetaSettings extends SettingsBase {
   objective: "OUTCOME_TRAFFIC" | "OUTCOME_AWARENESS" | "OUTCOME_LEADS";
   optimization: "LINK_CLICKS" | "IMPRESSIONS" | "REACH" | "OFFSITE_CONVERSIONS";
   delivery: "ordinary" | "strict" | "employment" | "advantage_plus_interests" | "advantage_plus_broad";
-  placements: ("facebook_feed" | "instagram_feed")[];
+  placements: MetaPlacement[];
   identity: { pageId: string; instagramUserId?: string };
   targeting: {
     languages: ResolvedOption[];
@@ -93,7 +105,7 @@ export const META_COMBINATIONS = [
 export const CAPABILITY_MATRIX = {
   version: CAPABILITY_VERSION,
   meta: { apiVersion: "v26.0", format: "single_image", combinations: META_COMBINATIONS,
-    placements: ["facebook_feed", "instagram_feed"], strictCountries: ["US"], employmentCountries: ["US"],
+    placements: META_PLACEMENTS.map(p => p.id), strictCountries: ["US"], employmentCountries: ["US"],
     gate: "Exact account eligibility receipt and complete provider readback; application contract is not a Meta delivery guarantee" },
   linkedin: { apiVersion: "202609", format: "STANDARD_UPDATE", combinations: LINKEDIN_COMBINATIONS,
     placements: ["linkedin_feed"], gate: "Exact account eligibility receipt, resolved taxonomy, conversion binding and complete readback" },
@@ -133,9 +145,9 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
     check(only(s, [...base, "delivery", "specialAdCategory", "specialAdCategoryCountry", "attribution", "creative"]), "unexpected_settings_fields");
     check(s.apiVersion === "v26.0" && s.format === "single_image", "unsupported_format_or_api");
     check(META_COMBINATIONS.some(row => row[0] === s.delivery && row[1] === s.objective && row[2] === s.optimization), "unsupported_objective_optimization");
-    check(Array.isArray(s.placements) && s.placements.length > 0 && s.placements.length <= 2 && new Set(s.placements).size === s.placements.length && s.placements.every(p => ["facebook_feed", "instagram_feed"].includes(p)), "unsupported_placement");
+    check(Array.isArray(s.placements) && s.placements.length > 0 && s.placements.length <= META_PLACEMENTS.length && new Set(s.placements).size === s.placements.length && s.placements.every(id => META_PLACEMENTS.some(p => p.id === id)), "unsupported_placement");
     check(only(s.identity, ["pageId", "instagramUserId"]) && numeric(s.identity?.pageId) && (!g || s.identity.pageId === g.pageId), "meta_page_required");
-    check(s.placements?.includes("instagram_feed") ? numeric(s.identity?.instagramUserId) : s.identity?.instagramUserId === undefined, "instagram_identity_mismatch");
+    check(usesInstagram(s.placements) ? numeric(s.identity?.instagramUserId) : s.identity?.instagramUserId === undefined, "instagram_identity_mismatch");
     if (g && s.identity?.instagramUserId) check(s.identity.instagramUserId === g.instagramUserId, "instagram_identity_mismatch");
     const t = s.targeting;
     check(only(t, ["languages", "interestGroups", "excludedCustomAudiences", "locationTypes", "expansion"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");

@@ -13,6 +13,16 @@ import { metaExpansionOff, exactLinkedInTargeting } from "../server/capabilities
 import { testStore } from "./datastore.js";
 import { byteDigest, digest } from "../server/store.js";
 
+// Independent expected provider placement documents, not derived from the SDK catalogue.
+const metaPlacementCases: {ids: MetaSettings["placements"]; targeting: Record<string,string[]>}[] = [
+  {ids:["facebook_feed"],targeting:{publisher_platforms:["facebook"],facebook_positions:["feed"]}},
+  {ids:["instagram_feed"],targeting:{publisher_platforms:["instagram"],instagram_positions:["stream"]}},
+  {ids:["facebook_feed","instagram_feed"],targeting:{publisher_platforms:["facebook","instagram"],facebook_positions:["feed"],instagram_positions:["stream"]}},
+  {ids:["facebook_reels"],targeting:{publisher_platforms:["facebook"],facebook_positions:["facebook_reels"]}},
+  {ids:["instagram_reels"],targeting:{publisher_platforms:["instagram"],instagram_positions:["reels"]}},
+  {ids:["facebook_feed","instagram_feed","facebook_reels","instagram_reels"],targeting:{publisher_platforms:["facebook","instagram"],facebook_positions:["feed","facebook_reels"],instagram_positions:["stream","reels"]}},
+  {ids:["instagram_reels","facebook_reels","instagram_feed"],targeting:{publisher_platforms:["instagram","facebook"],instagram_positions:["reels","stream"],facebook_positions:["facebook_reels"]}},
+];
 function sample(provider: "meta" | "linkedin") {
   const g: Grant = { id: "g", projectId: "p", revision: 1, provider, accountId: provider === "meta" ? "act_123" : "123", label: "Synthetic transport",
     currency: "USD", timezone: provider === "linkedin" ? "UTC" : "America/Chicago", permissions: ["setup", "prepare", "activate", "pause", "report"], expiresAt: "2099-01-01T00:00:00Z",
@@ -239,12 +249,13 @@ async function native(provider: "meta" | "linkedin") {
 for (const provider of ["meta", "linkedin"] as const) test(`${provider} every offered combination has full native initial readback, repeat activation and read-only recovery`, async () => {
   const t = await native(provider);
   try {
-    const count = (provider === "meta" ? META_COMBINATIONS.length : LINKEDIN_COMBINATIONS.length) * 3;
+    const width = provider === "meta" ? metaPlacementCases.length : 3;
+    const count = (provider === "meta" ? META_COMBINATIONS.length : LINKEDIN_COMBINATIONS.length) * width;
     for (let i = 0; i < count; i++) {
       t.c.material = sample(provider).c.material;
-      if (provider === "meta") { metaMode(t.c, META_COMBINATIONS[Math.floor(i / 3)]!); const s = t.c.material.settings as MetaSettings;
-        s.placements = i % 3 === 0 ? ["facebook_feed"] : i % 3 === 1 ? ["instagram_feed"] : ["facebook_feed", "instagram_feed"];
-        if (s.placements.includes("instagram_feed")) s.identity.instagramUserId = "43"; }
+      if (provider === "meta") { metaMode(t.c, META_COMBINATIONS[Math.floor(i / width)]!); const s = t.c.material.settings as MetaSettings;
+        s.placements = [...metaPlacementCases[i % width]!.ids];
+        if (metaPlacementCases[i % width]!.targeting.instagram_positions) s.identity.instagramUserId = "43"; }
       else { linkedInMode(t.c, LINKEDIN_COMBINATIONS[Math.floor(i / 3)]!); const s = t.c.material.settings as LinkedInSettings;
         s.targeting = i % 3 === 0 ? { include: { titles: [{ id: "urn:li:title:1", label: "Designer" }, { id: "urn:li:title:2", label: "Architect" }] }, exclude: { employers: [{ id: "urn:li:organization:9", label: "Synthetic company" }] } }
           : i % 3 === 1 ? { include: { jobFunctions: [{ id: "urn:li:function:1", label: "Function" }], seniorities: [{ id: "urn:li:seniority:1", label: "Seniority" }],
@@ -371,15 +382,15 @@ test("review: unexpected LinkedIn conversions block even objectives without a re
 for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} matrix reconciles independent GET-shaped records without writes`, async () => {
   const t = await native(provider);
   try {
-    const modes = provider === "meta" ? META_COMBINATIONS.length * 3 : LINKEDIN_COMBINATIONS.length;
+    const modes = provider === "meta" ? META_COMBINATIONS.length * metaPlacementCases.length : LINKEDIN_COMBINATIONS.length;
     for (let i = 0; i < modes; i++) {
       t.c.material = sample(provider).c.material; t.state.objects.clear();
       let ids: Record<string, string>;
       if (provider === "meta") {
-        const row = META_COMBINATIONS[Math.floor(i / 3)]!; metaMode(t.c, row);
-        const s = t.c.material.settings as MetaSettings;
-        s.placements = i % 3 === 0 ? ["facebook_feed"] : i % 3 === 1 ? ["instagram_feed"] : ["facebook_feed", "instagram_feed"];
-        const instagram = i % 3 !== 0, facebook = i % 3 !== 1;
+        const row = META_COMBINATIONS[Math.floor(i / metaPlacementCases.length)]!; metaMode(t.c, row);
+        const s = t.c.material.settings as MetaSettings, placementCase=metaPlacementCases[i % metaPlacementCases.length]!;
+        s.placements = [...placementCase.ids];
+        const instagram = Boolean(placementCase.targeting.instagram_positions);
         if (instagram) s.identity.instagramUserId = "43";
         ids = { readbackVersion: ["advantage_plus_interests", "advantage_plus_broad"].includes(row[0]) ? "5" : "4", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
         const strict = row[0] === "strict", employment = row[0] === "employment", awareness = row[1] === "OUTCOME_AWARENESS";
@@ -390,8 +401,7 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
           start_time: "2026-10-08T05:00:00+0000", end_time: "2026-10-15T05:00:00+0000", destination_type: awareness ? "UNDEFINED" : "WEBSITE",
           ...(awareness ? { promoted_object: { page_id: "42" } } : employment ? { promoted_object: { pixel_id: "60", custom_conversion_id: "61" } } : {}),
           targeting: { geo_locations: { countries: ["US"] }, age_min: employment ? 18 : 25, age_max: employment ? 65 : 54,
-            publisher_platforms: facebook && instagram ? ["facebook", "instagram"] : [facebook ? "facebook" : "instagram"],
-            ...(facebook ? { facebook_positions: ["feed"] } : {}), ...(instagram ? { instagram_positions: ["stream"] } : {}),
+            ...structuredClone(placementCase.targeting),
             targeting_automation: { advantage_audience: 0 }, ...(strict ? { locales: [6], targeting_optimization: "none",
               flexible_spec: [{ interests: [{ id: "10", name: "Gardens" }, { id: "11", name: "Design" }] }],
               excluded_custom_audiences: [{ id: "20", name: "Existing customers" }] } : {}) },
@@ -433,6 +443,17 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
       const input = { kind: "prepare", payloadDigest, receipt: { ids, payloadDigest, intent: "paused" as const, delivery: "unverified" as const, providerRequestId: null, observedAt: "2026-01-01T00:00:00Z", evidence: "provider" as const } };
       assert.ok(await t.port.reconcile(t.c, t.g, input), `${provider} combination ${i}`);
       assert.equal(t.state.writes, 0);
+      if(provider === "meta") {
+        const targeting=t.state.objects.get("101").targeting;
+        const key=targeting.instagram_positions?"instagram_positions":"facebook_positions";
+        const expected=targeting[key];
+        for(const changed of [undefined,[],[...expected,expected[0]],[...expected,"story"]]) {
+          targeting[key]=changed;
+          assert.equal(await t.port.reconcile(t.c,t.g,input),null,"missing, duplicate or extra placement is not an exact readback");
+          assert.equal(t.state.writes,0);
+        }
+        targeting[key]=expected;
+      }
       if (provider === "linkedin") {
         const object = t.state.objects.get("102");
         for (const amount of [null, false, "", "30.001", "3e1", 30]) {
@@ -794,4 +815,17 @@ test("Meta v5 material drift blocks activation and read-only recovery while pres
       assert.equal(t.state.writes,writes);assert.deepEqual(receipt,before);
     }
   } finally {await t.close();}
+});
+
+test("Reels identities and exact placement authority cannot be inferred from feed eligibility",()=>{
+  const {c,g,a}=sample("meta");eligible(c,g);
+  const s=c.material.settings as MetaSettings;s.placements=["instagram_reels"];
+  assert.ok(capabilityBlockers(c.material,g).includes("instagram_identity_mismatch"));
+  s.identity.instagramUserId="43";
+  assert.deepEqual(capabilityBlockers(c.material,g),[]);
+  assert.equal(capabilityStatus(c.material,g).accountVerified,false);
+  assert.deepEqual((providerPlan(c,g,[a]) as any).adset.targeting.publisher_platforms,["instagram"]);
+  for(const placements of [[],["instagram_reels","instagram_reels"],["facebook_story"],["unknown"]]) {
+    s.placements=placements as any;assert.ok(capabilityBlockers(c.material,g).includes("unsupported_placement"));
+  }
 });

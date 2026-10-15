@@ -293,3 +293,19 @@ test('Meta single-image readback detects a provider asset feed added after captu
   f.observed.creative.asset_feed_spec={images:[{hash:f.ids.image},{hash:'b'.repeat(32)}]};
   await assert.rejects(f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{}),/provider_asset_feed_unsupported/);
 });
+
+test("Meta existing Reels placement capture preserves exact positions and rejects implicit feed substitution",async()=>{
+  const f=fixture(),target=f.observed.adset.targeting;
+  target.facebook_positions=["facebook_reels","feed"];
+  f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+  const result=await f.capture();
+  assert.deepEqual(result.material.settings?.placements,["facebook_reels","facebook_feed"]);
+  assert.equal(result.executionReady,false);
+  const editor=renderToStaticMarkup(createElement(GuidedFields,{value:result.material,grant:f.grant,onChange:()=>{}}));
+  assert.match(editor,/Facebook Reels/);assert.match(editor,/Instagram Reels/);
+  assert.doesNotMatch(editor,/Feed placements/);
+  for(const positions of [[],["story"],["facebook_reels","facebook_reels"]]){
+    target.facebook_positions=positions;f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+    await assert.rejects(f.capture());
+  }
+});

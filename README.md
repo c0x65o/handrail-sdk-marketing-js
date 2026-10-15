@@ -639,3 +639,30 @@ original test/binding snapshot before accepting that receipt. Late observations
 remain excluded QA history and cannot qualify expired/cancelled/stale readiness.
 Changed owner, material, source, destination or outcome claims are rejected even
 when a caller reuses a real test ID.
+
+### Explicit Meta Feed and Reels placements
+
+The single-image contract represents `facebook_feed`, `instagram_feed`,
+`facebook_reels` and `instagram_reels` individually and in explicit combinations.
+The shared editor and agent schema use the same typed catalogue. Provider plans
+emit each selected platform once and its exact positions (`feed` / `facebook_reels`
+on Facebook, `stream` / `reels` on Instagram). Any Instagram placement requires
+the selected Instagram identity. Historical capture reads the actual positions;
+it does not replace a missing or unsupported position with Feed. Duplicate,
+missing, additional or changed positions fail validation or exact readback.
+
+Meta documents image advertising on Reels in its [official Reels guide](https://www.facebook.com/business/ads/facebook-instagram-reels-ads).
+This implementation supports one retained image across the selected placements;
+review vertical artwork and safe zones for Reels. It does not implement video
+publication, placement-specific asset customization or automatic cropping.
+Representation and intercepted HTTP tests are not account eligibility, provider
+approval, rendering or delivery proof. Each exact account/material needs its own
+current eligibility evidence. Feed eligibility cannot authorize Reels; changing
+placements changes the material evidence key and provider plan. Meta daily-budget
+qualification, launch approvals and spending ceilings remain enforced.
+
+Validation: TypeScript/build plus 94 disposable PostgreSQL tests, including all
+seven offered objective/delivery combinations across seven independent Feed/Reels
+placement documents, native preparation, lost read recovery, activation/pause,
+missing/duplicate/extra readback rejection and original historical capture. These
+are synthetic provider responses, not live campaign writes or delivery evidence.

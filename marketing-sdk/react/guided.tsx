@@ -1,7 +1,7 @@
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import { CountryAudience } from "./audience.js";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CAPABILITY_VERSION, capabilityBlockers, capabilityStatus, LINKEDIN_COMBINATIONS, META_COMBINATIONS,
+import { META_PLACEMENTS, usesInstagram, CAPABILITY_VERSION, capabilityBlockers, capabilityStatus, LINKEDIN_COMBINATIONS, META_COMBINATIONS,
   type Audience, type Campaign, type CampaignDraft, type DraftMaterial, type Material, type MarketingClient,
   type ProviderSettings, type PublicGrant, type ResolvedOption, type ProfessionalFacet, providerBudgetBlockers } from "../core/index.js";
 import { defaultCampaignSchedule, dateAtInstant, instantAtDate } from "./schedule.js";
@@ -109,9 +109,12 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
       <p>One image per creative set. Document and video ad publishing remain unavailable.</p>
       {s.provider === "meta" ? <>
         <IdentifierField label="Page identity" kind="page" grant={g} allowed={g.pageId || ""} value={s.identity.pageId} onChange={pageId => settings({ identity: { ...s.identity, pageId } })} />
-        <Select label="Feed placements" value={s.placements.join(",")} choices={["facebook_feed", "instagram_feed", "facebook_feed,instagram_feed"]} onChange={v => settings({ placements: v.split(",") })} />
-        {s.placements.includes("instagram_feed") && <IdentifierField label="Instagram identity" kind="instagram" grant={g} allowed={g.instagramUserId || ""} value={s.identity.instagramUserId || ""} onChange={instagramUserId => settings({ identity: { ...s.identity, instagramUserId } })} />}
-        {s.identity.instagramUserId && !s.placements.includes("instagram_feed") && <button type="button" onClick={() => settings({ identity: { pageId: s.identity.pageId } })}>Remove unused Instagram identity</button>}
+        <fieldset><legend>Placements</legend>{META_PLACEMENTS.map(p => <label key={p.id}>
+          <input type="checkbox" checked={s.placements.includes(p.id)} onChange={e => settings({ placements: e.target.checked ? [...s.placements, p.id] : s.placements.filter(id => id !== p.id) })} />{p.label}
+        </label>)}</fieldset>
+        {s.placements.some(p => p === "facebook_reels" || p === "instagram_reels") && <p>Reels uses the selected image. Review a vertical 9:16 asset and safe zones; this preview does not verify provider rendering or delivery.</p>}
+        {usesInstagram(s.placements) && <IdentifierField label="Instagram identity" kind="instagram" grant={g} allowed={g.instagramUserId || ""} value={s.identity.instagramUserId || ""} onChange={instagramUserId => settings({ identity: { ...s.identity, instagramUserId } })} />}
+        {s.identity.instagramUserId && !usesInstagram(s.placements) && <button type="button" onClick={() => settings({ identity: { pageId: s.identity.pageId } })}>Remove unused Instagram identity</button>}
         {s.delivery === "ordinary" && g.id.startsWith("connection:") ? <p>Languages, interests and exclusions are unavailable in this country-only journey.
           {(s.targeting.languages.length > 0 || s.targeting.interestGroups.length > 0 || s.targeting.excludedCustomAudiences.length > 0) && <><br />Retained targeting needs review. <button type="button" onClick={() => settings({ targeting: { languages: [], interestGroups: [], excludedCustomAudiences: [] } })}>Remove unsupported targeting</button></>}
         </p> : <>

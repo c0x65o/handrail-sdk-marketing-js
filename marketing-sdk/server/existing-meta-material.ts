@@ -1,4 +1,4 @@
-import { CAPABILITY_VERSION, type Grant, type Material, type MetaSettings, type TargetingOption } from "../core/index.js";
+import { META_PLACEMENTS, usesInstagram, CAPABILITY_VERSION, type Grant, type Material, type MetaSettings, type TargetingOption } from "../core/index.js";
 import { exactTargeting, metaExpansionMatches, metaExpansionOff, metaTargeting } from "./capabilities.js";
 import { digest, requireThat, DomainError } from "./store.js";
 import { material as validateMaterial } from "./validation.js";
@@ -164,9 +164,15 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   requireThat(Array.isArray(t.publisher_platforms),"existing_material_placement_unknown");
   for(const platform of t.publisher_platforms){
     requireThat(["facebook","instagram"].includes(platform),"existing_material_placement_unsupported");
-    settings.placements.push(platform==="facebook"?"facebook_feed":"instagram_feed");
+    const positions=t[`${platform}_positions`];
+    requireThat(Array.isArray(positions)&&positions.length>0,"existing_material_placement_unknown");
+    for(const position of positions){
+      const placement=META_PLACEMENTS.find(p=>p.platform===platform&&p.position===position);
+      requireThat(placement,"existing_material_placement_unsupported");
+      settings.placements.push(placement.id);
+    }
   }
-  if(settings.placements.includes("instagram_feed"))settings.identity.instagramUserId=grant.instagramUserId;
+  if(usesInstagram(settings.placements))settings.identity.instagramUserId=grant.instagramUserId;
   const instant=(value:unknown)=>{requireThat(typeof value==="string"&&/T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(value)&&Number.isFinite(Date.parse(value)),"existing_material_schedule_unknown");return new Date(value as string).toISOString();};
   const material:Material={name:source.name,headline:source.headline,body:source.body,destination:source.destination,destinationDigest:source.destinationDigest,
     assetIds:[source.assetId],purpose:source.purpose,settings,

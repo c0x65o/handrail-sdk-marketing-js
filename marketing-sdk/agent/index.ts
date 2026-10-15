@@ -1,4 +1,4 @@
-import { CAPABILITY_VERSION } from "../core/index.js";
+import { CAPABILITY_VERSION, META_PLACEMENTS } from "../core/index.js";
 import type { Command, Commands, MarketingClient } from "../core/index.js";
 
 const string = { type: "string", minLength: 1, maxLength: 200 };
@@ -15,7 +15,7 @@ const settingsBase = { version: { const: CAPABILITY_VERSION }, accountId: string
 const providerSettings = { oneOf: [
   schemaObject({ ...settingsBase, provider: { const: "meta" }, apiVersion: { const: "v26.0" }, format: { const: "single_image" },
     objective: { enum: ["OUTCOME_TRAFFIC", "OUTCOME_AWARENESS", "OUTCOME_LEADS"] }, optimization: { enum: ["LINK_CLICKS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS"] },
-    delivery: { enum: ["ordinary", "strict", "employment"] }, placements: { type: "array", minItems: 1, maxItems: 2, uniqueItems: true, items: { enum: ["facebook_feed", "instagram_feed"] } },
+    delivery: { enum: ["ordinary", "strict", "employment"] }, placements: { type: "array", minItems: 1, maxItems: META_PLACEMENTS.length, uniqueItems: true, items: { enum: META_PLACEMENTS.map(p => p.id) } },
     identity: schemaObject({ pageId: string, instagramUserId: string }, ["pageId"]), targeting: schemaObject({ languages: options,
       interestGroups: { type: "array", maxItems: 5, items: options }, excludedCustomAudiences: options }),
     specialAdCategory: { const: "EMPLOYMENT" }, specialAdCategoryCountry: { const: "US" },

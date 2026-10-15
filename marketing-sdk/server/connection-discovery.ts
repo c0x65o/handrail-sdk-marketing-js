@@ -60,7 +60,7 @@ export class ConnectionDiscovery {
     return this.account({ id: a.id, label: label(a.name, "Meta advertising account"), businessLabel: a.business ? label(a.business.name, "Business") : null,
       currency: a.currency, timezone: a.timezone_name, timezoneSource: "provider_account", roleSummary: tasks.includes("MANAGE") ? "Account management and reporting" : tasks.includes("ADVERTISE") ? "Reporting and advertising access" : "Reporting access",
       permissions: ["setup", "report", ...(tasks.includes("ADVERTISE") || tasks.includes("MANAGE") ? ["prepare", "activate", "pause"] as Permission[] : [])],
-      limitations: ["Single-image feed ads only. Meta daily native preparation and activation remain denied."] });
+      limitations: ["Single-image Feed and Reels placements; exact account eligibility is required. Meta daily native preparation and activation remain denied."] });
   }
   private account(a: DiscoveredAccount) {
     requireThat(typeof a.currency === "string" && /^[A-Z]{3}$/.test(a.currency) && typeof a.timezone === "string", "provider_account_context_missing");
