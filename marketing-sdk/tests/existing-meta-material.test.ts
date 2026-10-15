@@ -115,3 +115,38 @@ test("paused Meta material preserves unknown or declined policy without granting
   }
   const f=fixture();f.source.policy.nondiscriminationAccepted=null;await assert.rejects(f.capture(),/existing_material_policy_unverified/);
 });
+
+test('partial historical Meta observations preserve differences, intent provenance and unknowns without approval',async()=>{
+  const f=fixture(),ref='a'.repeat(64),{retainedProviderTerms,...original}=f.source;
+  const source={...original,policy:{nondiscriminationAccepted:null,receiptRefs:[ref],missingReason:'not_recorded'},retainedObservations:[
+    {key:'campaign.objective' as const,value:'OUTCOME_LEADS',provenance:'legacy_intent' as const,historyRecordId:ref},
+    {key:'adset.expansion' as const,value:[{key:'detailed_targeting',value:1},{key:'lookalike',value:1}],provenance:'legacy_observation' as const,historyRecordId:ref},
+    {key:'adset.dailyBudgetMinor' as const,value:1500,provenance:'legacy_observation' as const,historyRecordId:ref},
+    {key:'campaign.spendCap' as const,value:2000,provenance:'legacy_observation' as const,historyRecordId:ref}]};
+  const before=structuredClone(source);
+  const result=await f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,source,async()=>{}),r=result.materialReconciliation;
+  assert.equal(f.calls.length,4);assert.equal(result.executionReady,false);assert.equal(r.originalMaterialFullyKnown,false);
+  assert.equal(r.materialApproved,false);assert.equal(r.spendingAuthorityGranted,false);assert.deepEqual(source,before);
+  const item=(key:string)=>r.comparisons.find(x=>x.key===key)!;
+  assert.equal(item('adset.expansion').status,'different');assert.equal(item('campaign.objective').retained?.provenance,'legacy_intent');
+  assert.equal(item('adset.dailyBudgetMinor').status,'equal');assert.equal(item('campaign.spendCap').status,'current_not_returned');
+  assert.equal(item('campaign.spendCap').currentPresent,false);assert.equal(item('adset.lifetimeBudgetMinor').current,0);
+  assert.equal(item('adset.lifetimeBudgetMinor').status,'unknown_retained');assert.equal(item('adset.startAt').missingReason,'historical_field_not_retained');
+  assert.deepEqual(r.observedTerms,existingMetaTerms(f.observed));
+  assert.equal(result.material.settings?.nondiscriminationAccepted,null);
+  assert.deepEqual(f.grant.permissions,['pause','report']);
+  // Strict full-original capture remains strict; the new operation does not
+  // silently reinterpret a full retained snapshot as partial observations.
+  f.source.retainedProviderTerms.adset.targeting_optimization_types=[{key:'detailed_targeting',value:1},{key:'lookalike',value:1}];
+  await assert.rejects(f.capture(),/existing_material_retained_terms_changed/);
+});
+
+test('reconciled Meta material rejects invalid retained references and revocation during provider reads',async()=>{
+  const f=fixture(),{retainedProviderTerms,...original}=f.source;
+  const retained={key:'campaign.objective' as const,value:'OUTCOME_LEADS',provenance:'legacy_observation' as const,historyRecordId:'a'.repeat(64)};
+  for(const rows of [[],[{...retained,historyRecordId:'unbound'}],[retained,retained],[{...retained,value:null}]]) {
+    await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...original,retainedObservations:rows},async()=>{}),/existing_material_observations_invalid/);
+  }
+  let revoked=false;f.afterFetch(()=>{revoked=true;});
+  await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...original,retainedObservations:[retained]},async()=>{if(revoked)throw Error('revoked');}),/revoked/);
+});

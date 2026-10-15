@@ -2,6 +2,8 @@ import type { Asset, Campaign, Grant, Material, Receipt } from "../core/index.js
 import type { HistoricalRecord } from "../core/adoption.js";
 import { readHistoricalCampaignSnapshot } from "./adoption.js";
 import { readHistoricalPurposeResolution } from "./historical-purpose.js";
+import type {MetaMaterialReconciliation} from './meta-material-observations.js';
+import {META_OBSERVATION_KEYS,reconcileMetaObservations} from './meta-material-observations.js';
 import type { ProviderPort, ExistingMetaImageInspection } from "./ports.js";
 import type { SessionAuthority } from "./session-authority.js";
 import { sessionBinding, assertSessionInspection, inspectLiveSessions } from "./session-authority.js";
@@ -19,6 +21,7 @@ export interface ExecutionAdoptionCandidate {
   purposeResolutionId?:string;
   grantId: string;
   material: Material;
+  materialReconciliation?:MetaMaterialReconciliation;
   providerIds: Record<string, string>;
   media: { assetId: string; uploadedDigest: string|null; providerImageId: string; historyRecordId: string;
     /** Original source retained when historical upload bytes/checksum are unknown.
@@ -36,6 +39,7 @@ export interface ExecutionAdoptionReceipt {
   retirementReceiptRefs: string[]; settlementReceiptRefs: string[];
   mediaRecordIds: string[]; mediaAssetsDigest: string; adoptedAt: string; adoptedBy: string;
   purposeResolutionId?:string;
+  materialReconciliation?:MetaMaterialReconciliation;
   mediaProvenance?: {assetId:string; sourceDigest:string; uploadedDigest:string|null;
     originalUploadBytesVerified:boolean; missingReason:string|null; providerImage:ExistingMetaImageInspection|null}[];
   executionOwner: "sdk"; state: "paused"; spendingAuthorityGranted: false;
@@ -129,6 +133,19 @@ export class CampaignExecutionAdoptions {
       }
     };
     await assertPurpose();
+    if(candidate.materialReconciliation){
+      const r=candidate.materialReconciliation,{id,...body}=r;
+      requireThat(providerName==='meta'&&id===`material_${digest(body)}`&&r.method==='current_provider_state_with_retained_observations'&&
+        r.materialDigest===digest(candidate.material)&&r.observedTermsDigest===digest(r.observedTerms)&&r.originalMaterialFullyKnown===false&&
+        r.materialApproved===false&&r.spendingAuthorityGranted===false&&Number.isFinite(Date.parse(r.observedAt))&&
+        r.historyRecordIds.length>0&&r.historyRecordIds.every(id=>history.recordRefs.some(ref=>ref.digest===id&&['material','targeting','provider_object'].includes(ref.kind)))&&
+        r.comparisons.length===META_OBSERVATION_KEYS.length&&new Set(r.comparisons.map(x=>x.key)).size===META_OBSERVATION_KEYS.length&&
+        r.comparisons.every(x=>META_OBSERVATION_KEYS.includes(x.key)&&(!x.retained||r.historyRecordIds.includes(x.retained.historyRecordId))),
+        'adoption_material_reconciliation_invalid');
+      const recomputed=reconcileMetaObservations(r.comparisons.flatMap(x=>x.retained?[x.retained]:[]),r.observedTerms,r.observedTerms,candidate.material);
+      const {id:ignored,...recomputedBody}=recomputed;
+      requireThat(digest({...recomputedBody,observedAt:r.observedAt})===digest(body),'adoption_material_reconciliation_invalid');
+    }
     const unsettled = new Set(history.unsettledOperationIds);
     requireThat(Array.isArray(candidate.settlements) && candidate.settlements.length === unsettled.size &&
       new Set(candidate.settlements.map(x => x.operationId)).size === unsettled.size &&
@@ -221,6 +238,7 @@ export class CampaignExecutionAdoptions {
       nativeCampaignId, sdkCampaignId: campaign.id, historyImportId: history.id, sourceRevision: candidate.sourceRevision, candidateDigest,
       grantId: grant.id, grantRevision: grant.revision, providerReceipt: inspection.candidateReceipt,
       ...(candidate.purposeResolutionId?{purposeResolutionId:candidate.purposeResolutionId}:{}),
+      ...(candidate.materialReconciliation?{materialReconciliation:structuredClone(candidate.materialReconciliation)}:{}),
       retirementReceiptRefs: candidate.retirement.receiptRefs, settlementReceiptRefs: candidate.settlements.flatMap(x => x.receiptRefs),
       mediaRecordIds: candidate.media.flatMap(x => [x.historyRecordId,...(x.original?[x.original.historyRecordId]:[]),...(x.retainedSource?[x.retainedSource.historyRecordId]:[])]),
       mediaProvenance:[{assetId:asset.id,sourceDigest:original?.asset.digest??asset.digest,uploadedDigest:media.uploadedDigest,

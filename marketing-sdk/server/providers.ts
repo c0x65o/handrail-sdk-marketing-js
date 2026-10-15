@@ -21,7 +21,7 @@ import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
 import { existingLinkedInMaterial, existingLinkedInChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
-import { existingMetaMaterial, META_EXISTING_FIELDS, type ExistingMetaMaterialSource } from "./existing-meta-material.js";
+import { existingMetaMaterial, reconcileExistingMetaMaterial, META_EXISTING_FIELDS, type ExistingMetaMaterialSource, type ReconciledMetaMaterialSource } from "./existing-meta-material.js";
 import { prepareMetaImageUpload } from "./meta-image.js";
 import { existingMetaChildren } from "./existing-meta-children.js";
 import { GoogleAdsClient } from "./google.js";
@@ -407,6 +407,13 @@ export class NativeProvider implements ProviderPort {
   }
   /** Capture original Meta acquisition terms without writes, persistence or authority expansion. */
   async captureExistingMetaMaterial(g: Grant, ids: {campaign:string; adset:string; creative:string; image:string}, source: ExistingMetaMaterialSource, guard: () => Promise<void>) {
+    return this.captureMetaMaterial(g,ids,source,guard,observed=>existingMetaMaterial(source,g,ids,observed));
+  }
+  async reconcileExistingMetaMaterial(g:Grant,ids:{campaign:string;adset:string;creative:string;image:string},source:ReconciledMetaMaterialSource,guard:()=>Promise<void>){
+    return this.captureMetaMaterial(g,ids,source,guard,observed=>reconcileExistingMetaMaterial(source,g,ids,observed));
+  }
+  private async captureMetaMaterial<T extends object>(g:Grant,ids:{campaign:string;adset:string;creative:string;image:string},source:unknown,guard:()=>Promise<void>,
+    build:(observed:{campaign:any;adset:any;creative:any})=>T){
     requireThat(this.name === "meta" && g.provider === "meta" && this.vault.useReadOnly &&
       [ids.campaign,ids.adset,ids.creative].every(x=>typeof x==="string"&&/^\d+$/.test(x)) &&
       typeof ids.image==="string"&&/^[a-f0-9]{32}$/.test(ids.image), "existing_material_scope_invalid", 403);
@@ -427,7 +434,7 @@ export class NativeProvider implements ProviderPort {
       const observed={campaign:await client.getObject(ids.campaign,META_EXISTING_FIELDS.campaign),
         adset:await client.getObject(ids.adset,META_EXISTING_FIELDS.adset),
         creative:await client.getObject(ids.creative,META_EXISTING_FIELDS.creative)};
-      const result=existingMetaMaterial(source,g,ids,observed);await current();
+      const result=build(observed);await current();
       return {...result,providerMaterialDigest:digest(observed),observedAt:new Date().toISOString(),executionReady:false as const,
         missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred","meta_daily_budget_semantics_unverified"]};
     }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw new DomainError("existing_campaign_read_unavailable");});

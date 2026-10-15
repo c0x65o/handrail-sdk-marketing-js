@@ -486,3 +486,24 @@ test('paused adoption retains unknown Meta policy without fabricating acknowledg
     assert.deepEqual(await f.service.adopt(f.principal,'p','native','unknown-policy'),receipt);
   }finally{await f.close();}
 });
+
+test('Meta adoption persists material reconciliation independently of history and rejects altered comparisons',async()=>{
+  const {reconcileMetaObservations}=await import('../server/meta-material-observations.js');
+  for(const tamper of [false,true]){
+    const f=await fixture();try{
+      const terms={campaign:{objective:'OUTCOME_LEADS'},adset:{daily_budget:'1500'},creative:{}};
+      const ref=f.history.recordRefs.find(x=>x.kind==='provider_object')!.digest;
+      const r=reconcileMetaObservations([{key:'campaign.objective',value:'OUTCOME_TRAFFIC',provenance:'legacy_observation',historyRecordId:ref}],terms,terms,f.candidate.material);
+      f.candidate.materialReconciliation=r;
+      if(tamper){r.comparisons[0]!.status='equal';const {id,...body}=r;r.id=`material_${digest(body)}`;
+        await assert.rejects(f.service.adopt(f.principal,'p','native','tampered-comparison'),/adoption_material_reconciliation_invalid/);
+        assert.deepEqual(await f.store.list('p','campaignExecutionOwner'),[]);
+      }else{
+        const saved=await f.service.adopt(f.principal,'p','native','material-reconciliation');
+        assert.deepEqual(saved.materialReconciliation,r);assert.equal(saved.materialReconciliation?.comparisons[0]?.status,'different');
+        assert.equal(saved.spendingAuthorityGranted,false);assert.deepEqual(await f.service.adopt(f.principal,'p','native','material-reconciliation'),saved);
+        assert.equal((await f.historical.read(f.principal,'p',f.history.id)).snapshot.records[0]!.payload.providerId,'100');
+      }
+    }finally{await f.close();}
+  }
+});

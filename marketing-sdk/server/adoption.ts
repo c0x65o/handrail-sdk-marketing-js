@@ -42,10 +42,13 @@ export async function readHistoricalCampaignSnapshot(store: Store, project: stri
     snapshot.projectId === project && snapshot.nativeCampaignId === receipt.nativeCampaignId &&
     snapshotDigest(snapshot) === receipt.sourceDigest && receipt.recordRefs.length === snapshot.records.length &&
     new Set(receipt.recordRefs.map(r => r.digest)).size === receipt.recordRefs.length, "historical_snapshot_reconciliation_failed");
+  // Hash each immutable source record once. Rehashing every candidate for every
+  // retained row made large history verification quadratic without adding proof.
+  const snapshotRecords=new Set(snapshot.records.map(r=>digest(r)));
   for (const ref of receipt.recordRefs) {
     const record = await store.get<HistoricalRecord>(project, "historicalRecord", ref.digest);
     requireThat(digest({ project, nativeCampaignId: snapshot.nativeCampaignId, system: snapshot.source.system, record }) === ref.digest &&
-      snapshot.records.some(r => digest(r) === digest(record)), "historical_record_reconciliation_failed");
+      snapshotRecords.has(digest(record)), "historical_record_reconciliation_failed");
   }
   return { receipt, snapshot };
 }

@@ -2,6 +2,7 @@ import { CAPABILITY_VERSION, type Grant, type Material, type MetaSettings, type 
 import { exactTargeting, metaExpansionMatches, metaTargeting } from "./capabilities.js";
 import { digest, requireThat } from "./store.js";
 import { material as validateMaterial } from "./validation.js";
+import {reconcileMetaObservations,type RetainedMetaObservation} from './meta-material-observations.js';
 
 /** Original native facts bound by the host to immutable history. This is not an
  * approval or provider-read receipt. Missing material must be reconciled first. */
@@ -11,6 +12,14 @@ export interface ExistingMetaMaterialSource {
   policy: { nondiscriminationAccepted: boolean|null; receiptRefs: string[]; missingReason?:string };
   conversion: NonNullable<MetaSettings["conversion"]>;
   retainedProviderTerms: { campaign: Record<string, unknown>; adset: Record<string, unknown>; creative: Record<string, unknown> };
+}
+export interface ReconciledMetaMaterialSource extends Omit<ExistingMetaMaterialSource,'retainedProviderTerms'> {
+  retainedObservations:RetainedMetaObservation[];
+}
+export function reconcileExistingMetaMaterial(source:ReconciledMetaMaterialSource,grant:Grant,
+  ids:{campaign:string;adset:string;creative:string;image:string},observed:{campaign:any;adset:any;creative:any}) {
+  const result=materialFromObservation(source,grant,ids,observed);
+  return {...result,materialReconciliation:reconcileMetaObservations(source.retainedObservations,observed,existingMetaTerms(observed),result.material)};
 }
 export const META_EXISTING_FIELDS = {
   campaign: "id,account_id,objective,special_ad_categories,special_ad_category_country,is_adset_budget_sharing_enabled,spend_cap,status,effective_status",
@@ -29,6 +38,13 @@ export function existingMetaTerms(observed: {campaign: any; adset: any; creative
 
 export function existingMetaMaterial(source: ExistingMetaMaterialSource, grant: Grant,
   ids: {campaign:string; adset:string; creative:string; image:string}, observed: {campaign:any; adset:any; creative:any}) {
+  requireThat(digest(existingMetaTerms(observed))===digest(source.retainedProviderTerms), "existing_material_retained_terms_changed");
+  return materialFromObservation(source,grant,ids,observed);
+}
+
+/** Current representation is separate from comparison with original evidence. */
+function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retainedProviderTerms'>, grant:Grant,
+  ids:{campaign:string;adset:string;creative:string;image:string},observed:{campaign:any;adset:any;creative:any}) {
   const {campaign,adset,creative}=observed;
   requireThat(grant.provider==="meta" && /^act_\d+$/.test(grant.accountId) && grant.pageId, "existing_material_account_invalid");
   requireThat(source.purpose==="acquisition" && [true,false,null].includes(source.policy.nondiscriminationAccepted) &&
@@ -39,9 +55,6 @@ export function existingMetaMaterial(source: ExistingMetaMaterialSource, grant: 
     campaign.id===ids.campaign && adset.id===ids.adset && creative.id===ids.creative && adset.campaign_id===ids.campaign, "existing_material_account_mismatch");
   requireThat(campaign.status==="PAUSED" && campaign.effective_status==="PAUSED" && adset.status==="PAUSED" &&
     ["PAUSED","CAMPAIGN_PAUSED"].includes(adset.effective_status), "existing_campaign_not_paused");
-  // Retained observations remain distinct from new observations. A discrepancy
-  // requires explicit reconciliation; capture never overwrites original history.
-  requireThat(digest(existingMetaTerms(observed))===digest(source.retainedProviderTerms), "existing_material_retained_terms_changed");
   requireThat(campaign.objective==="OUTCOME_LEADS" && exactTargeting(campaign.special_ad_categories,[]) &&
     (campaign.special_ad_category_country===undefined || exactTargeting(campaign.special_ad_category_country,[])) &&
     campaign.is_adset_budget_sharing_enabled===false && adset.billing_event==="IMPRESSIONS" &&
