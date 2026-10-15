@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NativeProvider } from "../server/providers.js";
-import { byteDigest, digest } from "../server/store.js";
+import { byteDigest, digest, DomainError } from "../server/store.js";
 import type { Asset, Campaign, Grant } from "../core/index.js";
 test("native Meta HTTP write/readback, external drift guard and lost acknowledgment reconciliation", async () => {
   const dir = mkdtempSync(join(tmpdir(), "marketing-native-write-"));
@@ -373,6 +373,17 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     }, store, fetcher);
     await assert.rejects(provider.prepare({ ...c, material: { ...c.material, advertisingBudget: undefined } }, grant, [asset], "legacy", () => {}, () => {}), /explicit_daily_budget/);
     assert.equal(writes, 0);
+    // Discovery uses its read guard; revocation prevents the first write. A
+    // distinct write guard is still called immediately after all discovery.
+    let discoveryReads = 0;
+    await assert.rejects(provider.prepare(c, grant, [asset], "read-revoked", () => {}, () => {},
+      () => { if (++discoveryReads === 4) throw new DomainError("discovery-read-revoked",403); }), /discovery-read-revoked/);
+    assert.equal(writes, 0); assert.equal(discoveryReads, 4);
+    let fullWriteChecks = 0;
+    await assert.rejects(provider.prepare(c, grant, [asset], "write-revoked", () => {},
+      () => { if (discoveryReads > 4) throw new DomainError("write-revoked-after-discovery",403); fullWriteChecks++; },
+      () => { discoveryReads++; }), /write-revoked-after-discovery/);
+    assert.equal(writes, 0); assert.ok(discoveryReads > 4); assert.ok(fullWriteChecks > 0);
     const mutations = [
       (o: any) => { o.dailyBudget.amount = "420.00"; },
       (o: any) => { o.dailyBudget.currencyCode = "EUR"; },

@@ -33,6 +33,40 @@ import { agentTools } from "../agent/index.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 const time = Date.now();
+for (const changed of ["none", "host", "grant", "material", "lease"] as const) test(`preparation discovery read guard fences ${changed} without substituting write authority`, async () => {
+  const t = await setupTest();
+  try {
+    await ready(t); const c = await campaign(t);
+    let revoked = false, writes = 0, reads = 0;
+    const check = async () => { if (revoked) throw Error("current-host-action-revoked"); };
+    const service = new MarketingServer(t.store, t.service.providers, t.generation, t.service.agent, "fixture", () => time, undefined, {
+      tracking: formulaTracking(t.store),
+      executionAuthority: {assertCurrent: check, withCurrent: async (_p, _c, _a, local) => {await check(); const value = await local(); await check(); return value;}},
+    });
+    const provider: import("../server/ports.js").ProviderPort = t.provider;
+    const prepare = provider.prepare.bind(provider);
+    provider.prepare = async (campaign, grant, assets, key, retain, beforeWrite, beforeRead) => {
+      assert.ok(beforeRead); assert.notEqual(beforeRead, beforeWrite);
+      await beforeRead(); reads++;
+      if (changed === "host") revoked = true;
+      if (changed === "grant") await t.store.put(c.projectId, "grant", grant.id, {...grant, revision: grant.revision + 1});
+      if (changed === "material") await t.store.put(c.projectId, "campaign", c.id, {...c, material: {...c.material, headline: "Changed without revision"}});
+      if (changed === "lease") await t.store.db.prepare("DELETE FROM leases WHERE project_id=? AND account_id=?").run(c.projectId, grant.accountId);
+      if (changed !== "none") {
+        await assert.rejects(async () => beforeRead());
+        throw Error("discovery-authority-changed");
+      }
+      await beforeRead(); reads++;
+      return prepare(campaign, grant, assets, key, retain, async () => {await beforeWrite(); writes++;});
+    };
+    const queued = await service.prepare(t.admin, c.projectId, {campaignId: c.id, requestKey: "read-boundary"});
+    const operation = await service.dispatch(c.projectId, queued.id);
+    assert.equal(operation.state, changed === "none" ? "succeeded" : "unknown");
+    assert.equal(writes, changed === "none" ? 1 : 0);
+    assert.equal(reads, changed === "none" ? 2 : 1);
+    assert.deepEqual(await t.store.list(c.projectId, "advertisingBudgetReservation"), []);
+  } finally {await t.close();}
+});
 test("host preparation reconciliation accepts only scoped report-only renewal and retains the original effect",async()=>{
   const t=await setupTest();try{
     await ready(t);const c=await campaign(t);

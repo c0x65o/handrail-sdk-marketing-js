@@ -1524,6 +1524,23 @@ export class MarketingServer {
         }) : secured();
     };
     const beforeWrite = () => withWriteAuthority(async () => {});
+    // Provider permission discovery is read-only. Recheck the current actor,
+    // exact grant/material and execution lease at every read boundary without
+    // recursively consuming the complete write proof for each discovery page.
+    // The provider must still call beforeWrite after discovery and immediately
+    // before each external effect. Credential custody is fenced by its Vault.
+    const beforeRead = async () => {
+      const actor = await this.store.get<Principal>(project, "executionActor", o.id);
+      await this.executionTransaction(actor, project, c.id, "read", async () => {
+        await this.store.db.assertExecutionOwner();
+        const current = await this.grant(project, g.id, o.kind, c.id);
+        requireThat(digest(current) === digest(g), "grant_changed");
+        const campaign = await this.store.get<Campaign>(project, "campaign", c.id);
+        requireThat(campaign.revision === o.campaignRevision && digest(campaign.material) === digest(c.material), "stale_material");
+        const lease = await this.store.db.prepare("SELECT operation_id FROM leases WHERE project_id=? AND account_id=?").get(project, g.accountId);
+        requireThat(lease?.operation_id === o.id, "operation_lease_lost");
+      });
+    };
     try {
       const receipt =
         o.kind === "prepare"
@@ -1535,7 +1552,7 @@ export class MarketingServer {
             };
             if (c.receipt) {
               requireThat(provider.update, "existing_campaign_update_unavailable");
-              return provider.update(c, g, await this.assets(c), retain, beforeWrite);
+              return provider.update(c, g, await this.assets(c), retain, beforeWrite, beforeRead);
             }
             return provider.prepare(
               c,
@@ -1544,6 +1561,7 @@ export class MarketingServer {
               o.id,
               retain,
               beforeWrite,
+              beforeRead,
             ); })()
           : o.kind === "activate"
             ? await provider.activate(c, g, beforeWrite)

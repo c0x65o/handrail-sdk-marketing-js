@@ -58,6 +58,7 @@ export interface ProviderPort {
     campaign: Campaign, grant: Grant, assets: Asset[],
     retain: (ids: Record<string, string>) => void | Promise<void>,
     beforeWrite: () => void | Promise<void>,
+    beforeRead?: () => void | Promise<void>,
   ): Promise<Receipt>;
   /** Read existing provider identities against exact material. Does not create
    * objects, transfer execution ownership, or issue approval/spending authority. */
@@ -74,6 +75,9 @@ export interface ProviderPort {
     key: string,
     retain: (ids: Record<string, string>) => void | Promise<void>,
     beforeWrite: () => void | Promise<void>,
+    /** Current actor/grant/material/lease authority for discovery reads. This
+     * never authorizes a write or replaces beforeWrite after discovery. */
+    beforeRead?: () => void | Promise<void>,
   ): Promise<Receipt>;
   activate(
     campaign: Campaign,

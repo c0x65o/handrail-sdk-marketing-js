@@ -768,7 +768,9 @@ export class NativeProvider implements ProviderPort {
     await guard();
     requireThat(v.account.id === g.accountId && v.account.currency === g.currency, "provider_account_context_changed");
     const credentials = { accessToken: client.accessToken, clientId: client.clientId, clientSecret: client.clientSecret };
-    const discovery = new ConnectionDiscovery(this.fetcher);
+    // Keep discovery on the client's sealed credential transport as well as
+    // the actor read guard. Raw discovery must not escape custody rechecks.
+    const discovery = new ConnectionDiscovery(client.fetchImpl);
     const accounts = await discovery.accounts("linkedin", credentials, undefined, guard);
     const account = accounts.rows.find(a => a.id === g.accountId);
     requireThat(account && account.currency === g.currency, "provider_account_role_missing");
@@ -883,10 +885,15 @@ export class NativeProvider implements ProviderPort {
     this.plan(c, g, assets);
   }
   async update(c: Campaign, g: Grant, assets: Asset[],
-    retain: (ids: Record<string, string>) => void | Promise<void>, beforeWrite: () => void | Promise<void>) {
+    retain: (ids: Record<string, string>) => void | Promise<void>, beforeWrite: () => void | Promise<void>,
+    beforeRead: () => void | Promise<void> = beforeWrite) {
     this.validateUpdate(c, g, assets);
     const plan: any = this.plan(c, g, assets);
     const scope = digest({ c, g, assets });
+    const readGuard = async () => {
+      await beforeRead();
+      requireThat(digest({ c, g, assets }) === scope, "provider_scope_changed");
+    };
     const guard = async () => {
       await beforeWrite();
       requireThat(digest({ c, g, assets }) === scope, "provider_scope_changed");
@@ -896,7 +903,7 @@ export class NativeProvider implements ProviderPort {
     const { readbackDigest: previousDigest, ...ids } = c.receipt!.ids;
     return this.use(g, async client => {
       if (this.name === "linkedin") client.beforeWrite = async () => {
-        requireThat((await this.linkedInPermissions(client, g, undefined, guard, "prepare")).includes("prepare"), "provider_capability_missing");
+        requireThat((await this.linkedInPermissions(client, g, undefined, readGuard, "prepare")).includes("prepare"), "provider_capability_missing");
         await guard();
       };
       await this.verifySettings(client, c, g);
@@ -936,6 +943,7 @@ export class NativeProvider implements ProviderPort {
     key: string,
     retain: (ids: Record<string, string>) => void | Promise<void>,
     beforeWrite: () => void | Promise<void>,
+    beforeRead: () => void | Promise<void> = beforeWrite,
   ) {
     requireThat(!c.receipt, "existing_campaign_requires_update");
     if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
@@ -943,6 +951,10 @@ export class NativeProvider implements ProviderPort {
     await this.prerequisite(c, g);
     const hostBeforeWrite = beforeWrite;
     const scopeDigest = digest({ c, g });
+    const readGuard = async () => {
+      await beforeRead();
+      requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
+    };
     beforeWrite = async () => {
       await hostBeforeWrite();
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
@@ -980,8 +992,7 @@ export class NativeProvider implements ProviderPort {
     return await this.use(g, async (client) => {
       if (this.name === "linkedin") {
         client.beforeWrite = async () => {
-          const guard = async () => { await beforeWrite(); };
-          requireThat((await this.linkedInPermissions(client, g, undefined, guard, "prepare")).includes("prepare"), "provider_capability_missing");
+          requireThat((await this.linkedInPermissions(client, g, undefined, readGuard, "prepare")).includes("prepare"), "provider_capability_missing");
           await beforeWrite();
         };
         client.onAssetInitialized = async (image: string) => { ids.image = image; await retain({ ...ids }); };

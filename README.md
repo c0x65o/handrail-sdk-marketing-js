@@ -277,6 +277,16 @@ disposable PostgreSQL; live consumer adoption remains separate qualification.
 
 ## Native execution authority
 
+Preparation/update provider ports accept a separate optional `beforeRead` guard
+for permission discovery. MarketingServer checks the current actor, exact grant
+and material, executor ownership and operation lease at each discovery boundary.
+LinkedIn discovery also uses the client's sealed credential transport. The full
+campaign/tracking/budget write proof is still checked after discovery and before
+each external effect; a read check grants no write authority. Ports called
+without the separate read guard use their supplied write guard. This avoids
+repeatedly consuming the complete write proof for each read-only discovery page;
+it does not extend prerequisite, grant or credential expiry.
+
 `inspectMetaToken` is a server-only, read-only qualification of native Meta
 custody using the app-authenticated Graph debugger. It verifies the app, token
 validity/type, scopes and both expiry clocks, returning fixed errors without
