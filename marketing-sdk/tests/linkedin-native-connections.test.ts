@@ -129,15 +129,28 @@ for (const denied of ["VIEWER", "CREATIVE_MANAGER", "CONTENT_ADMIN", "CONTENT_AD
     assert.equal(transport.writes(), 0);
   } finally { await f.close(); }
 });
-for (const kind of ["scope-loss", "inactive", "expired", "wrong-client", "missing-scope"]) test(`native client cannot override current ${kind} with refresh response scope`, async () => {
+for (const kind of ["scope-loss", "inactive", "expired", "wrong-client", "missing-scope", "wrong-status", "wrong-auth-type"]) test(`native client cannot override current ${kind} with refresh response scope`, async () => {
   const client = new LinkedInMarketingClient({ refreshToken: "synthetic-refresh", clientId: "app", clientSecret: "synthetic-secret", fetchImpl: async (input, init) => {
     assert.equal(init?.redirect, "error");
     if (String(input).endsWith("accessToken")) return Response.json({ access_token: "synthetic-access", expires_in: 3600, scope: "rw_ads r_ads_reporting" });
-    if (String(input).endsWith("introspectToken")) return Response.json({ active: kind !== "inactive", ...(kind === "missing-scope" ? {} : { scope: "r_ads" }), ...(kind === "expired" ? { expires_at: 1 } : {}), ...(kind === "wrong-client" ? { client_id: "other" } : {}) });
+    if (String(input).endsWith("introspectToken")) return Response.json({ active: kind !== "inactive", ...(kind === "missing-scope" ? {} : { scope: "r_ads" }), ...(kind === "expired" ? { expires_at: 1 } : {}), ...(kind === "wrong-client" ? { client_id: "other" } : {}), ...(kind === "wrong-status" ? {status:"revoked"} : {}), ...(kind === "wrong-auth-type" ? {auth_type:"other"} : {}) });
     return Response.json({ id: 2041, currency: "USD" });
   } });
-  if (["inactive", "expired", "wrong-client"].includes(kind)) await assert.rejects(client.verifyConnection({ adAccountId: "2041" }));
+  const reasons: Record<string,string> = {inactive:"token_inactive",expired:"token_expiry_unverified","wrong-client":"token_client_mismatch","wrong-status":"token_status_unverified","wrong-auth-type":"token_auth_type_unverified"};
+  if (reasons[kind]) await assert.rejects(client.verifyConnection({ adAccountId: "2041" }), {code:"verification_failed",verificationReason:reasons[kind]});
   else { const v = await client.verifyConnection({ adAccountId: "2041" }); assert.equal(v.permissions.adsManagement, false); assert.equal(v.permissions.adsReporting, false); assert.equal(v.permissions.adsRead, kind === "scope-loss"); }
+});
+
+test("native verification retains a fixed token failure reason without provider values", async () => {
+  const f=await connectionFixture("linkedin",true);
+  try {
+    const g=await connected(f);
+    changeResponse(f,(u,b)=>u.pathname.endsWith("introspectToken")?{...b,client_id:"private-provider-value"}:b);
+    await assert.rejects(f.native.verify(g),error=>{
+      assert.equal((error as any).code,"provider_token_client_mismatch");
+      assert.ok(!JSON.stringify(error).includes("private-provider-value"));return true;
+    });
+  } finally {await f.close();}
 });
 
 test("native preparation retains lost-ack identity, reconciles read-only, and rejects a conflicting post author", async () => {

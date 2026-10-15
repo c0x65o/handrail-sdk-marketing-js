@@ -784,11 +784,16 @@ export class LinkedInMarketingClient {
     // denial. Historical rw_ads grants remain readable; missing or contradictory
     // current evidence requires fresh qualification.
     const assertToken = () => {
-      if (token.active !== true || inspectedAccessToken !== this.accessToken || (token.status !== undefined && token.status !== "active") ||
-          (token.client_id !== undefined && token.client_id !== this.clientId) ||
-          (token.auth_type !== undefined && token.auth_type !== "3L") ||
-          (token.expires_at !== undefined && (!Number.isFinite(token.expires_at) || token.expires_at * 1000 <= this.now())))
-        throw new LinkedInMarketingError("Current token authority was not verified", { code: "verification_failed", status: 403 });
+      const reason = token.active !== true ? "token_inactive" : inspectedAccessToken !== this.accessToken ? "token_changed" :
+        token.status !== undefined && token.status !== "active" ? "token_status_unverified" :
+        token.client_id !== undefined && token.client_id !== this.clientId ? "token_client_mismatch" :
+        token.auth_type !== undefined && token.auth_type !== "3L" ? "token_auth_type_unverified" :
+        token.expires_at !== undefined && (!Number.isFinite(token.expires_at) || token.expires_at * 1000 <= this.now()) ? "token_expiry_unverified" : null;
+      if (reason) {
+        const error = new LinkedInMarketingError("Current token authority was not verified", { code: "verification_failed", status: 403 });
+        error.verificationReason = reason;
+        throw error;
+      }
     };
     assertToken();
     const account = await this.getAdAccount(id);

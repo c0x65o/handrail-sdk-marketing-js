@@ -220,6 +220,11 @@ disposable PostgreSQL; live consumer adoption remains separate qualification.
 
 ## Native execution authority
 
+LinkedIn token verification failures retain fixed `provider_token_*` reason codes
+for inactive, changed, wrong-client, unverified-status/auth-type and expired token
+evidence. Provider values, bodies and credential details are never included. An
+HTTP 200 introspection response alone does not establish current authority.
+
 Adopted campaigns require a trusted server `ExecutionAuthority` port for SDK
 prepare/activate/pause and recovery. The host revalidates its real principal and
 exact native action, with revocation guards held through local SDK commits and
