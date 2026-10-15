@@ -1,6 +1,6 @@
 import { CAPABILITY_VERSION, type Grant, type Material, type MetaSettings, type TargetingOption } from "../core/index.js";
 import { exactTargeting, metaExpansionMatches, metaTargeting } from "./capabilities.js";
-import { digest, requireThat } from "./store.js";
+import { digest, requireThat, DomainError } from "./store.js";
 import { material as validateMaterial } from "./validation.js";
 import {reconcileMetaObservations,type RetainedMetaObservation} from './meta-material-observations.js';
 
@@ -60,7 +60,18 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     campaign.is_adset_budget_sharing_enabled===false && adset.billing_event==="IMPRESSIONS" &&
     adset.optimization_goal==="OFFSITE_CONVERSIONS" && adset.bid_strategy==="LOWEST_COST_WITHOUT_CAP" && adset.destination_type==="WEBSITE",
     "existing_material_delivery_unsupported");
-  requireThat(source.conversion.event==="Lead" && exactTargeting(adset.promoted_object,{pixel_id:source.conversion.pixelId,custom_event_type:"LEAD"}), "existing_material_conversion_mismatch");
+  if(source.conversion.event!=="Lead" || !exactTargeting(adset.promoted_object,{pixel_id:source.conversion.pixelId,custom_event_type:"LEAD"})) {
+    const promoted=adset.promoted_object,object=promoted&&typeof promoted==='object'&&!Array.isArray(promoted);
+    const keys=object?Object.keys(promoted):[];
+    // Bounded schema diagnostics only: never copy unknown provider values,
+    // tokens, URLs, identifiers or nested payloads into an error response.
+    const fields=keys.slice(0,30).map(key=>({field:/^[a-z_]{1,64}$/.test(key)?key:'[unrecognized]',
+      type:promoted[key]===null?'null':Array.isArray(promoted[key])?'array':typeof promoted[key]}));
+    throw Object.assign(new DomainError('existing_material_conversion_mismatch'),{materialDiagnostic:{phase:'provider_conversion',
+      expectedEvent:'LEAD',sourceEventSupported:source.conversion.event==='Lead',promotedObjectPresent:promoted!==undefined&&promoted!==null,
+      promotedObjectIsObject:Boolean(object),pixelIdentityMatches:object&&promoted.pixel_id===source.conversion.pixelId,
+      eventMatches:object&&promoted.custom_event_type==='LEAD',fieldCount:keys.length,fields,fieldsTruncated:keys.length>30}});
+  }
   const money=(raw:unknown,required=false)=>{
     requireThat(raw===undefined&&!required || typeof raw==="string"&&/^\d+$/.test(raw), "existing_material_money_unknown");
     if(raw===undefined)return null;

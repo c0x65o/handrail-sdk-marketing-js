@@ -150,3 +150,15 @@ test('reconciled Meta material rejects invalid retained references and revocatio
   let revoked=false;f.afterFetch(()=>{revoked=true;});
   await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...original,retainedObservations:[retained]},async()=>{if(revoked)throw Error('revoked');}),/revoked/);
 });
+
+
+test('conversion mismatch exposes bounded schema diagnostics without unknown provider values',async()=>{
+  const f=fixture();f.observed.adset.promoted_object.extra_provider_field={secret:'never-print-this',url:'https://private.invalid'};
+  const {retainedProviderTerms,...source}=f.source;
+  await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...source,retainedObservations:[{key:'campaign.objective',value:'OUTCOME_LEADS',provenance:'legacy_intent',historyRecordId:'a'.repeat(64)}]},async()=>{}),error=>{
+    const e=error as Error&{materialDiagnostic:any};assert.equal(e.message,'existing_material_conversion_mismatch');
+    assert.equal(e.materialDiagnostic.pixelIdentityMatches,true);assert.equal(e.materialDiagnostic.eventMatches,true);
+    assert.deepEqual(e.materialDiagnostic.fields.find((x:any)=>x.field==='extra_provider_field'),{field:'extra_provider_field',type:'object'});
+    assert.doesNotMatch(JSON.stringify(e),/never-print-this|private.invalid/);return true;
+  });
+});
