@@ -704,6 +704,18 @@ acceptance; importing paused material creates neither approval nor spend authori
 `ExistingMetaMaterialSource.policy` retains the acknowledgement observation and
 returns it as `policyEvidence` separately from current provider material.
 
+Existing Meta adoption also retains a configured-paused ad whose effective status
+is `WITH_ISSUES`, provided its exact, completely inventoried ad-set ancestor is
+configured and effectively paused. The durable adoption receipt's `providerState`
+records the complete child snapshot, collection time and digest, with
+`effectiveChildrenPaused: false` and `launchReadiness: "provider_issues"`.
+This does not reinterpret the issue as an effective pause, settle historical
+effects, prove delivery, or authorize resumption. Active, missing, ambiguous and
+unknown child states still fail adoption. Activation retains the stricter fresh
+effective-pause read before any provider write; a held ad cannot activate through
+its adoption receipt. Ordinary paused observations report `not_assessed` launch
+readiness, since paused state alone does not prove launch readiness.
+
 `inspectMetaDeliveryInventory` is a read-only server API for refreshing exact
 host-owned campaign mappings across one Meta account. It requires an account-scoped
 reporting grant; a campaign-scoped grant cannot disclose the account inventory.

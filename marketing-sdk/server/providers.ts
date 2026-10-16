@@ -23,7 +23,7 @@ import { material } from "./validation.js";
 import { existingLinkedInMaterial, existingLinkedInChildren, readLinkedInCampaignChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
 import { existingMetaMaterial, reconcileExistingMetaMaterial, META_EXISTING_FIELDS, type ExistingMetaMaterialSource, type ReconciledMetaMaterialSource } from "./existing-meta-material.js";
 import { prepareMetaImageUpload } from "./meta-image.js";
-import { existingMetaChildren, readMetaCampaignChildren } from "./existing-meta-children.js";
+import { existingMetaChildren, existingMetaAdoptionChildren, readMetaCampaignChildren } from "./existing-meta-children.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
@@ -1259,12 +1259,19 @@ export class NativeProvider implements ProviderPort {
       const snapshot = await this.snapshot(client,g,ids);
       requireThat(snapshot.paused, "existing_campaign_not_paused");
       this.validateSnapshot(snapshot.material,plan,ids);
-      const inventory=this.name==="linkedin" ? await existingLinkedInChildren(client,g.accountId,ids.campaign!,ids.creative!)
-        : await existingMetaChildren(client as MetaMarketingClient,g.accountId,
-          {campaign:ids.campaign!,adset:ids.adset!,ad:ids.ad!,creative:ids.creative!});
+      const metaInventory=this.name==="meta" ? await existingMetaAdoptionChildren(client as MetaMarketingClient,g.accountId,
+        {campaign:ids.campaign!,adset:ids.adset!,ad:ids.ad!,creative:ids.creative!}) : null;
+      const inventory=metaInventory ?? await existingLinkedInChildren(client,g.accountId,ids.campaign!,ids.creative!);
       await current();
       return {candidateReceipt:{...this.receipt({...ids,readbackDigest:digest(snapshot.material),...(inventory?{inventoryDigest:digest(inventory)}:{})},digest(plan),"paused"),
         providerRequestId:"lastRequestId" in client && typeof client.lastRequestId === "string" ? client.lastRequestId : null},
+        ...(metaInventory ? {providerState: {
+          provider:"meta" as const, source:"provider_api" as const, observedAt:new Date().toISOString(),
+          snapshot:metaInventory, digest:digest(metaInventory),
+          configuredPaused:true as const,
+          effectiveChildrenPaused:!metaInventory.ads.some(ad=>ad.effectiveStatus==="WITH_ISSUES"),
+          launchReadiness:metaInventory.ads.some(ad=>ad.effectiveStatus==="WITH_ISSUES") ? "provider_issues" as const : "not_assessed" as const,
+        }} : {}),
         originalMediaContentVerified:false,executionReady:false,
         missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred"]};
     }).catch(async error => {

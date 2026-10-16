@@ -95,6 +95,7 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
   }
   fixtureEligibility(campaign, grant);
   const objects = new Map<string, any>();
+  let heldAd = false;
   const requests: {path:string;method:string;body?:unknown}[]=[];
   let writes = 0,
     nextId = 100,
@@ -119,7 +120,7 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
       return Response.json({data: [...objects.values()].filter(row => last === "adsets"
         ? row.campaign_id === parent && !row.adset_id
         : row.adset_id && objects.get(row.adset_id)?.campaign_id === parent)
-        .map(row => ({...row, campaign_id: row.campaign_id ?? objects.get(row.adset_id)?.campaign_id, effective_status: row.status}))});
+        .map(row => ({...row, campaign_id: row.campaign_id ?? objects.get(row.adset_id)?.campaign_id, effective_status: heldAd && row.adset_id ? "WITH_ISSUES" : row.status}))});
     }
     if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [{ hash: "provider-image-hash", status: "ACTIVE" }] });
     if (init?.method === "POST") {
@@ -261,6 +262,17 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
     );
     assert.equal(writes, 5);
     objects.set(retained.adset!, original);
+    heldAd=true;
+    const held=await provider.inspectExistingCampaign(campaign,grant,[asset],existingIds,async()=>{});
+    assert.equal(held.providerState?.configuredPaused,true);
+    assert.equal(held.providerState?.effectiveChildrenPaused,false);
+    assert.equal(held.providerState?.launchReadiness,"provider_issues");
+    assert.equal(held.providerState?.snapshot.ads[0]?.effectiveStatus,"WITH_ISSUES");
+    assert.equal(held.providerState?.digest,held.candidateReceipt.ids.inventoryDigest);
+    const heldBeforeWrites=writes;
+    await assert.rejects(provider.activate({...paused,receipt:held.candidateReceipt},grant,()=>{}),/existing_campaign_children_not_paused/);
+    assert.equal(writes,heldBeforeWrites,"held adoption cannot activate rejected material");
+    heldAd=false;
     const enabled = await provider.activate(paused, grant, () => {
       checks++;
     });

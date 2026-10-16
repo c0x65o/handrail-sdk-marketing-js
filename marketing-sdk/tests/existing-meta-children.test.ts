@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existingMetaChildren } from "../server/existing-meta-children.js";
+import { existingMetaChildren, existingMetaAdoptionChildren } from "../server/existing-meta-children.js";
 import { MetaMarketingClient } from "../support/owner-marketing/meta-client.js";
 import { digest } from "../server/store.js";
 
@@ -24,8 +24,25 @@ function fixture() {
     if(page instanceof Response) return page;
     assert.ok(page,"unexpected extra page"); return Response.json(page);
   }});
-  return {adset,ad,pages,requests,read:()=>existingMetaChildren(client,"act_123",ids)};
+  return {adset,ad,pages,requests,read:()=>existingMetaChildren(client,"act_123",ids),adopt:()=>existingMetaAdoptionChildren(client,"act_123",ids)};
 }
+
+test("Meta adoption retains configured-paused WITH_ISSUES without claiming effective pause",async()=>{
+  const f=fixture();f.ad.effective_status="WITH_ISSUES";
+  const actual=await f.adopt();
+  assert.equal(actual.ads[0]!.status,"PAUSED");assert.equal(actual.ads[0]!.effectiveStatus,"WITH_ISSUES");
+  assert.equal(actual.adsets[0]!.effectiveStatus,"CAMPAIGN_PAUSED");
+});
+for(const [name,change] of Object.entries({
+  configuredActive:(f:ReturnType<typeof fixture>)=>{f.ad.status="ACTIVE";},
+  effectiveActive:(f:ReturnType<typeof fixture>)=>{f.ad.effective_status="ACTIVE";},
+  unknown:(f:ReturnType<typeof fixture>)=>{delete f.ad.effective_status;},
+  parentIssue:(f:ReturnType<typeof fixture>)=>{f.adset.effective_status="WITH_ISSUES";},
+  parentActive:(f:ReturnType<typeof fixture>)=>{f.adset.status="ACTIVE";},
+  extraChild:(f:ReturnType<typeof fixture>)=>{f.pages.ads![0].data.push({...f.ad,id:"999"});},
+}))test(`Meta held adoption rejects ${name}`,async()=>{
+  const f=fixture();f.ad.effective_status="WITH_ISSUES";change(f);await assert.rejects(f.adopt());
+});
 
 test("Meta adoption inventories both unfiltered campaign edges and returns stable explicit identity/state evidence", async()=>{
   const f=fixture(), result=await f.read();

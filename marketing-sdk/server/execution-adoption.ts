@@ -4,7 +4,7 @@ import { readHistoricalCampaignSnapshot } from "./adoption.js";
 import { readHistoricalPurposeResolution } from "./historical-purpose.js";
 import type {MetaMaterialReconciliation} from './meta-material-observations.js';
 import {META_OBSERVATION_KEYS,reconcileMetaObservations} from './meta-material-observations.js';
-import type { ProviderPort, ExistingMetaImageInspection } from "./ports.js";
+import type { ProviderPort, ExistingMetaImageInspection, ExistingMetaAdoptionState } from "./ports.js";
 import type { SessionAuthority } from "./session-authority.js";
 import { sessionBinding, assertSessionInspection, inspectLiveSessions } from "./session-authority.js";
 import { Store, DomainError, digest, byteDigest, requireThat, type Principal } from "./store.js";
@@ -36,6 +36,7 @@ export interface ExecutionAdoptionReceipt {
   id: string; projectId: string; nativeCampaignId: string; sdkCampaignId: string;
   historyImportId: string; sourceRevision: string; candidateDigest: string;
   grantId: string; grantRevision: number; providerReceipt: Receipt;
+  providerState?: ExistingMetaAdoptionState;
   retirementReceiptRefs: string[]; settlementReceiptRefs: string[];
   mediaRecordIds: string[]; mediaAssetsDigest: string; adoptedAt: string; adoptedBy: string;
   purposeResolutionId?:string;
@@ -249,6 +250,7 @@ export class CampaignExecutionAdoptions {
     const receipt: ExecutionAdoptionReceipt = { id: `adoption_${digest([project, nativeCampaignId, candidateDigest])}`, projectId: project,
       nativeCampaignId, sdkCampaignId: campaign.id, historyImportId: history.id, sourceRevision: candidate.sourceRevision, candidateDigest,
       grantId: grant.id, grantRevision: grant.revision, providerReceipt: inspection.candidateReceipt,
+      ...(inspection.providerState ? {providerState:structuredClone(inspection.providerState)} : {}),
       ...(candidate.purposeResolutionId?{purposeResolutionId:candidate.purposeResolutionId}:{}),
       ...(candidate.materialReconciliation?{materialReconciliation:structuredClone(candidate.materialReconciliation)}:{}),
       retirementReceiptRefs: candidate.retirement.receiptRefs, settlementReceiptRefs: candidate.settlements.flatMap(x => x.receiptRefs),

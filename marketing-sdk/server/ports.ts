@@ -13,10 +13,19 @@ import type {
 /** The host owns execution. No scheduler is started by importing the SDK. */
 export interface ExistingCampaignInspection {
   candidateReceipt: Receipt;
+  providerState?: ExistingMetaAdoptionState;
   /** Provider image identity/owner/status do not verify original upload bytes. */
   originalMediaContentVerified: false;
   executionReady: false;
   missingReasons: ["original_media_content_binding_unverified", "execution_ownership_not_transferred"];
+}
+/** An observation at adoption time, never an activation grant or delivery proof. */
+export interface ExistingMetaAdoptionState {
+  provider: "meta"; source: "provider_api"; observedAt: string; digest: string;
+  snapshot: Pick<ExistingMetaHierarchyInspection["snapshot"], "adsets" | "ads">;
+  configuredPaused: true;
+  effectiveChildrenPaused: boolean;
+  launchReadiness: "not_assessed" | "provider_issues";
 }
 export interface ExistingMetaImageInspection {
   image: {accountId:string; hash:string; name:string; width:number; height:number; status:string; updatedAt:string|null};

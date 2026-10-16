@@ -35,7 +35,7 @@ export async function readMetaCampaignChildren(
   };
 }
 
-/** Adoption still requires configured and effective paused states. Activation
+/** Execution requires configured and effective paused states. Activation
  * uses the same complete identity reader while its known children transition. */
 export async function existingMetaChildren(client: MetaMarketingClient, accountId: string,
   ids: { campaign: string; adset: string; ad: string; creative: string },
@@ -45,6 +45,22 @@ export async function existingMetaChildren(client: MetaMarketingClient, accountI
   requireThat(adset.status === "PAUSED" && ad.status === "PAUSED" &&
     ["PAUSED", "CAMPAIGN_PAUSED"].includes(adset.effectiveStatus) &&
     ["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"].includes(ad.effectiveStatus),
+    "existing_campaign_children_not_paused");
+  return result;
+}
+
+/** Adoption preserves an existing ad even when review/issues mask its effective
+ * pause. The configured pause and effective paused ad-set ancestor must both be
+ * observed. WITH_ISSUES is retained verbatim, never interpreted as paused or as
+ * launch readiness. Activation continues to use existingMetaChildren above. */
+export async function existingMetaAdoptionChildren(client: MetaMarketingClient, accountId: string,
+  ids: { campaign: string; adset: string; ad: string; creative: string },
+  guard: () => void | Promise<void> = () => {}) {
+  const result = await readMetaCampaignChildren(client, accountId, ids, guard);
+  const adset = result.adsets[0]!, ad = result.ads[0]!;
+  requireThat(adset.status === "PAUSED" && ad.status === "PAUSED" &&
+    ["PAUSED", "CAMPAIGN_PAUSED"].includes(adset.effectiveStatus) &&
+    ["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "WITH_ISSUES"].includes(ad.effectiveStatus),
     "existing_campaign_children_not_paused");
   return result;
 }

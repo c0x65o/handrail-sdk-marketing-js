@@ -91,6 +91,26 @@ async function fixture(providerName: "meta" | "linkedin" = "meta", withOriginal=
     close: async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
+test('adoption preserves provider issue observations through replay and database reopen without granting launch authority',async()=>{
+  const f=await fixture();try{
+    const snapshot={adsets:[{id:'101',accountId:'123',campaignId:'100',status:'PAUSED',effectiveStatus:'PAUSED'}],
+      ads:[{id:'102',accountId:'123',campaignId:'100',adsetId:'101',creativeId:'103',status:'PAUSED',effectiveStatus:'WITH_ISSUES'}]};
+    const state={provider:'meta' as const,source:'provider_api' as const,observedAt:new Date().toISOString(),digest:digest(snapshot),snapshot,
+      configuredPaused:true as const,effectiveChildrenPaused:false,launchReadiness:'provider_issues' as const};
+    const inspect=f.provider.inspectExistingCampaign!;
+    f.provider.inspectExistingCampaign=async(...args)=>({...await inspect(...args),providerState:structuredClone(state)});
+    const receipt=await f.service.adopt(f.principal,'p','native','held-adopt');
+    assert.deepEqual(receipt.providerState,state);assert.equal(receipt.state,'paused');assert.equal(receipt.spendingAuthorityGranted,false);
+    assert.deepEqual(await f.store.get('p','grant',f.grant.id),f.grant);
+    assert.deepEqual(await f.service.adopt(f.principal,'p','native','held-adopt'),receipt);
+    const reopened=await testStore(f.path);try{
+      const service=new CampaignExecutionAdoptions(reopened,f.source,createStoreSessionAuthority(reopened),{meta:f.provider,linkedin:f.provider},'fixture');
+      assert.deepEqual(await service.readRequest(f.principal,'p','held-adopt'),receipt);
+    }finally{await reopened.close();}
+    for(const kind of ['operation','decision','advertisingBudgetReservation'])assert.equal((await f.store.list('p',kind)).length,0);
+  }finally{await f.close();}
+});
+
 test('explicit purpose assessment preserves unknown history, records evidence, survives correction/replay and binds paused adoption',async()=>{
   const f=await fixture('meta',false,true);try{
     const service=new HistoricalPurposeResolutions(f.store,f.sessions,f.source.authorize);
