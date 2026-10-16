@@ -8,9 +8,12 @@ import type { Principal, Store } from './store.js';
 export interface CampaignAccessSnapshot {
   digest: string;
   sessions: SessionInspection[];
+  /** Infinity is an ephemeral bound only for exact current host invocations. */
   expiresAt: number;
   /** Deadline of the exact usable credential envelope, not an invented provider
-   * token expiry. The host must bind its custody revision into digest. */
+   * token expiry. Infinity requires invocation custody; durable prerequisite
+   * records encode that unknown deadline explicitly as null.
+   * The host must bind its custody revision into digest. */
   credentialExpiresAt: number;
   account: DiscoveredAccount | null;
   identities: DiscoveredIdentity[];

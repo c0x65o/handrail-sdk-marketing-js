@@ -125,7 +125,7 @@ test('host credential rotation after a provider write retains its IDs and never 
   }finally{await f.close();}
 });
 
-for(const wrong of ['account','currency','session','receipts'] as const)test(`host access snapshot cannot substitute a mismatched ${wrong}`,async()=>{
+for(const wrong of ['account','currency','session','receipts','unbounded-expiry'] as const)test(`host access snapshot cannot substitute a mismatched ${wrong}`,async()=>{
   const f=await hostFixture();try{
     const original=f.access.campaignAuthority;
     f.access.campaignAuthority=async(...args)=>{
@@ -134,6 +134,7 @@ for(const wrong of ['account','currency','session','receipts'] as const)test(`ho
       if(wrong==='currency')result.account={...result.account!,currency:'EUR'};
       if(wrong==='session')result.sessions=[];
       if(wrong==='receipts')result.receiptReferences=[];
+      if(wrong==='unbounded-expiry'){result.expiresAt=Infinity;result.credentialExpiresAt=Infinity;}
       return result;
     };
     const checked=await f.call('checkCampaign',f.check);assert.equal(checked.state,'blocked');
@@ -207,5 +208,71 @@ test('lost native activation acknowledgment reconciles through renewed report-on
     assert.equal((await f.store.list('p','operation')).length,2);
     assert.deepEqual(await f.store.list('p','connection'),[]);assert.deepEqual(await f.store.list('p','vault'),[]);
     assert.equal((await f.store.get<Grant>('p','grant',f.grant.id)).permissions.join(','),'report');
+  }finally{await f.close();}
+});
+
+
+for(const change of ['none','revoked','foreign-session','missing-launch-port'] as const)
+test(`invocation-scoped native launch ${change} retains unknown expiry and exact current authority`,async()=>{
+  const f=await hostFixture();try{
+    assert.equal((await f.call('checkCampaign',f.check)).state,'ready');await f.store.db.acquireExecutor();
+    const prep=await f.call('prepare',{campaignId:f.c.id,requestKey:'prepare-before-invocation'});
+    assert.equal((await f.server.dispatch('p',prep.id)).state,'succeeded');
+    const campaign=await f.store.get<Campaign>('p','campaign',f.c.id);
+    const originalIds=campaign.receipt!.ids;
+    const originalSession=await f.connections.sessionAuthority.inspectSession({
+      ...f.principal.externalIdentity!,userId:f.principal.userId,sessionRef:f.principal.externalSessionRef!},'p');
+    const invocationRef=originalSession.binding.sessionRef;
+    const session:import('../server/index.js').SessionInspection={...originalSession,kind:'agent',expiresAt:null,
+      lifetime:{kind:'invocation',invocationRef:change==='foreign-session'?'foreign':invocationRef}};
+    f.grant.revision++;f.grant.campaignId=campaign.id;f.grant.permissions=['activate','pause','report'];
+    f.grant.expiresAt=null;f.grant.lifetime={kind:'invocation',invocationRef};
+    await f.store.put('p','grant',f.grant.id,f.grant);
+    let alive=true,checks=0;
+    const current=async()=>{checks++;requireThat(alive,'native_invocation_ended',403);};
+    const exact=async(g:Grant)=>{await current();requireThat(digest(g)===digest(f.grant),'invocation_scope_changed');};
+    const sessions:import('../server/index.js').SessionAuthority={
+      authenticateRequest:async()=>f.principal,
+      inspectSession:async(binding,project)=>{await current();assert.equal(project,'p');assert.deepEqual(binding,session.binding);return structuredClone(session);},
+      withLiveSessions:async(expected,local)=>{await inspectLiveSessions(sessions,expected);const result=await local();await inspectLiveSessions(sessions,expected);return result;},
+    };
+    const vault:VaultPort={...f.vault,assertInvocationGrant:exact,
+      ...(change==='missing-launch-port'?{}:{assertInvocationActivationGrant:exact}),
+      useReadOnly:async(g,guard,local)=>f.vault.useReadOnly!(g,guard,c=>local({...c,expiresAt:Infinity})),
+      use:async(g,local)=>f.vault.use(g,c=>{const credentials={...c,expiresAt:Infinity};return local(credentials);}),
+    };
+    const access:CampaignAccess={store:f.store,sessionAuthority:sessions,
+      campaignAuthority:async(p,g)=>{await exact(g);const original=await f.access.campaignAuthority(p,g);return {...original,
+        digest:digest({grant:g,session}),sessions:[session],expiresAt:Infinity,credentialExpiresAt:Infinity};},
+      withCampaignAuthority:async(p,g,expected,local)=>sessions.withLiveSessions(expected.sessions,()=>f.store.transaction(async()=>{
+        await exact(g);assert.deepEqual(await access.campaignAuthority(p,g),expected);const result=await local();await exact(g);return result;})),
+    };
+    const provider=new NativeProvider('meta',vault,f.store,f.http.fetch);
+    const authority:import('../server/index.js').ExecutionAuthority={assertInvocationGrant:exact,
+      ...(change==='missing-launch-port'?{}:{assertInvocationActivationGrant:exact}),
+      assertCurrent:current,withCurrent:async(_p,_c,_a,local)=>{await current();const result=await local();await current();return result;},
+      activationApproval:async()=>{await current();return {authorityId:invocationRef,revision:'1',receiptReferences:['current-launch-policy']};}};
+    const server=new MarketingServer(f.store,{meta:provider,linkedin:provider,google:provider},f.server.generation,f.server.agent,'fixture',undefined,undefined,
+      {campaignAccess:access,executionAuthority:authority,studio:{sessions},tracking:f.source.options});
+    const input={...f.check,expectedGrantRevision:f.grant.revision,action:'activate' as const,requestKey:'invocation-check'};
+    const before=f.http.trace.filter(r=>r.method==='POST').length;
+    if(change==='missing-launch-port'||change==='foreign-session'){
+      await assert.rejects(server.checkCampaign(f.principal,'p',input),/invalid_invocation_grant|session_authority_changed/);
+      assert.equal(f.http.trace.filter(r=>r.method==='POST').length,before);return;
+    }
+    const proof=await server.checkCampaign(f.principal,'p',input);assert.equal(proof.state,'ready',JSON.stringify(proof));
+    const record=await f.store.get<import('../server/preflight.js').PrerequisiteRecord>('p','campaignCheck',proof.id);
+    assert.equal(record.credentialExpiresAt,null);assert.equal(record.sessions[0]!.expiresAt,null);
+    assert.ok(Date.parse(proof.expiresAt!)<=Date.parse(record.createdAt)+120000);
+    const packet=await server.packet(f.principal,'p',{campaignId:campaign.id});
+    const operation=await server.execute(f.principal,'p',{packetId:packet.id,digest:packet.digest,requestKey:'invoke-launch'});
+    if(change==='revoked')alive=false;
+    const result=await server.dispatch('p',operation.id);
+    assert.equal(result.state,change==='none'?'succeeded':'blocked',JSON.stringify(result));
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length-before,change==='none'?3:0);
+    const {inventoryDigest,...ids}=(await f.store.get<Campaign>('p','campaign',campaign.id)).receipt!.ids;
+    assert.deepEqual(ids,originalIds);if(change==='none')assert.match(inventoryDigest!,/^[a-f0-9]{64}$/);
+    assert.equal((await f.store.get<Grant>('p','grant',f.grant.id)).expiresAt,null);
+    assert.deepEqual(await f.store.list('p','decision'),[]);assert.ok(checks>10);
   }finally{await f.close();}
 });

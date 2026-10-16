@@ -17,6 +17,10 @@ export interface ExecutionAuthority {
    * every effect and never accepts credentials or approval claims from JSON. */
   activationApproval?(principal: Principal, campaign: Campaign, packet: Packet): Promise<HostActivationApproval>;
   assertInvocationGrant?(grant: Grant): Promise<void>;
+  /** Explicit current launch custody for invocation grants. Must verify current
+   * host launch policy and exact campaign/material; packet approval and budget
+   * checks still apply independently. Generic stop/read custody is insufficient. */
+  assertInvocationActivationGrant?(grant: Grant): Promise<void>;
   assertCurrent(principal: Principal, campaign: Campaign, action: ExecutionAction): Promise<void>;
   withCurrent<T>(principal: Principal, campaign: Campaign, action: ExecutionAction, local: () => Promise<T>): Promise<T>;
 }

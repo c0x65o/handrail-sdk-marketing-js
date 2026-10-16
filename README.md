@@ -931,11 +931,12 @@ It performs no provider reads, dispatch or approval, and does not cover read/che
 observations, generation or other operations with their own receipt contracts.
 
 
-### Current native stop/read grants
+### Current native invocation grants
 
 A trusted host may retain a campaign-scoped grant with `expiresAt: null` and
 `lifetime: { kind: "invocation", invocationRef }` for the exact running native
-action. Only `pause` and `report` permissions are valid. This represents current
+action. `pause` and `report` use stop/read custody; `activate` additionally needs
+the dedicated launch-custody port described below. This represents current
 host action authority when provider token expiry is unknown; it does not claim
 the provider token never expires. Timestamp grants retain their existing deadline
 checks and cannot silently fall back to invocation access.
@@ -946,7 +947,7 @@ host invocation, principal, project, campaign and retained grant. Missing custod
 changed identity, revocation or action termination rejects before further effects
 or local receipt commits. Provider transport errors recheck current authority so a
 revocation is not mislabeled as a provider outage. Invocation grants cannot create,
-activate, edit material, approve spending or serve as human approval. Recovery
+edit material, approve spending or serve as human approval. Recovery
 preserves original operation/grant revisions; a later host action needs its own
 current grant revision. Ordinary SDK connections, reference provisioning, Studio
 promotion and UI readiness do not infer liveness from a saved invocation reference.
@@ -961,3 +962,17 @@ access. The previous campaign revision, provider receipt, account/grant identity
 and all non-budget material must match. It appends a tracking binding revision and
 preserves the original binding, tests and events; it neither copies a passing QA
 result nor grants spending authority. General tracking setup remains human-only.
+
+
+An invocation grant containing `activate` requires explicit
+`assertInvocationActivationGrant` implementations on both ExecutionAuthority and
+private VaultPort. Each must inspect the exact running action and current launch
+policy for the campaign/material. Generic stop/read callbacks do not authorize
+launch. The SDK still requires its normal current packet approval, tracking,
+spending reservation, complete child inventory and write-boundary checks.
+
+Host campaign access may use Infinity only as an ephemeral bound when the grant
+and every current session reference the same invocation. Persisted prerequisite
+records encode unknown credential expiry as `null`; proof expiration remains
+bounded by the existing two-minute check validity and known material/session
+limits. Neither a saved grant nor an unknown expiry makes an ended action live.

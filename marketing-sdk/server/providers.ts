@@ -47,6 +47,7 @@ export interface Credentials {
 export interface VaultPort {
   /** Current exact host stop/read invocation, never inferred from saved state. */
   assertInvocationGrant?: (grant: Grant) => Promise<void>;
+  assertInvocationActivationGrant?: (grant: Grant) => Promise<void>;
   /** Trusted host custody: inspect the exact grant's current credential/config
    * revision without returning secrets or doing network I/O. Presence selects
    * native prerequisite evidence for every grant, independent of its ID. Throw
@@ -1575,7 +1576,7 @@ export class NativeProvider implements ProviderPort {
       c.receipt?.ids.readbackDigest,
       "verified_provider_objects_required",
     );
-    requireThat(!g.lifetime || !activate && g.permissions.includes("pause"), "invocation_grant_operation_denied", 403);
+    requireThat(!g.lifetime || (activate ? g.permissions.includes("activate") && !!this.vault.assertInvocationActivationGrant : g.permissions.includes("pause")), "invocation_grant_operation_denied", 403);
     const ids = c.receipt.ids;
     if (activate && this.name === "meta") requireThat(["4", "5"].includes(ids.readbackVersion!), "meta_readback_requalification_required");
     const scopeDigest = digest({ c, g });

@@ -9,7 +9,8 @@ export interface PrerequisiteRecord {
   view: CampaignCheck;
   binding: string | null;
   authority: string | null;
-  credentialExpiresAt?: number;
+  /** null means unknown provider expiry under exact current invocation custody. */
+  credentialExpiresAt?: number | null;
   sessions: SessionInspection[];
   createdAt: string;
   scope?: Record<string, unknown>;

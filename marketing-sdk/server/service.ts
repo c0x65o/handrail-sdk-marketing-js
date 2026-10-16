@@ -132,15 +132,21 @@ export class MarketingServer {
   private defaultConnections?: MarketingConnectionsService;
   get connections() { return this.options.connections ?? (this.defaultConnections ??= createConnections({ store: this.store, evidence: this.mode === "fixture" ? "fixture" : "provider" })); }
   get campaignAccess(): CampaignAccess { return this.options.campaignAccess ?? this.connections; }
-  private async readCampaignAuthority(p: Principal, g: Grant, expiry?: number, action: "prepare" | "activate" = "prepare") {
-    const access = structuredClone(await this.campaignAccess.campaignAuthority(p, g, expiry));
+  private async readCampaignAuthority(p: Principal, g: Grant, expiry?: number | null, action: "prepare" | "activate" = "prepare") {
+    const observedExpiry = expiry === null ? Infinity : expiry;
+    const access = structuredClone(await this.campaignAccess.campaignAuthority(p, g, observedExpiry));
+    const invocation = g.lifetime?.kind === 'invocation';
+    await assertCurrentGrant(g, this.now(), this.options.executionAuthority);
+    const bound = (value:number) => Number.isFinite(value) || invocation && value === Infinity;
+    const grantExpiry = invocation ? Infinity : Date.parse(g.expiresAt ?? "");
     requireThat(typeof access.digest === 'string' && access.digest.length > 0 && access.digest.length <= 500 &&
-      Number.isFinite(access.expiresAt) && access.expiresAt > this.now() &&
-      Number.isFinite(access.credentialExpiresAt) && access.credentialExpiresAt > this.now() && (expiry === undefined || expiry === access.credentialExpiresAt) &&
-      access.expiresAt <= access.credentialExpiresAt && access.expiresAt <= Date.parse(g.expiresAt ?? "") &&
+      bound(access.expiresAt) && access.expiresAt > this.now() &&
+      bound(access.credentialExpiresAt) && access.credentialExpiresAt > this.now() && (observedExpiry === undefined || observedExpiry === access.credentialExpiresAt) &&
+      access.expiresAt <= access.credentialExpiresAt && access.expiresAt <= grantExpiry &&
       Array.isArray(access.sessions) && access.sessions.length > 0 &&
       access.sessions.some(s => s.projectId === g.projectId && digest(s.binding) === digest(sessionBinding(p))) &&
-      access.sessions.every(s => s.projectId === g.projectId && sessionExpiryBound(s) >= access.expiresAt) &&
+      access.sessions.every(s => s.projectId === g.projectId && sessionExpiryBound(s) >= access.expiresAt &&
+        (!invocation || digest(s.lifetime) === digest(g.lifetime))) &&
       access.account?.id === g.accountId && access.account.currency === g.currency && access.account.timezone === g.timezone &&
       access.account.permissions.includes(action) && g.permissions.includes(action) &&
       Array.isArray(access.identities) && (g.provider === 'meta'
@@ -187,7 +193,7 @@ export class MarketingServer {
   ): Promise<Grant> {
     const g = await this.store.get<Grant>(project, "grant", grantId);
     await assertCurrentGrant(g, this.now(), this.options.executionAuthority);
-    requireThat(!g.lifetime || permission === "pause" || permission === "report", "invocation_grant_operation_denied", 403);
+    requireThat(!g.lifetime || permission === "pause" || permission === "report" || permission === "activate", "invocation_grant_operation_denied", 403);
     requireThat(
       !permission || g.permissions.includes(permission),
       "grant_permission_denied",
@@ -907,7 +913,7 @@ export class MarketingServer {
     }));
   }
   private checkKey(p: Principal, key: string) { text(key, 160); return `campaign-check:${digest([p.userId, key])}`; }
-  private async checkContext(p: Principal, project: string, campaignId: string, credentialExpiry?: number, action: "prepare" | "activate" = "prepare") {
+  private async checkContext(p: Principal, project: string, campaignId: string, credentialExpiry?: number | null, action: "prepare" | "activate" = "prepare") {
     await this.auth(p, project, true);
     const c = await this.store.get<Campaign>(project, "campaign", campaignId);
     const g = await this.grant(project, c.grantId, action, c.id);
@@ -1002,7 +1008,7 @@ export class MarketingServer {
       return await this.campaignAccess.withCampaignAuthority(p, context.g, context.authority, () => this.tracking.withCampaignConfiguration(context.tracking, () => this.store.transaction(async () => {
         await guard();
         const pointer = await this.store.get<{id:string}>(project, "campaignCheckCurrent", c.id);
-        attempt.credentialExpiresAt = context.authority.credentialExpiresAt; attempt.binding = context.binding; attempt.authority = context.authority.digest; attempt.sessions = context.authority.sessions;
+        attempt.credentialExpiresAt = Number.isFinite(context.authority.credentialExpiresAt) ? context.authority.credentialExpiresAt : null; attempt.binding = context.binding; attempt.authority = context.authority.digest; attempt.sessions = context.authority.sessions;
         attempt.scope = { projectId: project, campaignId: c.id, campaignRevision: c.revision, action,
           grantId: context.g.id, grantRevision: context.g.revision, accountId: context.g.accountId, pageId: context.g.pageId,
           organizationId: context.g.organizationId ?? null,
@@ -1104,7 +1110,7 @@ export class MarketingServer {
       );
       const expires = Math.min(
         this.now() + 15 * 60000,
-        Date.parse(g.expiresAt ?? ""),
+        g.lifetime ? Infinity : Date.parse(g.expiresAt ?? ""),
         materialEndTime(c.material),
       );
       requireThat(expires > this.now(), "delivery_window_ended");
