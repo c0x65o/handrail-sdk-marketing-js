@@ -49,7 +49,7 @@ export function metaPreflightHttp(connectionFetch: typeof fetch, account = "act_
       }
       assert.ok(["campaigns","adsets","adcreatives","ads"].includes(last));
       if(last==="campaigns") {assert.equal(body.status,"PAUSED");assert.equal(body.objective,"OUTCOME_TRAFFIC");assert.equal(body.is_adset_budget_sharing_enabled,false);}
-      if(last==="adsets") {assert.equal(body.status,"PAUSED");assert.equal(body.optimization_goal,"LINK_CLICKS");assert.ok(Number(body.lifetime_budget)>0);assert.equal(body.daily_budget,undefined);}
+      if(last==="adsets") {assert.equal(body.status,"PAUSED");assert.equal(body.optimization_goal,"LINK_CLICKS");assert.notEqual(body.lifetime_budget===undefined,body.daily_budget===undefined);assert.ok(Number(body.lifetime_budget??body.daily_budget)>0);}
       if(last==="ads") assert.equal(body.status,"PAUSED");
       const id=String(next++);
       if(body.creative)body.creative={id:String(body.creative.creative_id)};

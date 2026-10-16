@@ -5,7 +5,7 @@ import { connectionFixture } from "./connection-fixture.js";
 import { fixtureSettings } from "./capability-fixtures.js";
 import { trackingFixture } from "./tracking-fixture.js";
 import { metaPreflightHttp } from "./meta-preflight-http.js";
-export async function nativePreflightFixture(external = false, studioOptions: (f: Awaited<ReturnType<typeof connectionFixture>>) => Omit<StudioOptions,"sessions"> = () => ({})) {
+export async function nativePreflightFixture(external = false, studioOptions: (f: Awaited<ReturnType<typeof connectionFixture>>) => Omit<StudioOptions,"sessions"> = () => ({}), dailyBudgetMinor?: number) {
   const f=await connectionFixture('meta',true,external);
   const connection=await f.call('resumeConnection',f.change(await f.approved()));
   const g=await f.store.get<Grant>('p','grant',connection.grantId!);
@@ -21,7 +21,7 @@ export async function nativePreflightFixture(external = false, studioOptions: (f
   const asset=await server.studio.importRaster(f.principal,'p',{draftId:d.id,expectedRevision:d.revision,requestKey:'import',rights:'Owned synthetic artwork'},readFileSync('marketing-sdk/tests/fixtures/test-pattern.png'));
   d=await call('selectStudioMedia',{draftId:d.id,expectedRevision:d.revision,requestKey:'media',assetIds:[asset.id]});
   const captured=await call('captureDestination',{url:destination});
-  d=await call('saveStudioMaterial',{draftId:d.id,expectedRevision:d.revision,requestKey:'material',step:'tracking',material:{...d.material,destinationDigest:captured.digest,settings:fixtureSettings('meta',g.accountId,g.pageId!),audience:{provider:'meta',locations:['US'],ageMin:25,ageMax:54,expansion:false},budget:{currency:g.currency,minor:1000},timezone:g.timezone,startAt:'2026-11-01T05:00:00Z',endAt:'2026-11-08T06:00:00Z'}});
+  d=await call('saveStudioMaterial',{draftId:d.id,expectedRevision:d.revision,requestKey:'material',step:'tracking',material:{...d.material,destinationDigest:captured.digest,settings:fixtureSettings('meta',g.accountId,g.pageId!),audience:{provider:'meta',locations:['US'],ageMin:25,ageMax:54,expansion:false},budget:{currency:g.currency,minor:1000},...(dailyBudgetMinor ? {advertisingBudget:{daily:{currency:g.currency,minor:dailyBudgetMinor},lifetime:{currency:g.currency,minor:1000}}}:{}),timezone:g.timezone,startAt:'2026-11-01T05:00:00Z',endAt:'2026-11-08T06:00:00Z'}});
   const owner={kind:'draft' as const,id:d.id};
   const binding=await call('bindTracking',{owner,expectedRevision:d.revision,expectedBindingRevision:0,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry',refundTreatment:null,requestKey:'bind'});
   const input={draftId:d.id,expectedRevision:d.revision,grantId:g.id,expectedGrantRevision:g.revision,requestKey:'promote'};

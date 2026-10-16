@@ -17,7 +17,7 @@ import type { StudioCommands } from "../core/studio.js";
 import { createConnections, connectionCommandFields, type MarketingConnectionsService } from "./connections.js";
 import type { ConnectionCommands } from "../core/connections.js";
 import { validateAccountCapability } from "./capabilities.js";
-import { capabilityBlockers, providerBudgetBlockers } from "../core/index.js";
+import { capabilityBlockers } from "../core/index.js";
 import type {
   Asset,
   Campaign,
@@ -975,8 +975,6 @@ export class MarketingServer {
       const guard = async () => { requireThat(this.now() - Date.parse(attempt.createdAt) < 120000, "campaign_check_read_deadline"); await inspectLiveSessions(this.studio.sessions, [session]); await this.assertCheckContext(p, project, context); };
       const c = context.c;
       material(c.material, context.g.provider);
-      const blockers = providerBudgetBlockers(c.material);
-      requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified");
       requireThat(c.material.purpose === "acquisition" && context.tracking.outcome === "inquiry", "first_party_inquiry_required");
       await this.assets(c); // Retained ownership, actual bytes and decoding, outside locks.
       const snapshot = await this.store.get<{url:string;source:string}>(project, "destination", c.material.destinationDigest);

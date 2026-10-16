@@ -126,7 +126,7 @@ const facetPatterns: Record<ProfessionalFacet, RegExp> = {
   staffCountRanges: /^urn:li:staffCountRange:\((1,1|2,10|11,50|51,200|201,500|501,1000|1001,5000|5001,10000|10001,2147483647)\)$/,
 };
 /** Shared browser/headless/agent validation. Does not infer or repair user intent. */
-export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purpose" | "applicantGoal" | "audience"> & Partial<Pick<Material, "timezone" | "startAt" | "endAt">>, g?: PublicGrant): string[] {
+export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purpose" | "applicantGoal" | "audience"> & Partial<Pick<Material, "timezone" | "startAt" | "endAt" | "budget" | "advertisingBudget">>, g?: PublicGrant): string[] {
   const s = m.settings;
   if (!s) return m.purpose === "recruitment" ? ["recruitment_provider_unsupported"] : [];
   if (!record(s) || !record(m.audience)) return ["invalid_provider_settings"];
@@ -230,12 +230,9 @@ export function capabilityKey(m: Material, g: PublicGrant): string {
   return canonical({ version: CAPABILITY_VERSION, provider: g.provider, account: g.accountId, grantRevision: g.revision,
     grantId: g.id, projectId: g.projectId, currency: g.currency, timezone: g.timezone, material: m });
 }
-/** Budget field existence does not qualify Meta daily exposure or cap compatibility. */
-export function providerBudgetBlockers(m: Pick<Material, "settings" | "advertisingBudget">): string[] {
-  return m.settings?.provider === "meta" && m.advertisingBudget?.daily ? ["meta_daily_budget_semantics_unverified"] : [];
-}
+/** Exact material eligibility remains separate from budget exposure accounting. */
 export function capabilityStatus(m: Material, g: PublicGrant, now = Date.now()) {
-  const blockers = [...capabilityBlockers(m, g), ...providerBudgetBlockers(m)];
+  const blockers = capabilityBlockers(m, g);
   const grantCurrent = !g.revokedAt && Date.parse(g.expiresAt) > now;
   const evidence = g.capabilityEvidence?.find(e => e.key === capabilityKey(m, g) && nonempty(e.receipt) &&
     Number.isFinite(Date.parse(e.verifiedAt)) && Date.parse(e.verifiedAt) <= now && Date.parse(e.expiresAt) > now);
@@ -243,12 +240,16 @@ export function capabilityStatus(m: Material, g: PublicGrant, now = Date.now()) 
     accountVerified: grantCurrent && !!m.settings && !blockers.length && !!evidence, deliveryObserved: false as const, blockers };
 }
 
-/** Conservative reservation basis for the newly offered LinkedIn plans. This is
+/** Conservative reservation basis for provider daily budgets. This is
  * exposure accounting, not a claim that provider pacing is an intraday hard cap. */
-export function dailyExposureMinor(m: Pick<Material, "settings" | "budget" | "advertisingBudget">): number | null {
+export function dailyExposureMinor(m: Pick<Material, "settings" | "advertisingBudget"> & Partial<Pick<Material, "budget">>): number | null {
   const daily = m.advertisingBudget?.daily?.minor;
-  return m.settings?.provider === "meta" && daily !== undefined ? null : daily === undefined ? null : m.settings?.provider === "linkedin"
-    ? Math.min(m.budget?.minor ?? Infinity, Math.ceil(daily * 1.5)) : daily;
+  if (daily === undefined) return null;
+  // Meta's published daily flexibility is 75%; sharing is disabled in the plan
+  // and must read back false before activation. Round exposure upward, never
+  // rewrite the provider's nominal daily budget or assume weekly headroom.
+  const multiplier = m.settings?.provider === "meta" ? 1.75 : m.settings?.provider === "linkedin" ? 1.5 : 1;
+  return Math.min(m.budget?.minor ?? Infinity, Math.ceil(daily * multiplier));
 }
 
 /** Operational readiness includes acknowledgement; representing a paused imported
@@ -256,5 +257,7 @@ export function dailyExposureMinor(m: Pick<Material, "settings" | "budget" | "ad
 export function capabilityBlockers(...args: Parameters<typeof capabilityStructureBlockers>): string[] {
   const errors=capabilityStructureBlockers(...args);
   if(args[0].settings&&args[0].settings.nondiscriminationAccepted!==true)errors.push("nondiscrimination_notice_required");
+  const exposure=dailyExposureMinor(args[0]),ceiling=args[0].advertisingBudget?.campaignDailyCeiling;
+  if(ceiling&&(exposure===null||exposure>ceiling.minor))errors.push("campaign_daily_exposure_exceeded");
   return errors;
 }

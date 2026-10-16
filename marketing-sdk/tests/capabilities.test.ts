@@ -610,20 +610,27 @@ test("Meta v1/v2/v3 receipts retain exact inspection digests and safety pause, n
   } finally { await t.close(); }
 });
 
-test("Meta daily remains denied by native prepare/activate despite exact account evidence; v4 does not qualify REACH normalization", async () => {
+test("Meta daily preparation preserves nominal amount and cap, activation requires disabled sharing; v4 rejects REACH normalization", async () => {
   const t = await native("meta");
   try {
     t.c.material.advertisingBudget = { lifetime: t.c.material.budget!, daily: { currency: "USD", minor: 3000 } };
     eligible(t.c, t.g);
-    // Planning can represent a denied daily request; no budget rewrite or new cap is inferred.
+    // The requested daily amount and lifetime cap remain exact provider terms.
     const plan: any = t.port.plan(t.c, t.g, [t.a]);
     assert.equal(plan.campaign.is_adset_budget_sharing_enabled, false);
     assert.equal(plan.adset.daily_budget, "3000"); assert.equal(plan.adset.daily_spend_cap, undefined);
-    assert.equal(capabilityStatus(t.c.material, t.g).accountVerified, false);
-    await assert.rejects(t.port.prepare(t.c, t.g, [t.a], "daily", () => {}, () => {}), /meta_daily_budget_semantics_unverified/);
-    await assert.rejects(t.port.activate({ ...t.c, receipt: { ids: { readbackVersion: "4", readbackDigest: "saved" }, payloadDigest: "saved",
-      intent: "paused", delivery: "unverified", observedAt: "2026-01-01T00:00:00Z", evidence: "provider", providerRequestId: null } }, t.g, () => {}), /meta_daily_budget_semantics_unverified/);
-    assert.equal(t.state.requests.length, 0);
+    assert.equal(capabilityStatus(t.c.material, t.g).accountVerified, true);
+    assert.equal(plan.campaign.spend_cap,"42000");assert.equal(plan.adset.lifetime_budget,undefined);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],"daily",()=>{},()=>{});
+    const prepared={...t.c,receipt},writes=t.state.writes;
+    for(const value of [true,undefined,null]){
+      t.state.drift=(o,k)=>{if(k==='campaigns')o.is_adset_budget_sharing_enabled=value;};
+      await assert.rejects(t.port.activate(prepared,t.g,()=>{}),/meta_budget_sharing_unverified/);
+      assert.equal(t.state.writes,writes);
+    }
+    t.state.drift=null;
+    const activated=await t.port.activate(prepared,t.g,()=>{});assert.equal(activated.intent,'enabled');
+    assert.equal(t.state.objects.get(receipt.ids.adset!)!.daily_budget,3000);
     delete t.c.material.advertisingBudget;
     metaMode(t.c, META_COMBINATIONS.find(r => r[2] === "REACH")!); eligible(t.c, t.g);
     t.state.drift = (o, k) => { if (k === "adsets") { o.optimization_goal = "IMPRESSIONS"; o.frequency_control_specs = [{ event: "IMPRESSIONS", interval_days: 7, max_frequency: 2 }]; } };
@@ -666,15 +673,17 @@ test("Meta v4 SQL operation retains unknown HTTP effects, forbids retry replay a
     const result = await server.call(principal, "p", "reconcile", { operationId: op.id });
     assert.equal(result.state, "succeeded"); assert.equal(result.receipt?.ids.readbackVersion, "4");
     assert.equal(t.state.writes, writes);
-    // The same headless live service continues to deny daily preparation at dispatch.
+    // The same headless live service prepares exact daily terms without activation.
     const daily = { ...t.c, id: "daily", material: { ...t.c.material,
       advertisingBudget: { lifetime: t.c.material.budget!, daily: { currency: "USD", minor: 3000 } } } };
     await t.store.put("p", "asset", t.a.id, { ...t.a, campaignId: daily.id });
     eligible(daily, t.g); await t.store.put("p", "grant", t.g.id, t.g); await t.store.put("p", "campaign", daily.id, daily);
-    const denied = await server.call(principal, "p", "prepare", { campaignId: daily.id, requestKey: "daily" });
-    const blocked = await server.dispatch("p", denied.id);
-    assert.equal(blocked.state, "blocked"); assert.equal(blocked.reason, "meta_daily_budget_semantics_unverified");
-    assert.equal(t.state.writes, writes);
+    const pendingDaily = await server.call(principal, "p", "prepare", { campaignId: daily.id, requestKey: "daily" });
+    const preparedDaily = await server.dispatch("p", pendingDaily.id);
+    assert.equal(preparedDaily.state, "succeeded",preparedDaily.reason??'');assert.equal(preparedDaily.receipt?.intent,'paused');
+    assert.equal(t.state.writes,writes+5);
+    assert.equal(t.state.objects.get(preparedDaily.receipt!.ids.adset!)!.daily_budget,3000);
+    assert.equal(t.state.objects.get(preparedDaily.receipt!.ids.campaign!)!.spend_cap,42000);
   } finally { await t.close(); }
 });
 

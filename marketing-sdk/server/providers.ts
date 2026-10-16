@@ -1,7 +1,6 @@
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import { countryPage, countryCode } from "./countries.js";
 import { currentPrerequisite, storedCredentialBinding } from "./preflight.js";
-import { providerBudgetBlockers } from "../core/index.js";
 import type { DiscoveredAccount, DiscoveredIdentity } from "./connection-discovery.js";
 import { selectedOptions } from "../core/index.js";
 import { validateAccountStructure, validateAccountCapability, metaTargeting, linkedInTargeting, metaExpansionOff, metaExpansionMatches, exactTargeting, exactLinkedInTargeting } from "./capabilities.js";
@@ -449,7 +448,7 @@ export class NativeProvider implements ProviderPort {
         creative:await client.getObject(ids.creative,META_EXISTING_FIELDS.creative)};
       const result=build(observed);await current();
       return {...result,providerMaterialDigest:digest(observed),observedAt:new Date().toISOString(),executionReady:false as const,
-        missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred","meta_daily_budget_semantics_unverified"]};
+        missingReasons:["original_media_content_binding_unverified","execution_ownership_not_transferred"]};
     }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_campaign_read_unavailable",error);});
   }
   /** Account-scoped current provider image metadata. Never claims original binary
@@ -603,8 +602,6 @@ export class NativeProvider implements ProviderPort {
   async inspectPrerequisites(c: Campaign, g: Grant, assets: Asset[], account: DiscoveredAccount,
     identities: DiscoveredIdentity[], guard: () => Promise<void>) {
     this.plan(c, g, assets);
-    const blockers = providerBudgetBlockers(c.material);
-    requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified", 422);
     const s = c.material.settings;
     if (s?.provider === "linkedin") return this.inspectLinkedInPrerequisites(c, g, account, identities, guard);
     requireThat(s?.provider === "meta" && s.delivery === "ordinary" && s.objective === "OUTCOME_TRAFFIC" && s.optimization === "LINK_CLICKS",
@@ -634,7 +631,7 @@ export class NativeProvider implements ProviderPort {
         await guard();
         return { expiresAt: credentials.expiresAt, facts: ["Current account membership and advertising role checked", "Current required scopes checked",
           "Active account and billing signal observed", "Exact account currency and timezone checked", "Selected Page and Instagram relationship checked",
-          "Exact material, destination, media bytes and lifetime budget checked", `Selected countries freshly resolved: ${countries.map(c => c.label).join(", ")}`],
+          "Exact material, destination, media bytes and requested budget terms checked", `Selected countries freshly resolved: ${countries.map(c => c.label).join(", ")}`],
           checkedFacts: { provider: "meta", apiVersion: "v26.0", countries, accountId: discovered.id, currency: discovered.currency,
             timezone: discovered.timezone, role: discovered.roleSummary, permissions: discovered.permissions,
             requiredScopes: connectionScopes("meta", ["prepare"]), accountStatus: v.account.accountStatus, disableReason: v.account.disableReason,
@@ -687,8 +684,6 @@ export class NativeProvider implements ProviderPort {
   private async prerequisite(c: Campaign, g: Grant) {
     if (!this.vault.prerequisiteBinding && !g.id.startsWith("connection:")) { validateAccountCapability(c, g, true); return; }
     validateAccountCapability(c, g);
-    const blockers = providerBudgetBlockers(c.material);
-    requireThat(!blockers.length, blockers[0] ?? "budget_semantics_unverified", 422);
     const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(c.projectId, "asset", id)));
     await currentPrerequisite(this.store, c, g, this.plan(c, g, assets), Date.now(), await this.credentialBinding(g));
   }
@@ -871,7 +866,7 @@ export class NativeProvider implements ProviderPort {
     // group budgets, creatives, targeting and schedules cannot be recreated.
     if (this.name === "meta") {
       requireThat(!previous.advertisingBudget?.daily && !normalized.advertisingBudget?.daily,
-        "meta_daily_budget_semantics_unverified");
+        "meta_daily_budget_update_unqualified");
       requireThat(normalized.budget && previous.budget, "lifetime_budget_required");
       normalized.budget.minor = previous.budget.minor;
       if (normalized.advertisingBudget?.lifetime && previous.advertisingBudget?.lifetime)

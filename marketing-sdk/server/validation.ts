@@ -228,11 +228,11 @@ export function material(value: Material, provider: string) {
   requireThat(value.settings || value.applicantGoal === undefined, "applicant_goal_requires_settings", 422);
   if (value.advertisingBudget) {
     advertisingBudget(value.advertisingBudget);
-    // Representation preserves native ceilings even where provider exposure is unknown.
-    // Meta daily execution is separately blocked by providerBudgetBlockers; storing
-    // its nominal budget is not proof that provider pacing enforces this ceiling.
+    // Preserve historical Meta nominal amounts and native ceilings even when
+    // exposure exceeds them. Operational capability checks reject that mismatch;
+    // history/import and pause must remain readable without raising the ceiling.
     const exposure = dailyExposureMinor(value);
-    const representedDaily = exposure ?? (value.settings?.provider === "meta" ? value.advertisingBudget.daily?.minor : undefined);
+    const representedDaily = value.settings?.provider === "meta" ? value.advertisingBudget.daily?.minor : exposure;
     requireThat(!value.advertisingBudget.campaignDailyCeiling || representedDaily !== undefined && representedDaily !== null &&
       representedDaily <= value.advertisingBudget.campaignDailyCeiling.minor, "campaign_daily_exposure_exceeded", 422);
     requireThat(value.budget === null ? value.advertisingBudget.lifetime === undefined :

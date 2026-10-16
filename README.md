@@ -414,12 +414,19 @@ Readback version 5 verifies these fields during initial preparation, adoption
 inspection, activation and recovery. Older receipt digests remain readable;
 unsupported or changed fields fail instead of being silently dropped.
 
-Representing Meta daily terms does not qualify provider pacing against a native
-spending ceiling. `meta_daily_budget_semantics_unverified` still prevents paid
-execution; unknown exposure is never treated as zero. The public material capture
-returns `executionReady: false`. Tests use real SDK clients and disposable SQL
-storage with intercepted provider HTTP; they are not live account eligibility or
-delivery proof. Provider field references: [Meta creative schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adcreative.py)
+Meta daily preparation preserves the requested amount and disables ad-set budget
+sharing. Budget reservations use 175% of the nominal daily amount, rounded up to
+minor units and bounded by an explicit lifetime cap, following [Meta's daily
+budget flexibility guidance](https://z-p4-lookaside.fbsbx.com/business/help/1388266028979935).
+The SDK does not use the weekly average to release daily capacity. Activation
+requires current readback proving sharing remains disabled, exact account/material
+eligibility and sufficient current spending authority. Historical native daily
+ceilings remain unchanged; insufficient ceilings block execution rather than being
+raised during import. Uncertain operations retain their reservations. Daily budget
+updates remain unqualified (`meta_daily_budget_update_unqualified`). The public
+material capture returns `executionReady: false`. Tests use real SDK clients and
+disposable SQL storage with intercepted provider HTTP; they are not live account
+eligibility or delivery proof. Provider field references: [Meta creative schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adcreative.py)
 and [Meta targeting schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/targeting.py).
 
 ## Measurement evidence

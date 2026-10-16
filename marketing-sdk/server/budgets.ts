@@ -103,7 +103,7 @@ export class AdvertisingBudgets {
     requireThat(daily && daily.currency === p.currency && materialCurrency(c.material) === p.currency &&
       c.material.timezone === p.timezone, "explicit_daily_budget_required");
     if (this.evidence === "provider") {
-      requireThat(c.material.audience.provider !== "meta", "meta_daily_budget_semantics_unverified");
+      requireThat(c.material.settings?.provider === c.material.audience.provider, "budget_provider_context_unverified");
       requireThat(c.material.audience.provider !== "linkedin" || c.material.timezone === "UTC", "linkedin_utc_required");
     }
     advertisingBudget(c.material.advertisingBudget!);
@@ -113,6 +113,7 @@ export class AdvertisingBudgets {
     // Fixtures can exercise SQL arithmetic, never qualify native budget semantics.
     const exposure = dailyExposureMinor(c.material) ?? (this.evidence === "fixture" ? daily.minor : null);
     requireThat(exposure !== null, "daily_exposure_unverified");
+    requireThat(!c.material.advertisingBudget?.campaignDailyCeiling || exposure <= c.material.advertisingBudget.campaignDailyCeiling.minor, "campaign_daily_exposure_exceeded");
     requireThat(exposure <= p.campaignDailyCeilingMinor && c.material.budget.minor <= p.campaignLifetimeCeilingMinor,
       "campaign_budget_ceiling_exceeded");
     const spend = await this.store.get<ObservedAdvertisingSpend>(p.projectId, "advertisingObservedSpend", p.id);

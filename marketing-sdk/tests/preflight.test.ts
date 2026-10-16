@@ -5,8 +5,8 @@ import { MarketingServer, digest } from "../server/index.js";
 import { nativePreflightFixture } from "./preflight-fixture.js";
 import { testStore } from "./datastore.js";
 
-test("public Connections and Studio produce separate exact native proof with zero ad writes, durable replay, and actual paused preparation", async () => {
-  const f = await nativePreflightFixture(); try {
+for(const daily of [false,true])test(`public Connections and Studio produce separate exact native proof with zero ad writes, durable replay, and actual paused ${daily?"daily":"lifetime"} preparation`, async () => {
+  const f = await nativePreflightFixture(false,()=>({}),daily?100:undefined); try {
     const g = await f.store.get<Grant>("p","grant",f.c.grantId), grantDigest = digest(g);
     assert.equal(g.capabilityEvidence,undefined);
     const before = f.http.trace.length;
@@ -27,11 +27,17 @@ test("public Connections and Studio produce separate exact native proof with zer
     const result=await f.server.dispatch("p",op.id);
     assert.equal(result.state,"succeeded",JSON.stringify(result));
     assert.equal(f.http.trace.filter(r=>r.method==="POST").length,5);
+    const campaignBody=f.http.trace.find(r=>r.path.endsWith('/campaigns')&&r.method==='POST')!.body as Record<string,unknown>;
+    const adsetBody=f.http.trace.find(r=>r.path.endsWith('/adsets')&&r.method==='POST')!.body as Record<string,unknown>;
+    assert.equal(campaignBody.is_adset_budget_sharing_enabled,false);
+    assert.equal(adsetBody.daily_budget,daily?100:undefined);
+    assert.equal(adsetBody.lifetime_budget,daily?undefined:1000);
+    if(daily)assert.equal(campaignBody.spend_cap,1000);
     const paused=await f.store.get<Campaign>("p","campaign",f.c.id);assert.equal(paused.state,"paused");assert.equal(paused.receipt?.intent,"paused");
     assert.equal(paused.receipt?.evidence,"provider");assert.ok(paused.receipt?.ids.readbackDigest);
     const refresh=await f.call("checkCampaign",{...f.check,requestKey:"refresh"});assert.equal(refresh.state,"ready");
     assert.equal((await f.store.list("p","operation")).length,1);assert.equal(f.http.trace.filter(r=>r.method==="POST").length,5);
-    await assert.rejects(f.call("prepare",{campaignId:f.c.id,requestKey:"new-hierarchy"}),/existing_operation_requires_reconciliation/);
+    await assert.rejects(f.call("prepare",{campaignId:f.c.id,requestKey:"new-hierarchy"}),daily?/meta_daily_budget_update_unqualified/:/existing_operation_requires_reconciliation/);
   } finally { await f.close(); }
 });
 

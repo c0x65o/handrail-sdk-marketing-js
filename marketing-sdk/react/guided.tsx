@@ -3,7 +3,7 @@ import { CountryAudience } from "./audience.js";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { META_PLACEMENTS, usesInstagram, CAPABILITY_VERSION, capabilityBlockers, capabilityStatus, LINKEDIN_COMBINATIONS, META_COMBINATIONS,
   type Audience, type Campaign, type CampaignDraft, type DraftMaterial, type Material, type MarketingClient,
-  type ProviderSettings, type PublicGrant, type ResolvedOption, type ProfessionalFacet, providerBudgetBlockers } from "../core/index.js";
+  type ProviderSettings, type PublicGrant, type ResolvedOption, type ProfessionalFacet } from "../core/index.js";
 import { defaultCampaignSchedule, dateAtInstant, instantAtDate } from "./schedule.js";
 import { ChoicePicker } from "./choices.js";
 import { planningWrite } from "./planning.js";
@@ -170,7 +170,7 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
     {g.provider !== "google" && <label>Daily media budget ({g.currency}){g.provider === "linkedin" ? " — required" : " — optional"}<input type="number" min="0.01" step="0.01" required={g.provider === "linkedin"} value={m.advertisingBudget?.daily ? m.advertisingBudget.daily.minor / 100 : ""} onChange={e => update({ advertisingBudget: e.target.value ? { ...m.advertisingBudget, ...(m.budget ? { lifetime: m.budget } : {}), daily: { currency: g.currency, minor: Math.round(Number(e.target.value) * 100) } } : undefined })} /></label>}
     </fieldset>
     {s?.provider === "linkedin" && <p>Policy checks reserve 150% of the daily amount, bounded by your lifetime approval, for potential daily overdelivery.</p>}
-    {providerBudgetBlockers(m).length > 0 && <p role="status">Meta daily budget exposure and cap compatibility are unverified. Native preparation and activation are blocked; saving a draft does not qualify them.</p>}
+    {s?.provider === "meta" && m.advertisingBudget?.daily && <p>Policy checks reserve 175% of the daily amount, bounded by your lifetime approval, for potential daily overdelivery. Ad set budget sharing must remain disabled.</p>}
     <p>Daily amounts are pacing targets, not hard intraday caps. Reservations cover managed media commitments; observed spend is separate. External campaigns, taxes and fees require additional host coverage. A pause does not settle delayed charges.</p>
     {materialCurrency(m) !== g.currency && <p role="status">Retained amount uses {materialCurrency(m)}; this account uses {g.currency}. No currency conversion is available. <button type="button" onClick={() => update({ budget: { currency: g.currency, minor: 0 }, advertisingBudget: undefined })}>Clear amounts and use account currency</button></p>}
     {m.timezone !== g.timezone && <p role="status">Retained schedule uses {m.timezone}; this account uses {g.timezone}. <button type="button" onClick={() => update({ timezone: g.timezone, startAt: "", endAt: "" })}>Clear dates and use account timezone</button></p>}

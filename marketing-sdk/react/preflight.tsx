@@ -21,7 +21,6 @@ const corrections: Record<string, string> = {
   provider_discovery_incomplete: "The provider returned incomplete account or Page results. Check again when complete reads are available.",
   provider_read_unavailable: "Provider reads are temporarily unavailable. Read the saved status or explicitly try another check.",
   campaign_prerequisites_stale: "Campaign data or access changed during the check. Review the campaign and check again.",
-  meta_daily_budget_semantics_unverified: "Meta daily budgets remain unqualified. Review this campaign's budget before continuing.",
 };
 const checkError = (error: unknown) => corrections[error instanceof Error ? error.message : ""] ??
   "The check response could not be confirmed. Read its saved status before starting another check.";

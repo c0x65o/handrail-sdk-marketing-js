@@ -9,7 +9,7 @@ import { useVisibleRefresh } from "./lifecycle.js";
 import { MarketingConnections } from "./connections.js";
 export { MarketingConnections } from "./connections.js";
 import { AudienceFields, GuidedFields, GuidedMaterialEditor, DraftCard, initialMaterial, DraftPromotion } from "./guided.js";
-import { TRACKING_OUTCOMES, capabilityBlockers, dailyExposureMinor, providerBudgetBlockers } from "../core/index.js";
+import { TRACKING_OUTCOMES, capabilityBlockers, dailyExposureMinor } from "../core/index.js";
 import React, { useEffect, useRef, useState } from "react";
 import { planningWrite } from "./planning.js";
 import { completedCampaignWindow, dateAtInstant, selectedCompletedWindow } from "./schedule.js";
@@ -99,7 +99,7 @@ export function MaterialReview({
         </dd>
       </dl>
       <p>Daily budgets are pacing targets. Required reservations are not observed spend or an independently enforceable daily cap. Managed media excludes fees and taxes; external campaigns need host coverage.</p>
-      {providerBudgetBlockers(material).length > 0 && <p>Meta daily cap compatibility remains unverified; native preparation and activation are blocked.</p>}
+      {material.settings?.provider === "meta" && material.advertisingBudget?.daily && <p>Daily exposure reserves up to 175% of the nominal budget within the lifetime approval. Activation requires verified disabled budget sharing.</p>}
       <details>
         <summary>Complete targeting, copy and destination snapshot</summary>
         <pre>{JSON.stringify(material, null, 2)}</pre>
@@ -364,7 +364,6 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
   const readiness = campaign && selectedGrant ? [
     ...capabilityBlockers(campaign.material, selectedGrant),
     ...(campaign.material.settings?.conversion ? ["provider_event_delivery_unqualified_use_tracking_diagnostics"] : []),
-    ...((data?.mode === "live" || needsPrerequisite) ? providerBudgetBlockers(campaign.material) : []),
     ...(selectedGrant.provider !== "google" && !campaign.material.settings ? ["explicit_provider_settings_required"] : []),
     ...(selectedGrant.provider !== "google" && campaign.material.assetIds.length !== 1 ? ["single_image_required"] : []),
     ...(!data?.setups.some(s => s.grantId === campaign.grantId && s.state === "ready") ? ["verified_setup_required"] : []),

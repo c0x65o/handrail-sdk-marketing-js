@@ -1,4 +1,4 @@
-import { META_PLACEMENTS, canonical, capabilityStructureBlockers, capabilityBlockers, capabilityStatus, providerBudgetBlockers, type Campaign, type Grant, type LinkedInSettings, type MetaSettings } from "../core/index.js";
+import { META_PLACEMENTS, canonical, capabilityStructureBlockers, capabilityBlockers, capabilityStatus, type Campaign, type Grant, type LinkedInSettings, type MetaSettings } from "../core/index.js";
 import { requireThat } from "./store.js";
 
 export function validateAccountStructure(c:Campaign,g:Grant) {
@@ -8,10 +8,6 @@ export function validateAccountStructure(c:Campaign,g:Grant) {
 export function validateAccountCapability(c: Campaign, g: Grant, requireEvidence = false) {
   const blockers = capabilityBlockers(c.material, g);
   requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
-  if (requireEvidence) {
-    const budgetBlockers = providerBudgetBlockers(c.material);
-    requireThat(!budgetBlockers.length, budgetBlockers[0] || "budget_semantics_unverified", 422);
-  }
   if (c.material.settings && requireEvidence)
     requireThat(capabilityStatus(c.material, g).accountVerified, "account_capability_unverified", 422);
 }

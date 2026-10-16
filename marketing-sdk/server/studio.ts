@@ -4,7 +4,7 @@ import type { DraftGenerationPort } from "./studio-generation.js";
 import type { DraftGenerationJob, GenerationGrant } from "../core/index.js";
 import { providerPlan } from "./providers.js";
 import sharp from 'sharp';
-import { emptyBrief, STUDIO_STEPS, capabilityBlockers, capabilityStatus, providerBudgetBlockers, CAPABILITY_VERSION, type StudioCommands, type StudioDraft, type CampaignDraft, type Campaign, type StudioState, type StudioAsset, type StudioView, type LibraryItem, type StudioReport, type StudioCheck, type Grant, type Material, type PlanningRequest, type PlanningAuthority, type Operation } from '../core/index.js';
+import { emptyBrief, STUDIO_STEPS, capabilityBlockers, capabilityStatus, CAPABILITY_VERSION, type StudioCommands, type StudioDraft, type CampaignDraft, type Campaign, type StudioState, type StudioAsset, type StudioView, type LibraryItem, type StudioReport, type StudioCheck, type Grant, type Material, type PlanningRequest, type PlanningAuthority, type Operation } from '../core/index.js';
 import { Store, type Principal, digest, byteDigest, id, requireThat } from './store.js';
 import { keys, text, draftMaterial, material } from './validation.js';
 import { inspectMedia } from './generation.js';
@@ -257,7 +257,7 @@ export class CampaignStudio {
       add('options','claims','unknown','Review all claims against your supplied facts; suggestions are not claim approval.','editorial');
       add('checks','account',g&&!g.revokedAt&&Date.parse(g.expiresAt)>this.now()?'pass':'blocked','Choose a current account and identity in Connections.');
       add('checks','destination',dest&&(dest as {url:string}).url===d.material.destination?'pass':'blocked','Capture matching destination evidence explicitly; checking never fetches a URL.');
-      if(g){try{material(d.material as Material,g.provider);const blockers=[...capabilityBlockers(d.material as Material,g),...providerBudgetBlockers(d.material as Material)];for(const code of blockers)add('checks',code,'blocked',code.replaceAll('_',' '));if(!blockers.length)add('checks','material','pass','Local field and provider capability constraints pass.');}catch(e){add('checks','material','blocked',(e as Error).message.replaceAll('_',' '));}
+      if(g){try{material(d.material as Material,g.provider);const blockers=capabilityBlockers(d.material as Material,g);for(const code of blockers)add('checks',code,'blocked',code.replaceAll('_',' '));if(!blockers.length)add('checks','material','pass','Local field and provider capability constraints pass.');}catch(e){add('checks','material','blocked',(e as Error).message.replaceAll('_',' '));}
         add('checks','account_eligibility',capabilityStatus(d.material as Material,g).accountVerified?'pass':'unknown','Current exact account eligibility evidence is separate from local format validity.','provider');
         if(g.currency!==d.material.budget?.currency||g.timezone!==d.material.timezone)add('checks','account_budget_schedule','blocked','Review account currency and timezone.');
       }

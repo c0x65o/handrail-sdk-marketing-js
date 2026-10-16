@@ -21,6 +21,35 @@ const campaign = (projectId: string, id = "c"): Campaign => ({ id, projectId, re
 const operation = (c: Campaign, id = "op"): Operation => ({ id, projectId: c.projectId, campaignId: c.id, kind: "activate", packetId: "packet", payloadDigest: "a", campaignRevision: 1,
   grantRevision: 1, accountId: "123", state: "queued", reason: null, receipt: null, createdAt: new Date(now).toISOString() });
 
+test('Meta provider reservations include 75 percent daily flexibility, preserve caps and retain uncertain exposure',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'meta-exposure-')),store=await testStore(join(dir,'db'));
+  try{
+    await store.db.prepare('INSERT INTO projects VALUES(?,?)').run('p','synthetic');
+    const ledger=new AdvertisingBudgets(store,()=>now,'provider'),p={...policy('p'),campaignDailyCeilingMinor:1000};
+    await ledger.configure(p);
+    const c=campaign('p');c.material.audience={provider:'meta',locations:['US'],expansion:false};
+    c.material.settings=(await import('./capability-fixtures.js')).fixtureSettings('meta','act_123','42');
+    await assert.rejects(ledger.reserve(c,operation(c)),/campaign_budget_ceiling_exceeded/); // 600 * 1.75 = 1050.
+    c.material.advertisingBudget!.daily!.minor=500;
+    const observation={policyId:p.id,from:p.from,until:p.until,day:'2026-11-01',currency:p.currency,timezone:p.timezone,
+      observedAt:new Date(now).toISOString(),todayMinor:100,periodMinor:200,source:'provider' as const,receipt:'synthetic-accounting-only'};
+    await ledger.observe('p',observation);
+    c.material.advertisingBudget!.campaignDailyCeiling={currency:'USD',minor:500};
+    await assert.rejects(ledger.reserve(c,operation(c)),/campaign_daily_exposure_exceeded/);
+    c.material.advertisingBudget!.campaignDailyCeiling.minor=875;
+    const op=operation(c);await ledger.reserve(c,op);
+    const held=(await store.list<AdvertisingBudgetReservation>('p','advertisingBudgetReservation'))[0]!;
+    assert.equal(held.dailyMinor,875);assert.equal(held.periodMinor,1750); // Two account-calendar days across DST.
+    assert.equal(c.material.advertisingBudget!.daily!.minor,500);assert.equal(c.material.budget!.minor,5000);
+    await assert.rejects(ledger.reserve({...c,id:'second'},operation({...c,id:'second'},'second')),/advertising_budget_exceeded/);
+    c.material.advertisingBudget!.daily!.minor=100;await ledger.assert(c,op);
+    assert.equal((await store.get<AdvertisingBudgetReservation>('p','advertisingBudgetReservation',held.id)).dailyMinor,875);
+    await ledger.settle(c,op,'enabled');await ledger.settle(c,{...op,id:'pause',kind:'pause'},'paused');
+    assert.equal((await store.get<AdvertisingBudgetReservation>('p','advertisingBudgetReservation',held.id)).state,'active');
+    await assert.rejects(ledger.configure({...p,dailyCeilingMinor:10000}),/unsettled_reservations/);
+  }finally{await store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
 test("PostgreSQL budget reservations serialize cross-project portfolio races on independent Store connections; unknown holds do not expire", { skip: !process.env.MARKETING_TEST_POSTGRES_SOCKET }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "budgets-")), path = join(dir, "db");
   const a = await testStore(path), b = await testStore(path);
@@ -81,7 +110,7 @@ test("budget pacing uses current observed spend, null is unknown, and legacy lif
     await budget.configure({ ...p, dailyCeilingMinor: 2000 });
     // Daily capacity now fits, but observed period spend plus 2 days does not.
     await assert.rejects(budget.reserve(c, operation(c)), /advertising_budget_exceeded/);
-    await assert.rejects(new AdvertisingBudgets(s, () => now, "provider").reserve(c, operation(c)), /linkedin_utc_required/);
+    await assert.rejects(new AdvertisingBudgets(s, () => now, "provider").reserve({ ...c, material: { ...c.material, settings: (await import("./capability-fixtures.js")).fixtureSettings("linkedin", "123", "42") } }, operation(c)), /linkedin_utc_required/);
     await assert.rejects(budget.reserve({ ...c, material: { ...c.material, endAt: "2026-11-04T06:00:00Z" } }, operation(c)), /campaign_outside_budget_period/);
   } finally { await s.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -176,7 +205,7 @@ test("review: UTC native reservations retain incurred exposure after pause/reduc
     const lifetimeOnly = { ...campaign("p", "lifetime"), material: { ...c.material, advertisingBudget: { lifetime: c.material.budget! } } };
     await assert.rejects(ledger.reserve(lifetimeOnly, operation(lifetimeOnly)), /explicit_daily_budget_required/);
     const meta = { ...campaign("p", "meta"), material: { ...c.material, audience: { provider: "meta" as const, locations: ["US"], expansion: false as const } } };
-    await assert.rejects(ledger.reserve(meta, operation(meta)), /meta_daily_budget_semantics_unverified/);
+    await assert.rejects(ledger.reserve(meta, operation(meta)), /budget_provider_context_unverified/);
   } finally { await store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

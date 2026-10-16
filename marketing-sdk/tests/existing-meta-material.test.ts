@@ -47,7 +47,7 @@ test("Meta native capture preserves original expanded lead material, creative ta
   assert.deepEqual(m.settings.conversion,{pixelId:"60",event:"Lead"});
   assert.equal(m.settings.creative?.description,"Original description");assert.equal(m.settings.creative?.urlTags,f.observed.creative.url_tags);
   assert.deepEqual(m.settings.targeting.expansion,{detailedTargeting:1,lookalike:0});
-  assert.ok(capabilityStatus(m,f.grant).blockers.includes("meta_daily_budget_semantics_unverified"));
+  assert.ok(capabilityStatus(m,f.grant).blockers.includes("campaign_daily_exposure_exceeded"));
   assert.deepEqual(f.grant.permissions,["pause","report"]);assert.equal(f.grant.targetingOptions,undefined);
   const c={id:"c",projectId:"p",grantId:"g",material:m} as Campaign;
   const g={...f.grant,targetingOptions:r.targetingOptions};
@@ -210,7 +210,7 @@ test('Meta broad Advantage+ adoption preserves absent interest suggestions throu
   const review=renderToStaticMarkup(createElement(MaterialReview,{material:r.material,assets:[],client:{assetUrl:()=>'/fixture'} as any,grant:g}));assert.match(review,/advantage_plus_broad/);
   const editor=renderToStaticMarkup(createElement(GuidedFields,{value:r.material,grant:g,onChange:()=>{}}));
   assert.match(editor,/Broad acquisition audience without interest suggestions/);assert.match(editor,/Lead Pixel/);assert.doesNotMatch(editor,/Remove unused conversion fields/);
-  assert.ok(capabilityStatus(r.material,g).blockers.includes('meta_daily_budget_semantics_unverified'));
+  assert.ok(capabilityStatus(r.material,g).blockers.includes('campaign_daily_exposure_exceeded'));
   r.material.settings.targeting.interestGroups=[[{id:'10',label:'Invented'}]];
   assert.throws(()=>providerPlan(c,g,[a]),/explicit_expansion_required/);
 });

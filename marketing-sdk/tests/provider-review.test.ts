@@ -109,7 +109,7 @@ test("review: LinkedIn reports completed UTC days with inclusive API end, reject
       await assert.rejects(client.getAnalytics("123456", { since, until: since }), /inclusive reporting date/);
   } finally { await t.close(); }
 });
-test("review: full material, project and grant identity bind eligibility; Meta daily semantics cannot be attested away", () => {
+test("review: full material, project and grant identity bind eligibility; Meta daily exposure cannot be attested below its ceiling", () => {
   const c = structuredClone(campaign), g = structuredClone(grant); fixtureEligibility(c, g);
   assert.equal(capabilityStatus(c.material, g).accountVerified, true);
   for (const patch of [{ headline: "Changed" }, { budget: { currency: "USD", minor: 9999 } }, { startAt: "2026-01-02T00:00:00Z" }, { assetIds: ["different"] }]) {
@@ -121,8 +121,12 @@ test("review: full material, project and grant identity bind eligibility; Meta d
   for (const patch of [{ timezone: "America/Chicago" }, { startAt: "2026-01-01T01:00:00+01:00" }]) assert.throws(() => providerPlan({ ...c, material: { ...c.material, ...patch } }, g, []), /linkedin_/);
   c.material.settings = fixtureSettings("meta", "act_123456", "42"); c.material.audience = { provider: "meta", locations: ["US"], ageMin: 18, ageMax: 65, expansion: false };
   Object.assign(g, { provider: "meta", accountId: "act_123456", pageId: "42" }); fixtureEligibility(c, g);
-  assert.equal(dailyExposureMinor(c.material), null); assert.equal(capabilityStatus(c.material, g).accountVerified, false);
-  assert.throws(() => validateAccountCapability(c, g, true), /meta_daily_budget_semantics_unverified/);
+  assert.equal(dailyExposureMinor(c.material), 1750); assert.equal(capabilityStatus(c.material, g).accountVerified, true);
+  c.material.advertisingBudget!.campaignDailyCeiling={currency:'USD',minor:1000};fixtureEligibility(c,g);
+  assert.throws(() => validateAccountCapability(c, g, true), /campaign_daily_exposure_exceeded/);
+  c.material.advertisingBudget!.daily!.minor=101;delete c.material.advertisingBudget!.campaignDailyCeiling;
+  assert.equal(dailyExposureMinor(c.material),177);
+  c.material.budget={currency:'USD',minor:150};assert.equal(dailyExposureMinor(c.material),150);
 });
 
 test("review: LinkedIn initialization retains image identity and a post-await authority loss prevents upload PUT", async () => {
