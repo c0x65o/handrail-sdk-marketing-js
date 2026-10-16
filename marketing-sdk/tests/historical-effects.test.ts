@@ -100,7 +100,8 @@ test('paused readback reconciliation preserves mapped non-delivery assets and hi
     const receipt=await f.resolve();assert.equal(receipt.basis,'mapped_objects_after_pause_readback_failure');
     assert.deepEqual(receipt.affectedProviderIds,['103','old-creative','image-hash']);
     assert.equal(receipt.originalRequestCoverage,'unknown');assert.equal(receipt.providerEvidence.allPaused,true);
-    assert.equal(receipt.providerEvidence.snapshot.ads[0]!.creativeId,'102');
+    assert.equal(receipt.providerEvidence.provider,'meta');
+    if(receipt.providerEvidence.provider==='meta')assert.equal(receipt.providerEvidence.snapshot.ads[0]!.creativeId,'102');
     assert.deepEqual((await readHistoricalCampaignSnapshot(f.store,'p',f.imported.id)).snapshot,f.snapshot);
     assert.deepEqual(await f.resolve(),receipt);assert.equal(f.reads(),1);
     for(const kind of ['campaign','grant','campaignExecutionOwner','advertisingBudgetReservation','operation'])assert.deepEqual(await f.store.list('p',kind),[]);

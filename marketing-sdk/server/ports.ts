@@ -37,6 +37,17 @@ export interface ExistingMetaHierarchyInspection {
   scope:'exact_campaign_and_complete_children'; historicalEffectsSettled:false;
   materialVerified:false; executionTransferred:false; spendingAuthorityGranted:false;
 }
+/** Campaign-local stopped state; the shared group is observed, never claimed or stopped. */
+export interface ExistingLinkedInHierarchyInspection {
+  provider:'linkedin'; source:'provider_api';
+  snapshot:{account:{id:string;currency:string;timezone:string};
+    group:{id:string;accountId:string;status:string};
+    campaign:{id:string;accountId:string;groupId:string;organizationId:string;status:string};
+    creatives:{id:string;campaign:string;intendedStatus:string}[]};
+  digest:string; observedAt:string; inventoryComplete:true; allPaused:true;
+  scope:'exact_campaign_and_complete_children'; sharedGroupModified:false;
+  historicalEffectsSettled:false; materialVerified:false; executionTransferred:false; spendingAuthorityGranted:false;
+}
 export interface ProviderPort {
   readonly evidence: "fixture" | "provider";
   verify(
@@ -68,6 +79,7 @@ export interface ProviderPort {
   ): Promise<ExistingCampaignInspection>;
   inspectExistingMetaImage?(grant:Grant, imageId:string, guard:()=>Promise<void>):Promise<ExistingMetaImageInspection>;
   inspectExistingMetaHierarchy?(grant:Grant, ids:{campaign:string;adset:string;ad:string;creative:string}, guard:()=>Promise<void>):Promise<ExistingMetaHierarchyInspection>;
+  inspectExistingLinkedInHierarchy?(grant:Grant, ids:{group:string;campaign:string;creative:string}, guard:()=>Promise<void>):Promise<ExistingLinkedInHierarchyInspection>;
   prepare(
     campaign: Campaign,
     grant: Grant,

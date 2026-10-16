@@ -290,6 +290,15 @@ serving object IDs. They must reference original Meta non-delivery mappings; the
 are preserved assets, not a claim that an image or creative has a paused delivery
 state. Superseded creatives remain in history, while complete current inventory
 identifies the creative actually attached to each ad.
+LinkedIn creative creations already reconciled to an original mapped ID use
+`mapped_creative_after_creation_reconciliation`. `inspectExistingLinkedInHierarchy`
+checks the account, organization, group relationship, stopped campaign and complete
+paginated creative inventory. A shared group may remain ACTIVE and is never
+modified or claimed as exclusively owned. The host must prove the original
+reconciliation diagnostic and mapping/run relationship; a partial status or old
+creation timestamp alone is insufficient. Original unknown request coverage stays
+unknown, and image mappings remain non-delivery history.
+
 Adoption must revalidate the native source and current provider material/state.
 
 The server export `HistoricalCampaignImports` retains a host's consistent native

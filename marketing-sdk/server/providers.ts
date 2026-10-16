@@ -421,6 +421,43 @@ export class NativeProvider implements ProviderPort {
         materialVerified:false as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
     }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_campaign_read_unavailable",error);});
   }
+  /** Read the entire selected campaign's creative inventory. An ACTIVE shared
+   * group is retained as observed and cannot authorize or activate this campaign. */
+  async inspectExistingLinkedInHierarchy(g:Grant,ids:{group:string;campaign:string;creative:string},guard:()=>Promise<void>){
+    requireThat(this.name==='linkedin'&&g.provider==='linkedin'&&this.vault.useReadOnly&&
+      Object.keys(ids).length===3&&[ids.group,ids.campaign,ids.creative,g.accountId,g.organizationId].every(x=>typeof x==='string'&&/^\d+$/.test(x)),
+      'existing_campaign_identity_invalid',422);
+    const scope=digest({g,ids}),base=`/rest/adAccounts/${g.accountId}`;
+    const current=async()=>{await guard();requireThat(digest({g,ids})===scope&&!g.revokedAt&&Date.parse(g.expiresAt??'')>Date.now(),'existing_campaign_scope_changed',403);};
+    const paths=[base,`${base}/adCampaignGroups/${ids.group}`,`${base}/adCampaigns/${ids.campaign}`,`${base}/creatives`];
+    const fetcher:typeof fetch=async(input,init)=>{
+      const url=new URL(String(input));
+      requireThat(url.origin==='https://api.linkedin.com'&&paths.includes(url.pathname)&&
+        (!init?.method||init.method==='GET')&&init?.redirect==='error','existing_campaign_read_only_boundary',403);
+      if(url.pathname===`${base}/creatives`)requireThat(url.searchParams.get('q')==='criteria'&&
+        url.searchParams.get('campaigns')===`List(urn:li:sponsoredCampaign:${ids.campaign})`,'existing_campaign_read_only_boundary',403);
+      await current();const response=await this.fetcher(input,init);await current();return response;
+    };
+    await current();
+    return this.vault.useReadOnly!(g,current,async credentials=>{
+      requireThat(credentials.expiresAt>Date.now(),'provider_access_expired_or_denied',403);
+      const client=new LinkedInMarketingClient({...credentials,apiVersion:'202609',fetchImpl:fetcher});
+      const account=await this.accountContext(client,g),group=await client.getCampaignGroup(g.accountId,ids.group),
+        campaign=await client.getCampaign(g.accountId,ids.campaign);
+      requireThat(String(group.id)===ids.group&&group.account===`urn:li:sponsoredAccount:${g.accountId}`&&
+        typeof group.status==='string'&&group.status.length>0&&String(campaign.id)===ids.campaign&&
+        campaign.account===group.account&&campaign.campaignGroup===`urn:li:sponsoredCampaignGroup:${ids.group}`&&
+        campaign.associatedEntity===`urn:li:organization:${g.organizationId}`,'existing_campaign_account_mismatch');
+      requireThat(['PAUSED','DRAFT'].includes(campaign.status),'existing_campaign_not_paused');
+      const creatives=await existingLinkedInChildren(client,g.accountId,ids.campaign,ids.creative,current);
+      const snapshot={account,group:{id:ids.group,accountId:g.accountId,status:group.status},
+        campaign:{id:ids.campaign,accountId:g.accountId,groupId:ids.group,organizationId:g.organizationId!,status:campaign.status},creatives};
+      await current();return {provider:'linkedin' as const,source:'provider_api' as const,snapshot,digest:digest(snapshot),
+        observedAt:new Date().toISOString(),inventoryComplete:true as const,allPaused:true as const,
+        scope:'exact_campaign_and_complete_children' as const,sharedGroupModified:false as const,
+        historicalEffectsSettled:false as const,materialVerified:false as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure('existing_campaign_read_unavailable',error);});
+  }
   /** Capture original Meta acquisition terms without writes, persistence or authority expansion. */
   async captureExistingMetaMaterial(g: Grant, ids: {campaign:string; adset:string; creative:string; image:string}, source: ExistingMetaMaterialSource, guard: () => Promise<void>) {
     return this.captureMetaMaterial(g,ids,source,guard,observed=>existingMetaMaterial(source,g,ids,observed));

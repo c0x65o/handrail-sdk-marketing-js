@@ -1,17 +1,21 @@
 import type {Grant} from '../core/index.js';
 import {readHistoricalCampaignSnapshot} from './adoption.js';
-import type {ExistingMetaHierarchyInspection,ProviderPort} from './ports.js';
+import type {ExistingMetaHierarchyInspection,ExistingLinkedInHierarchyInspection,ProviderPort} from './ports.js';
 import {Store,DomainError,digest,requireThat,type Principal} from './store.js';
 import {sessionBinding,inspectLiveSessions,type SessionAuthority} from './session-authority.js';
 import {text} from './validation.js';
 
 export interface HistoricalEffectInput {historyImportId:string;operationId:string;requestKey:string}
-export interface HistoricalEffectCandidate {
+interface HistoricalEffectFacts {
   projectId:string;nativeCampaignId:string;historyImportId:string;operationId:string;sourceRevision:string;
-  basis:'mapped_objects_after_material_readback_failure'|'mapped_objects_after_pause_readback_failure';originalStatus:'partial';originalRequestCoverage:'unknown';
-  evidenceRecordIds:string[];affectedProviderIds:string[];
-  providerIds:{campaign:string;adset:string;ad:string;creative:string};grant:Grant;
+  originalStatus:'partial';originalRequestCoverage:'unknown';
+  evidenceRecordIds:string[];affectedProviderIds:string[];grant:Grant;
 }
+export type HistoricalEffectCandidate = HistoricalEffectFacts & (
+  {basis:'mapped_objects_after_material_readback_failure'|'mapped_objects_after_pause_readback_failure';
+   providerIds:{campaign:string;adset:string;ad:string;creative:string}} |
+  {basis:'mapped_creative_after_creation_reconciliation';providerIds:{group:string;campaign:string;creative:string}}
+);
 export interface HistoricalEffectSource {
   authorize(principal:Principal,project:string,campaign:string):Promise<void>;
   /** Trusted host proof of a deterministic material/paused-readback failure after its
@@ -24,7 +28,7 @@ export interface HistoricalEffectResolution {
   id:string;projectId:string;nativeCampaignId:string;historyImportId:string;sourceDigest:string;operationId:string;sourceRevision:string;
   basis:HistoricalEffectCandidate['basis'];originalStatus:'partial';originalRequestCoverage:'unknown';
   evidenceRecordIds:string[];affectedProviderIds:string[];providerIds:HistoricalEffectCandidate['providerIds'];
-  providerEvidence:ExistingMetaHierarchyInspection;resolution:'known_effects_preserved_paused';
+  providerEvidence:ExistingMetaHierarchyInspection|ExistingLinkedInHierarchyInspection;resolution:'known_effects_preserved_paused';
   missingReasons:['historical_request_receipts_unavailable'];recordedBy:string;recordedAt:string;
   originalOperationRewritten:false;executionTransferred:false;spendingAuthorityGranted:false;
 }
@@ -45,7 +49,7 @@ export async function readHistoricalEffectResolution(store:Store,project:string,
  * operations or filling gaps in historical request receipts. No provider writes. */
 export class HistoricalEffectResolutions {
   constructor(readonly store:Store,readonly source:HistoricalEffectSource,readonly sessions:SessionAuthority,
-    readonly providers:Partial<Record<'meta',ProviderPort>>){}
+    readonly providers:Partial<Record<'meta'|'linkedin',ProviderPort>>){}
   async access(p:Principal,project:string,importId:string){
     await this.store.authorize(p,project);const h=await readHistoricalCampaignSnapshot(this.store,project,importId);
     await this.source.authorize(p,project,h.snapshot.nativeCampaignId);return h;
@@ -81,26 +85,48 @@ export class HistoricalEffectResolutions {
     const history=await this.access(p,project,frozen.historyImportId);
     const candidate=structuredClone(await this.source.capture(p,project,frozen.historyImportId,frozen.operationId)),hash=digest(candidate);
     requireThat(candidate.projectId===project&&candidate.historyImportId===frozen.historyImportId&&candidate.operationId===frozen.operationId&&
-      candidate.nativeCampaignId===history.snapshot.nativeCampaignId&&history.snapshot.provider==='meta'&&candidate.grant.provider==='meta'&&
-      candidate.grant.projectId===project&&typeof history.snapshot.accountId==='string'&&candidate.grant.accountId===`act_${history.snapshot.accountId.replace(/^act_/,'')}`&&
+      candidate.nativeCampaignId===history.snapshot.nativeCampaignId&&
+      history.snapshot.provider===(candidate.basis==='mapped_creative_after_creation_reconciliation'?'linkedin':'meta')&&candidate.grant.provider===history.snapshot.provider&&
+      candidate.grant.projectId===project&&typeof history.snapshot.accountId==='string'&&candidate.grant.accountId===(history.snapshot.provider==='meta'?`act_${history.snapshot.accountId.replace(/^act_/,'')}`:history.snapshot.accountId)&&
       history.snapshot.providerCampaignIds.length===1&&history.snapshot.providerCampaignIds[0]===candidate.providerIds.campaign&&
       history.receipt.unsettledOperationIds.includes(frozen.operationId),'historical_effect_scope_invalid');
-    requireThat(['mapped_objects_after_material_readback_failure','mapped_objects_after_pause_readback_failure'].includes(candidate.basis)&&candidate.originalStatus==='partial'&&candidate.originalRequestCoverage==='unknown'&&
+    requireThat(['mapped_objects_after_material_readback_failure','mapped_objects_after_pause_readback_failure','mapped_creative_after_creation_reconciliation'].includes(candidate.basis)&&candidate.originalStatus==='partial'&&candidate.originalRequestCoverage==='unknown'&&
       typeof candidate.sourceRevision==='string'&&candidate.sourceRevision.length>0&&Array.isArray(candidate.evidenceRecordIds)&&
       candidate.evidenceRecordIds.length>0&&new Set(candidate.evidenceRecordIds).size===candidate.evidenceRecordIds.length&&
       candidate.evidenceRecordIds.every(id=>history.receipt.recordRefs.some(r=>r.digest===id&&['operation','provider_object'].includes(r.kind)))&&
       history.receipt.recordRefs.some(r=>r.sourceId===frozen.operationId&&r.kind==='operation'&&candidate.evidenceRecordIds.includes(r.digest))&&
       Array.isArray(candidate.affectedProviderIds)&&candidate.affectedProviderIds.length>0&&new Set(candidate.affectedProviderIds).size===candidate.affectedProviderIds.length&&
-      candidate.affectedProviderIds.some(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id))&&
-      candidate.affectedProviderIds.every(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id)||
-        (candidate.basis==='mapped_objects_after_pause_readback_failure'&&history.snapshot.records.some(r=>
-          r.kind==='provider_object'&&r.payload.provider==='meta'&&['image','creative'].includes(String(r.payload.object_type))&&r.payload.provider_object_id===id&&
-          candidate.evidenceRecordIds.includes(digest({project,nativeCampaignId:history.snapshot.nativeCampaignId,system:history.snapshot.source.system,record:r}))))),
+      (candidate.basis==='mapped_creative_after_creation_reconciliation'
+        ? candidate.affectedProviderIds.includes(candidate.providerIds.creative)&&candidate.affectedProviderIds.every(id=>
+            history.snapshot.records.some(r=>r.kind==='provider_object'&&r.payload.provider==='linkedin'&&
+              ['image','creative'].includes(String(r.payload.object_type))&&r.payload.provider_object_id===id&&
+              r.payload.parent_provider_object_id===candidate.providerIds.campaign&&
+              candidate.evidenceRecordIds.includes(digest({project,nativeCampaignId:history.snapshot.nativeCampaignId,system:history.snapshot.source.system,record:r}))))
+        : candidate.affectedProviderIds.some(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id))&&
+          candidate.affectedProviderIds.every(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id)||
+            (candidate.basis==='mapped_objects_after_pause_readback_failure'&&history.snapshot.records.some(r=>
+              r.kind==='provider_object'&&r.payload.provider==='meta'&&['image','creative'].includes(String(r.payload.object_type))&&r.payload.provider_object_id===id&&
+              candidate.evidenceRecordIds.includes(digest({project,nativeCampaignId:history.snapshot.nativeCampaignId,system:history.snapshot.source.system,record:r})))))),
       'historical_effect_evidence_missing');
     const guard=async()=>{await inspectLiveSessions(this.sessions,[session]);await this.access(p,project,frozen.historyImportId);
       requireThat(digest(candidate)===hash,'historical_effect_source_changed');await this.source.assertCurrent(p,candidate);};
+    let evidence:ExistingMetaHierarchyInspection|ExistingLinkedInHierarchyInspection;
+    if(candidate.basis==='mapped_creative_after_creation_reconciliation'){
+      const provider=this.providers.linkedin;requireThat(provider?.inspectExistingLinkedInHierarchy,'historical_effect_inspection_unavailable');
+      await guard();evidence=await provider.inspectExistingLinkedInHierarchy(candidate.grant,candidate.providerIds,guard);await guard();
+      const s=evidence.snapshot,ids=candidate.providerIds;
+      requireThat(evidence.provider==='linkedin'&&evidence.source==='provider_api'&&evidence.inventoryComplete===true&&evidence.allPaused===true&&
+        evidence.sharedGroupModified===false&&evidence.digest===digest(s)&&s.account.id===candidate.grant.accountId&&
+        s.account.currency===candidate.grant.currency&&s.account.timezone===candidate.grant.timezone&&
+        s.group.id===ids.group&&s.group.accountId===s.account.id&&typeof s.group.status==='string'&&s.group.status.length>0&&
+        s.campaign.id===ids.campaign&&s.campaign.accountId===s.account.id&&s.campaign.groupId===ids.group&&
+        s.campaign.organizationId===candidate.grant.organizationId&&['PAUSED','DRAFT'].includes(s.campaign.status)&&
+        s.creatives.length===1&&s.creatives[0]!.id===ids.creative&&s.creatives[0]!.campaign===`urn:li:sponsoredCampaign:${ids.campaign}`&&
+        ['PAUSED','DRAFT'].includes(s.creatives[0]!.intendedStatus)&&Number.isFinite(Date.parse(evidence.observedAt)),
+        'historical_effect_provider_evidence_invalid');
+    }else{
     const provider=this.providers.meta;requireThat(provider?.inspectExistingMetaHierarchy,'historical_effect_inspection_unavailable');
-    await guard();const evidence=await provider.inspectExistingMetaHierarchy(candidate.grant,candidate.providerIds,guard);await guard();
+    await guard();evidence=await provider.inspectExistingMetaHierarchy(candidate.grant,candidate.providerIds,guard);await guard();
     const s=evidence.snapshot,ids=candidate.providerIds;
     requireThat(evidence.provider==='meta'&&evidence.source==='provider_api'&&evidence.inventoryComplete===true&&evidence.allPaused===true&&
       evidence.digest===digest(s)&&s.account.id===candidate.grant.accountId&&s.account.currency===candidate.grant.currency&&s.account.timezone===candidate.grant.timezone&&
@@ -111,6 +137,7 @@ export class HistoricalEffectResolutions {
       s.adsets[0]!.status==='PAUSED'&&s.ads[0]!.status==='PAUSED'&&['PAUSED','CAMPAIGN_PAUSED'].includes(s.adsets[0]!.effectiveStatus)&&
       ['PAUSED','CAMPAIGN_PAUSED','ADSET_PAUSED'].includes(s.ads[0]!.effectiveStatus)&&Number.isFinite(Date.parse(evidence.observedAt)),
       'historical_effect_provider_evidence_invalid');
+    }
     return this.source.withCurrentSource(p,candidate,()=>this.sessions.withLiveSessions([session],()=>this.store.transaction(async()=>{
       await guard();await this.store.authorize(p,project,['admin','editor']);const raced=await replay();if(raced)return raced;
       requireThat(!await optional(this.store,project,'campaignExecutionOwner',candidate.nativeCampaignId),'historical_effect_already_adopted');
