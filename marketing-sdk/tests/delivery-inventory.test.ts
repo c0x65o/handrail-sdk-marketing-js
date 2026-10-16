@@ -78,3 +78,9 @@ test('expired custody, revoked authority and changed mappings cannot produce evi
 test('duplicate native or provider mappings are rejected before any network request',async()=>{
  const f=fixture();f.targets.push({...f.targets[0]!});await assert.rejects(f.read(),{code:'delivery_inventory_scope_invalid'});assert.equal(f.reads(),0);
 });
+test('a campaign-scoped grant cannot disclose account-wide unmapped identities',async()=>{
+ for(const campaignId of ['local','',null]){
+  const f=fixture();Object.assign(f.grant,{campaignId});
+  await assert.rejects(f.read(),{code:'delivery_inventory_account_grant_required'});assert.equal(f.reads(),0);
+ }
+});

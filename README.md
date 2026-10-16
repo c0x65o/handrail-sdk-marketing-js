@@ -567,7 +567,9 @@ acceptance; importing paused material creates neither approval nor spend authori
 returns it as `policyEvidence` separately from current provider material.
 
 `inspectMetaDeliveryInventory` is a read-only server API for refreshing exact
-host-owned campaign mappings across one Meta account. It paginates the account's
+host-owned campaign mappings across one Meta account. It requires an account-scoped
+reporting grant; a campaign-scoped grant cannot disclose the account inventory.
+It paginates the account's
 campaign/ad-set/ad edges once, checks account/currency/timezone and current Vault
 custody, and returns the requested campaign hierarchies with collection times
 and a snapshot digest. Account campaigns outside those mappings are retained in

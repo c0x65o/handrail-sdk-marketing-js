@@ -28,6 +28,7 @@ const state=(v:unknown)=>typeof v==='string'&&v.length>0?v:null;
 export async function inspectMetaDeliveryInventory(input:{grant:Grant;targets:MetaDeliveryTarget[];
   vault:VaultPort;guard:()=>Promise<void>;fetcher?:typeof fetch}) {
   const {grant:g,targets,vault,guard,fetcher=fetch}=input;
+  requireThat(g.campaignId===undefined,'delivery_inventory_account_grant_required',403);
   requireThat(g.provider==='meta'&&vault.useReadOnly&&g.permissions.includes('report')&&
     Array.isArray(targets)&&targets.length>0,'delivery_inventory_scope_invalid',422);
   const unique=(xs:string[])=>new Set(xs).size===xs.length;
