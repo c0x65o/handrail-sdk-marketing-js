@@ -111,3 +111,13 @@ export interface StudioCommands extends importTextPlanningCommands {
   applyPlanningOption: { input: { draftId: string; expectedRevision: number; requestKey: string; requestId: string; optionIndex: number }; output: StudioDraft };
 }
 export const emptyBrief = (): BusinessBrief => ({ name: 'Untitled campaign', offer: '', audience: '', outcome: 'acquisition', destination: null, facts: [], constraints: '', direction: '' });
+
+/** Local atomic Studio commands with an immutable original request receipt.
+ * Observation commands and provider/paid work have different recovery contracts. */
+export const STUDIO_WRITE_COMMANDS = ['saveBrief','saveCampaignOption','saveStudioMaterial',
+  'selectCampaignOption','selectStudioMedia','copyToDraft','setCampaignLifecycle','promoteStudio'] as const;
+export type StudioWriteCommand = typeof STUDIO_WRITE_COMMANDS[number];
+export interface StudioWriteReceipt<K extends StudioWriteCommand> {
+  id:string;
+  result:StudioCommands[K]['output'];
+}

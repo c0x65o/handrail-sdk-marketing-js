@@ -792,3 +792,11 @@ Activation still requires the normal exact packet decision, applicable current
 host authority and budget reservations. This local binding is not a launch.
 
 Preparation reconciliation under native `executionAuthority` also accepts a newer campaign-scoped grant with **only** `report` permission. The original account, campaign revision and recomputed payload must still match the retained operation. This permits read-only recovery after credential/grant expiry without extending creation or spending authority. The host must preserve and validate the original grant/binding provenance, issue the narrowed current grant under live read authority, and fence provider writes. The original operation/grant revision remains unchanged; activation reconciliation does not gain this exception.
+
+`server.studio.readRequest(principal, projectId, command, originalInput)` reads
+an original local Studio write receipt for `STUDIO_WRITE_COMMANDS`. It requires
+current editor authority and the same principal, project, command and exact
+input/request key. It returns the immutable result even after subsequent edits;
+missing returns `null` (unknown, not proof of rollback or permission to retry).
+It performs no provider reads, dispatch or approval, and does not cover read/check
+observations, generation or other operations with their own receipt contracts.

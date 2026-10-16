@@ -1,4 +1,4 @@
-import { materialCurrency } from "../core/index.js";
+import { STUDIO_WRITE_COMMANDS, type StudioWriteCommand, type StudioWriteReceipt, materialCurrency } from "../core/index.js";
 import { assertTextPlanningCapability, type NativeTextPlanning } from './text-planning.js';
 import type { DraftGenerationPort } from "./studio-generation.js";
 import type { DraftGenerationJob, GenerationGrant } from "../core/index.js";
@@ -58,6 +58,19 @@ export class CampaignStudio {
     keys(input,studioCommandFields[command]);
     const fn=this[command] as (p:Principal,project:string,input:StudioCommands[K]['input'])=>Promise<StudioCommands[K]['output']>;
     return fn.call(this,p,project,input);
+  }
+  /** Read only the exact original committed write. Missing is unknown, never
+   * evidence that dispatch was rolled back. No current draft/provider reads or
+   * operation replay: later edits do not change the returned result. */
+  async readRequest<K extends StudioWriteCommand>(p:Principal,project:string,command:K,input:StudioCommands[K]['input']):Promise<StudioWriteReceipt<K>|null> {
+    requireThat(STUDIO_WRITE_COMMANDS.includes(command),'studio_request_command_unavailable',422);
+    keys(input,studioCommandFields[command]);text(input.requestKey,160);
+    return this.guarded(p,project,true,async()=>{
+      const row=await this.store.db.prepare('SELECT * FROM requests WHERE project_id=? AND request_key=?').get(project,`studio:${digest([p.userId,input.requestKey])}`);
+      if(!row)return null;
+      requireThat(row.kind==='studioWrite'&&row.digest===digest({command,input}),'request_key_payload_conflict');
+      return this.store.get<StudioWriteReceipt<K>>(project,'studioWrite',String(row.record_id));
+    });
   }
   private state(d:CampaignDraft):StudioState {
     return d.studio??{brief:{...emptyBrief(),name:d.material.name,destination:d.material.destination||null,outcome:d.material.purpose??'acquisition'},briefDigest:'',creativeSetId:id(),options:[],selection:null,assetIds:[],lifecycle:'active',step:'brief',updatedAt:new Date(this.now()).toISOString(),source:null};
@@ -279,13 +292,7 @@ export class CampaignStudio {
   async promoteStudio(p:Principal,project:string,i:StudioCommands['promoteStudio']['input']) {
     // Read a committed original result before resolving changed draft/source
     // state. Replays still require the caller's current editor authority.
-    const replay = await this.guarded(p,project,true,async()=>{
-      text(i.requestKey,160);
-      const row=await this.store.db.prepare('SELECT * FROM requests WHERE project_id=? AND request_key=?').get(project,`studio:${digest([p.userId,i.requestKey])}`);
-      if(!row)return null;
-      requireThat(row.digest===digest({command:'promoteStudio',input:i}),'request_key_payload_conflict');
-      return this.store.get<{result:Campaign}>(project,'studioWrite',String(row.record_id));
-    });
+    const replay = await this.readRequest(p,project,'promoteStudio',i);
     if(replay)return replay.result;
     const session=await this.inspection(p,project);
     requireThat(['admin','editor'].includes(session.role),'forbidden',403);

@@ -46,6 +46,33 @@ test('public agent Studio commands use the same SQL drafts, revisions and valida
  }finally{await f.store.close();}
 });
 
+test('Studio receipt reads recover the original immutable write under current exact identity without replay',async()=>{
+ const f=await fixture();try{
+  const input={requestKey:'brief',brief:f.brief};
+  const first=await f.studio.readRequest(f.p,'p','saveBrief',input);
+  assert.ok(first?.id);assert.deepEqual(first.result,f.d);
+  await f.studio.saveBrief(f.p,'p',{id:f.d.id,expectedRevision:1,requestKey:'edit',brief:{...f.brief,offer:'Changed'}});
+  const reopened=new CampaignStudio(f.store,{sessions:f.host.authority},'fixture');
+  assert.deepEqual(await reopened.readRequest(f.p,'p','saveBrief',input),first);
+  const before=await f.store.list('p','studioWrite');
+  assert.equal(await reopened.readRequest(f.p,'p','saveBrief',{...input,requestKey:'unresolved'}),null);
+  await assert.rejects(reopened.readRequest(f.p,'p','saveBrief',{...input,brief:{...f.brief,name:'Different'}}),/request_key_payload_conflict/);
+  await assert.rejects(reopened.readRequest(f.p,'p','copyToDraft',{id:f.d.id,kind:'draft',expectedRevision:2,requestKey:'brief'}),/request_key_payload_conflict/);
+  await assert.rejects(reopened.readRequest(f.p,'p','saveBrief',{...input,actor:'forged'} as typeof input),/unexpected_fields/);
+  await assert.rejects(reopened.readRequest(f.p,'p','checkStudio' as 'saveBrief',input),/studio_request_command_unavailable/);
+  const bob=await f.host.login('bob'),other=await f.host.principal(bob.token);
+  assert.equal(await reopened.readRequest(other,'p','saveBrief',input),null);
+  await f.host.principal(f.session.token,'other');
+  assert.equal(await reopened.readRequest(f.p,'other','saveBrief',input),null);
+  assert.deepEqual(await f.store.list('p','studioWrite'),before);
+  await f.host.changeRole('analyst');await f.host.principal(f.session.token);
+  await assert.rejects(reopened.readRequest(f.p,'p','saveBrief',input),/forbidden/);
+  await f.host.changeRole('admin');await f.host.principal(f.session.token);
+  await f.host.revoke(f.session.sessionRef);
+  await assert.rejects(reopened.readRequest(f.p,'p','saveBrief',input),/authentication|required|session/);
+ }finally{await f.store.close();}
+});
+
 test('manual Studio on real SQL: immutable retries, copy, archive, trash, recovery, revisions and retained references',async()=>{
  const f=await fixture();try{
   const retry=await f.studio.saveBrief(f.p,'p',{requestKey:'brief',brief:f.brief});assert.deepEqual(retry,f.d);
