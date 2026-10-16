@@ -218,7 +218,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
         name: m.name,
         billing_event: "IMPRESSIONS",
         optimization_goal: ms?.optimization ?? "LINK_CLICKS",
-        ...(ms ? ms.objective === "OUTCOME_AWARENESS" ? { promoted_object: { page_id: ms.identity.pageId } } : { destination_type: "WEBSITE" } : {}),
+        ...(ms ? ms.objective === "OUTCOME_AWARENESS" ? { promoted_object: { page_id: ms.identity.pageId, ...(ms.pagePromotion ? {smart_pse_enabled:ms.pagePromotion.smartPseEnabled} : {}) } } : { destination_type: "WEBSITE" } : {}),
         ...(ms?.delivery === "employment" ? { promoted_object: { pixel_id: ms.conversion!.pixelId, custom_conversion_id: ms.conversion && "customConversionId" in ms.conversion ? ms.conversion.customConversionId : undefined, ...(ms.conversion?.smartPseEnabled !== undefined ? {smart_pse_enabled:ms.conversion.smartPseEnabled} : {}) } } : {}),
         ...(ms?.conversion?.event === "Lead" ? { promoted_object: { pixel_id: ms.conversion.pixelId, custom_event_type: "LEAD", ...(ms.conversion.smartPseEnabled !== undefined ? {smart_pse_enabled:ms.conversion.smartPseEnabled} : {}) } } : {}),
         ...(ms?.attribution ? { attribution_spec: ms.attribution.map(x => ({event_type:x.eventType,window_days:x.windowDays})) } : {}),

@@ -249,7 +249,7 @@ for(const [objective,optimization] of [['OUTCOME_AWARENESS','REACH'],['OUTCOME_T
   await assert.rejects(f.capture(),/existing_material_expansion_unknown/);
 });
 test('existing Lead capture cannot treat empty attribution as unknown or non-conversion',async()=>{
-  const f=fixture();f.observed.adset.attribution_spec=[];f.source.retainedProviderTerms=existingMetaTerms(f.observed);
+  const f=fixture();f.observed.adset.attribution_spec=[];f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
   await assert.rejects(f.capture(),/explicit_attribution_required/);
 });
 
@@ -377,4 +377,58 @@ test('Meta provider-default placement mode cannot hide a manual selection or an 
   s.placementMode='provider_defaults';assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('unsupported_placement'));
   s.placements=[];s.placementMode='arbitrary';assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('unsupported_placement_mode'));
   delete s.placementMode;assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('unsupported_placement'));
+});
+
+function awarenessFixture(){
+  const f=fixture();delete f.source.conversion;
+  f.observed.campaign.objective='OUTCOME_AWARENESS';f.observed.adset.optimization_goal='REACH';
+  f.observed.adset.destination_type='UNDEFINED';f.observed.adset.promoted_object={page_id:'42'};
+  f.observed.adset.targeting.targeting_automation.advantage_audience=0;
+  f.observed.adset.targeting.targeting_optimization='none';
+  f.observed.adset.targeting_optimization_types=[{key:'detailed_targeting',value:0},{key:'lookalike',value:0}];
+  f.observed.adset.attribution_spec=[];f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+  return f;
+}
+for(const flag of [undefined,false,true])test(`awareness page promotion ${flag} survives reconciliation, editing, plan and exact readback`,async()=>{
+  const f=awarenessFixture(),{retainedProviderTerms,...source}=f.source;
+  const original=structuredClone(retainedProviderTerms);
+  if(flag!==undefined)f.observed.adset.promoted_object.smart_pse_enabled=flag;
+  const result=await f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...source,retainedObservations:[
+    {key:'adset.promotedObject',value:original.adset.promoted_object,provenance:'legacy_observation',historyRecordId:'a'.repeat(64)}]},async()=>{});
+  const m=result.material,s=m.settings!;if(s.provider!=='meta')throw Error('Meta required');
+  assert.equal(s.conversion,undefined);assert.deepEqual(s.pagePromotion,flag===undefined?undefined:{smartPseEnabled:flag});
+  assert.deepEqual(f.source.retainedProviderTerms,original);
+  assert.equal(result.materialReconciliation.comparisons.find(x=>x.key==='adset.promotedObject')!.status,flag===undefined?'equal':'different');
+  let edited:any;const tree=GuidedFields({value:m,grant:f.grant,onChange:x=>{edited=x;}});
+  const find=(node:any):any=>Array.isArray(node)?node.map(find).find(Boolean):node?.props?.['aria-label']==='Meta page promotion Smart PSE'?node:node?.props?find(node.props.children):null;
+  const select=find(tree);assert.ok(select);assert.equal(select.props.value,flag===undefined?'unspecified':flag?'enabled':'disabled');
+  for(const [choice,expected] of [['enabled',true],['disabled',false],['unspecified',undefined]] as const){
+    select.props.onChange({target:{value:choice}});
+    assert.deepEqual(edited.settings.pagePromotion,expected===undefined?undefined:{smartPseEnabled:expected});
+    assert.equal(edited.settings.conversion,undefined);assert.deepEqual(edited.advertisingBudget,m.advertisingBudget);
+    assert.deepEqual(edited.settings.targeting,s.targeting);
+  }
+  const review=renderToStaticMarkup(createElement(MaterialReview,{material:m,assets:[],client:{assetUrl:()=>'/fixture'} as any,grant:f.grant}));
+  assert.ok(review.includes('Meta page promotion Smart PSE</dt><dd>'+(flag===undefined?'Not specified':flag?'Enabled':'Disabled')));
+  assert.doesNotMatch(review,/Standard Lead event/);
+  f.grant.targetingOptions=result.targetingOptions;
+  const c={id:'c',projectId:'p',grantId:'g',material:m,state:'paused',receipt:null} as Campaign;
+  const assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  assert.deepEqual((providerPlan(c,f.grant,assets) as any).adset.promoted_object,f.observed.adset.promoted_object);
+  assert.equal((await f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{})).candidateReceipt.intent,'paused');
+  f.observed.adset.promoted_object.smart_pse_enabled=flag===true?false:true;
+  await assert.rejects(f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{}),/promoted_object_mismatch/);
+});
+for(const value of [null,0,1,'false',{},[]])test(`awareness rejects malformed provider Smart PSE ${JSON.stringify(value)}`,async()=>{
+  const f=awarenessFixture();f.observed.adset.promoted_object.smart_pse_enabled=value;
+  f.source.retainedProviderTerms=existingMetaTerms(f.observed);await assert.rejects(f.capture(),/existing_material_smart_pse_invalid/);
+});
+test('page promotion rejects malformed settings, extra fields and use on lead campaigns',async()=>{
+  const f=awarenessFixture(),r=await f.capture();
+  for(const value of [null,{},[],{smartPseEnabled:null},{smartPseEnabled:'false'},{smartPseEnabled:false,extra:true}]){
+    (r.material.settings as any).pagePromotion=value;
+    assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('invalid_meta_page_promotion'));
+  }
+  const lead=await fixture().capture();(lead.material.settings as any).pagePromotion={smartPseEnabled:false};
+  assert.ok(capabilityStatus(lead.material,f.grant).blockers.includes('invalid_meta_page_promotion'));
 });

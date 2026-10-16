@@ -120,6 +120,11 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
         {s.placements.some(p => p === "facebook_reels" || p === "instagram_reels") && <p>Reels uses the selected image. Review a vertical 9:16 asset and safe zones; this preview does not verify provider rendering or delivery.</p>}
         {(usesInstagram(s.placements) || s.placementMode==='provider_defaults' && Boolean(s.identity.instagramUserId)) && <IdentifierField label="Instagram identity" kind="instagram" grant={g} allowed={g.instagramUserId || ""} value={s.identity.instagramUserId || ""} onChange={instagramUserId => settings({ identity: { ...s.identity, instagramUserId } })} />}
         {s.identity.instagramUserId && s.placementMode!=='provider_defaults' && !usesInstagram(s.placements) && <button type="button" onClick={() => settings({ identity: { pageId: s.identity.pageId } })}>Remove unused Instagram identity</button>}
+        {(s.objective==='OUTCOME_AWARENESS'||s.pagePromotion!==undefined) && <label>Meta page promotion Smart PSE
+          <select aria-label="Meta page promotion Smart PSE" value={s.pagePromotion===undefined?'unspecified':s.pagePromotion.smartPseEnabled?'enabled':'disabled'} onChange={e=>settings({pagePromotion:e.target.value==='unspecified'?undefined:{smartPseEnabled:e.target.value==='enabled'}})}>
+            <option value="unspecified">Not specified</option><option value="disabled">Disabled</option><option value="enabled">Enabled</option>
+          </select>
+        </label>}
         {(s.placementMode==='provider_defaults' || s.targeting.userAgeUnknown!==undefined) && <label>People whose age is unknown (WhatsApp Status)
           <select value={s.targeting.userAgeUnknown===undefined?'unspecified':s.targeting.userAgeUnknown?'include':'exclude'} onChange={e=>settings({targeting:{...s.targeting,userAgeUnknown:e.target.value==='unspecified'?undefined:e.target.value==='include'}})}>
             <option value="unspecified">Use provider default</option><option value="exclude">Exclude</option><option value="include">Include</option>

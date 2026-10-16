@@ -110,7 +110,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
       promotedObjectIsObject:Boolean(object),pixelIdentityMatches:object&&promoted.pixel_id===source.conversion?.pixelId,
       eventMatches:object&&promoted.custom_event_type==='LEAD',fieldCount:keys.length,fields,fieldsTruncated:keys.length>30}});
   }
-  if(!lead)requireThat(source.conversion===undefined && (awareness?exactTargeting(adset.promoted_object,{page_id:grant.pageId}):
+  if(!lead)requireThat(source.conversion===undefined && (awareness?exactTargeting(adset.promoted_object,{page_id:grant.pageId,...(hasSmartPse?{smart_pse_enabled:adset.promoted_object.smart_pse_enabled}:{})}):
     adset.promoted_object===undefined||exactTargeting(adset.promoted_object,{})),"existing_material_conversion_mismatch");
   const money=(raw:unknown,required=false)=>{
     requireThat(raw===undefined&&!required || typeof raw==="string"&&/^\d+$/.test(raw), "existing_material_money_unknown");
@@ -167,6 +167,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
     placements:[],identity:{pageId:grant.pageId!},
     ...(lead?{conversion:{pixelId:source.conversion!.pixelId,event:"Lead" as const,...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})}}:{}),
+    ...(awareness&&hasSmartPse?{pagePromotion:{smartPseEnabled:adset.promoted_object.smart_pse_enabled}}:{}),
     attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
       ...(t.geo_locations?.location_types ? {locationTypes:structuredClone(t.geo_locations.location_types)}:{}),

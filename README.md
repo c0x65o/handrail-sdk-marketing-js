@@ -530,6 +530,14 @@ Readback version 5 verifies these fields during initial preparation, adoption
 inspection, activation and recovery. Older receipt digests remain readable;
 unsupported or changed fields fail instead of being silently dropped.
 
+Awareness page promotion uses `settings.pagePromotion.smartPseEnabled`, separate
+from lead conversion configuration. Absence, `false` and `true` are distinct;
+readback verifies the exact `promoted_object` including the optional provider
+`smart_pse_enabled` boolean. Reconciliation preserves the original observation
+and records differences without inventing conversions. Web editing and review
+expose all three states. Provider acceptance of a write still requires the
+existing eligibility, authority and budget checks; capture is read-only.
+
 Meta daily preparation preserves the requested amount and disables ad-set budget
 sharing. Budget reservations use 175% of the nominal daily amount, rounded up to
 minor units and bounded by an explicit lifetime cap, following [Meta's daily

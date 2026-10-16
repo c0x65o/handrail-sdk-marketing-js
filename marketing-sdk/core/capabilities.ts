@@ -51,6 +51,8 @@ export interface MetaSettings extends SettingsBase {
   specialAdCategoryCountry?: "US";
   conversion?: ({ pixelId: string; customConversionId: string; event: "ApplicantRequestMOU" }
     | { pixelId: string; event: "Lead" }) & { smartPseEnabled?: boolean };
+  /** Awareness page promotion; absence preserves an unspecified provider flag. */
+  pagePromotion?: { smartPseEnabled: boolean };
   attribution?: { eventType: "CLICK_THROUGH" | "VIEW_THROUGH"; windowDays: 1 | 7 | 28 }[];
   creative?: {
     description?: string;
@@ -146,7 +148,7 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
   else check(m.applicantGoal === undefined, "purpose_outcome_mismatch");
   if (!record(s.identity) || !record(s.targeting) || !Array.isArray(s.placements)) return [...errors, "invalid_provider_settings"];
   if (s.provider === "meta") {
-    check(only(s, [...base, "delivery", "placementMode", "specialAdCategory", "specialAdCategoryCountry", "attribution", "creative"]), "unexpected_settings_fields");
+    check(only(s, [...base, "delivery", "placementMode", "specialAdCategory", "specialAdCategoryCountry", "attribution", "creative", "pagePromotion"]), "unexpected_settings_fields");
     check(s.apiVersion === "v26.0" && s.format === "single_image", "unsupported_format_or_api");
     check(META_COMBINATIONS.some(row => row[0] === s.delivery && row[1] === s.objective && row[2] === s.optimization), "unsupported_objective_optimization");
     check(s.placementMode === undefined || s.placementMode === "provider_defaults", "unsupported_placement_mode");
@@ -182,6 +184,7 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
       check(m.audience.locations?.length === 1 && m.audience.locations[0] === "US", "meta_country_contract_unverified");
     }
     if (s.delivery === "ordinary") check(t?.interestGroups?.length === 0 && t?.excludedCustomAudiences?.length === 0, "ordinary_traffic_not_strict");
+    check(s.pagePromotion === undefined || s.objective === "OUTCOME_AWARENESS" && only(s.pagePromotion, ["smartPseEnabled"]) && typeof s.pagePromotion.smartPseEnabled === "boolean", "invalid_meta_page_promotion");
     check(s.conversion?.smartPseEnabled === undefined || typeof s.conversion.smartPseEnabled === "boolean", "invalid_meta_smart_pse_setting");
     if (s.delivery === "employment") {
       check(m.purpose === "recruitment" && s.specialAdCategory === "EMPLOYMENT" && s.specialAdCategoryCountry === "US", "employment_category_country_required");
