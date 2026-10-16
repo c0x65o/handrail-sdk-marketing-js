@@ -246,7 +246,9 @@ for(const [objective,optimization] of [['OUTCOME_AWARENESS','REACH'],['OUTCOME_T
   f.source.conversion={pixelId:'60',event:'Lead'};
   await assert.rejects(f.capture(),/existing_material_conversion_mismatch/);delete f.source.conversion;
   f.observed.adset.targeting_optimization_types[0].value=1;f.source.retainedProviderTerms=existingMetaTerms(f.observed);
-  await assert.rejects(f.capture(),/existing_material_expansion_unknown/);
+  if(objective==='OUTCOME_AWARENESS')await assert.rejects(f.capture(),/existing_material_expansion_unknown/);
+  else if(optimization==='LINK_CLICKS')await assert.rejects(f.capture(),/unsupported_objective_optimization/);
+  else assert.equal((await f.capture()).material.audience.expansion,true);
 });
 test('existing Lead capture cannot treat empty attribution as unknown or non-conversion',async()=>{
   const f=fixture();f.observed.adset.attribution_spec=[];f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
@@ -464,4 +466,41 @@ for(const value of [null,{},'unknown',false])test(`awareness rejects malformed a
 test('lead capture still requires explicit provider attribution',async()=>{
   const f=fixture();delete f.observed.adset.attribution_spec;f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
   await assert.rejects(f.capture(),/existing_material_attribution_unknown/);
+});
+
+for(const hint of [undefined,'none'] as const)for(const optimization of ['IMPRESSIONS','REACH'])
+test(`expanded traffic ${optimization} preserves ${hint??'absent'} targeting hint and historical discrepancy through exact readback`,async()=>{
+  const f=fixture();delete f.source.conversion;
+  f.observed.campaign.objective='OUTCOME_TRAFFIC';f.observed.adset.optimization_goal=optimization;
+  delete f.observed.adset.promoted_object;delete f.observed.adset.attribution_spec;
+  f.observed.adset.targeting.targeting_automation.advantage_audience=0;
+  if(hint)f.observed.adset.targeting.targeting_optimization=hint;
+  const {retainedProviderTerms,...base}=f.source;
+  const source:ReconciledMetaMaterialSource={...base,retainedObservations:[{key:'adset.expansion',
+    value:[{key:'detailed_targeting',value:0},{key:'lookalike',value:0}],provenance:'legacy_observation',historyRecordId:'b'.repeat(64)}]};
+  const before=structuredClone(source);
+  const r=await f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,source,async()=>{}),m=r.material;
+  assert.deepEqual(source,before);assert.equal(r.materialReconciliation.materialApproved,false);
+  assert.equal(r.materialReconciliation.spendingAuthorityGranted,false);
+  assert.equal(r.materialReconciliation.comparisons.find(x=>x.key==='adset.expansion')?.status,'different');
+  assert.equal(m.audience.expansion,true);assert.equal(m.settings?.provider,'meta');
+  if(m.settings?.provider!=='meta')throw Error('Meta required');
+  assert.equal(m.settings.delivery,'expanded');assert.equal(m.settings.targeting.optimization,hint);
+  assert.deepEqual(m.settings.targeting.expansion,{detailedTargeting:1,lookalike:0});
+  assert.equal(m.settings.conversion,undefined);
+  const c={id:'c',projectId:'p',grantId:'g',material:m,state:'paused',receipt:null} as Campaign;
+  f.grant.targetingOptions=r.targetingOptions;const g=f.grant;
+  const assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  const plan:any=providerPlan(c,g,assets);assert.deepEqual(plan.adset.targeting,f.observed.adset.targeting);
+  assert.equal(plan.adset.targeting.targeting_automation.advantage_audience,0);
+  const inspect=()=>f.provider.inspectExistingCampaign(c,g,assets,{...f.ids,ad:'103'},async()=>{});
+  assert.equal((await inspect()).candidateReceipt.intent,'paused');
+  const editor=renderToStaticMarkup(createElement(GuidedFields,{value:m,grant:g,onChange:()=>{}}));
+  assert.match(editor,/Expanded traffic audience/);assert.match(editor,/Detailed targeting expansion/);assert.doesNotMatch(editor,/Lead Pixel/);
+  for(const value of [undefined,[],[{key:'detailed_targeting',value:0},{key:'lookalike',value:0}],
+    [{key:'detailed_targeting',value:true},{key:'lookalike',value:0}]]){
+    f.observed.adset.targeting_optimization_types=value;
+    await assert.rejects(inspect(),/meta_expansion_settings_mismatch/);
+  }
+  assert.deepEqual(g.permissions,['pause','report']);assert.deepEqual(source,before);
 });

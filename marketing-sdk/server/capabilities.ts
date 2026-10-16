@@ -52,7 +52,7 @@ export function metaTargeting(c: Campaign, s: MetaSettings) {
     ...(t.interestGroups.length ? { flexible_spec: t.interestGroups.map(group => ({ interests: group.map(x => ({ id: x.id, name: x.label })) })) } : {}),
     ...(t.excludedCustomAudiences.length ? { excluded_custom_audiences: t.excludedCustomAudiences.map(x => ({ id: x.id, name: x.label })) } : {}),
     targeting_automation: { advantage_audience: ["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery) ? 1 : 0 },
-    ...(s.delivery === "strict" ? { targeting_optimization: "none" } : {}),
+    ...(s.delivery === "strict" || t.optimization === "none" ? { targeting_optimization: "none" } : {}),
   };
 }
 export function exactTargeting(actual: unknown, expected: unknown): boolean {

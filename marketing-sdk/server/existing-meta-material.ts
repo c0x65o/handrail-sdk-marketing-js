@@ -144,15 +144,16 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const bit=(value:unknown)=>value===0||value==='0'?0:value===1||value==='1'?1:null;
   const bits=Object.fromEntries(expansionEntries.map(x=>[x?.key,bit(x?.value)]));
   if(![bits.detailed_targeting,bits.lookalike].every(x=>x===0||x===1)||
-    !metaExpansionMatches(expansion,bits as any)||!lead&&!metaExpansionOff(expansion)) {
+    !metaExpansionMatches(expansion,bits as any)||awareness&&!metaExpansionOff(expansion)) {
     const type=(value:unknown)=>value===undefined?'missing':value===null?'null':Array.isArray(value)?'array':typeof value;
     throw Object.assign(new DomainError('existing_material_expansion_unknown'),{materialDiagnostic:{phase:'provider_expansion',
-      collectionType:type(expansion),entryCount:expansionEntries.length,requiresExpansionOff:!lead,
+      collectionType:type(expansion),entryCount:expansionEntries.length,requiresExpansionOff:awareness,
       fields:['detailed_targeting','lookalike'].map(field=>{
         const entries=expansionEntries.filter(x=>x?.key===field);
         return {field,occurrences:entries.length,values:entries.slice(0,3).map(x=>({type:type(x.value),binaryBit:bit(x.value)}))};
       }),unknownFieldCount:expansionEntries.filter(x=>!['detailed_targeting','lookalike'].includes(x?.key)).length}});
   }
+  const expanded=!lead&&!awareness&&!metaExpansionOff(expansion);
   requireThat(creative.asset_feed_spec==null,"existing_material_asset_feed_unsupported");
   const story=creative.object_story_spec, link=story?.link_data;
   requireThat(story?.page_id===grant.pageId && link?.image_hash===ids.image && link?.name===source.headline && link?.message===source.body &&
@@ -163,7 +164,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   requireThat(!lead&&adset.attribution_spec===undefined || Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
   const settings:MetaSettings={version:CAPABILITY_VERSION,provider:"meta",apiVersion:"v26.0",accountId:grant.accountId,format:"single_image",
     objective:campaign.objective,optimization:adset.optimization_goal,
-    delivery:lead?(interestGroups.length?"advantage_plus_interests":"advantage_plus_broad"):(adset.optimization_goal==="LINK_CLICKS"?"ordinary":"strict"),
+    delivery:lead?(interestGroups.length?"advantage_plus_interests":"advantage_plus_broad"):expanded?"expanded":(adset.optimization_goal==="LINK_CLICKS"?"ordinary":"strict"),
     nondiscriminationAccepted:source.policy.nondiscriminationAccepted,
     placements:[],identity:{pageId:grant.pageId!},
     ...(lead?{conversion:{pixelId:source.conversion!.pixelId,event:"Lead" as const,...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})}}:{}),
@@ -172,7 +173,8 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
       ...(t.geo_locations?.location_types ? {locationTypes:structuredClone(t.geo_locations.location_types)}:{}),
       ...(Object.hasOwn(t,'user_age_unknown') ? {userAgeUnknown:t.user_age_unknown}:{}),
-      ...(lead?{expansion:{detailedTargeting:bits.detailed_targeting,lookalike:bits.lookalike}}:{})},
+      ...(expanded&&Object.hasOwn(t,"targeting_optimization")?{optimization:t.targeting_optimization}:{}),
+      ...(lead||expanded?{expansion:{detailedTargeting:bits.detailed_targeting,lookalike:bits.lookalike}}:{})},
     creative:{...(link.description!==undefined?{description:link.description}:{}),...(creative.url_tags!==undefined?{urlTags:creative.url_tags}:{}),
       ...(features?{features:Object.fromEntries(Object.entries(features).map(([k,v]:[string,any])=>[k,v.enroll_status]))}:{})}};
   // Meta documents omitted placement fields as evolving provider defaults.
@@ -201,7 +203,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const instant=(value:unknown)=>{requireThat(typeof value==="string"&&/T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(value)&&Number.isFinite(Date.parse(value)),"existing_material_schedule_unknown");return new Date(value as string).toISOString();};
   const material:Material={name:source.name,headline:source.headline,body:source.body,destination:source.destination,destinationDigest:source.destinationDigest,
     assetIds:[source.assetId],purpose:source.purpose,settings,
-    audience:{provider:"meta",locations:structuredClone(t.geo_locations?.countries),ageMin:t.age_min,ageMax:t.age_max,expansion:lead},
+    audience:{provider:"meta",locations:structuredClone(t.geo_locations?.countries),ageMin:t.age_min,ageMax:t.age_max,expansion:lead||expanded},
     budget:lifetime,advertisingBudget:{daily:daily!,...(lifetime?{lifetime}:{}),campaignDailyCeiling:{currency:grant.currency,minor:source.campaignDailyCeiling}},
     startAt:instant(adset.start_time),endAt:adset.end_time==null?null:instant(adset.end_time),timezone:grant.timezone};
   validateMaterial(material,"meta");

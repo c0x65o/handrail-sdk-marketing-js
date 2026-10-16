@@ -64,6 +64,10 @@ function metaMode(c: Campaign, row: typeof META_COMBINATIONS[number]) {
     s.creative = {description:"Original description",urlTags:"utm_source={{site_source_name}}",features:{image_touchups:"OPT_OUT"}};
     s.attribution = [{eventType:"CLICK_THROUGH",windowDays:7},{eventType:"VIEW_THROUGH",windowDays:1}];
   }
+  if (s.delivery === "expanded") {
+    c.material.audience.expansion=true;
+    s.targeting={languages:[],interestGroups:[[{id:"10",label:"Gardens"}]],excludedCustomAudiences:[],expansion:{detailedTargeting:1,lookalike:0}};
+  }
   if (s.delivery === "employment") {
     c.material.purpose = "recruitment"; c.material.applicantGoal = { event: "ApplicantRequestMOU", meaning: "completed_mou_request" };
     c.material.audience.ageMin = 18; c.material.audience.ageMax = 65;
@@ -91,7 +95,7 @@ test("versioned cross-product allowlists reject unsupported objectives, bids, fo
           if (allowed) assert.equal((providerPlan(c, g, [a]) as any).campaign.optimizationTargetType, optimization);
           else await assert.rejects(fixture.prepare(c, g, [a], "denial", () => {}, () => { writes++; }));
         }
-    for (const delivery of ["ordinary", "strict", "employment"] as const) for (const objective of ["OUTCOME_TRAFFIC", "OUTCOME_AWARENESS", "OUTCOME_LEADS"])
+    for (const delivery of ["ordinary", "strict", "expanded", "employment"] as const) for (const objective of ["OUTCOME_TRAFFIC", "OUTCOME_AWARENESS", "OUTCOME_LEADS"])
       for (const optimization of ["LINK_CLICKS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS"]) {
         const { c, g, a } = sample("meta"); metaMode(c, META_COMBINATIONS.find(r => r[0] === delivery)!);
         Object.assign(c.material.settings!, { objective, optimization });
@@ -124,7 +128,7 @@ test("professional Boolean exclusions, resolved labels, employment restrictions 
   ]) { s.targeting = targeting; assert.ok(capabilityBlockers(c.material).some(x => x.endsWith("conflict"))); }
   s.targeting = { include: { titles: [{ id: "urn:li:title:1", label: "Forged label" }] }, exclude: {} };
   assert.ok(capabilityBlockers(c.material, g).includes("unresolved_targeting_option"));
-  const meta = sample("meta"); metaMode(meta.c, META_COMBINATIONS[4]);
+  const meta = sample("meta"); metaMode(meta.c, META_COMBINATIONS.find(row=>row[0]==="employment")!);
   assert.deepEqual(capabilityBlockers(meta.c.material, meta.g), []);
   for (const mutate of [
     (v: any) => { v.settings.specialAdCategory = undefined; }, (v: any) => { v.audience.locations = ["CA"]; },
@@ -181,7 +185,12 @@ async function native(provider: "meta" | "linkedin") {
         const id = String(state.next++);
         if (body.creative) body.creative = { id: String(body.creative.creative_id) };
         if (last === "adsets" && body.promoted_object?.page_id) body.destination_type = "UNDEFINED";
-        if (last === "adsets" && body.targeting.targeting_optimization === "none") body.targeting_optimization_types = { detailed_targeting: 0, lookalike: 0 };
+        if (last === "adsets") {
+          assert.equal(Object.hasOwn(body,"targeting_optimization_types"),false,"readback-only expansion must not be sent in creation");
+          const expanded=(fixture.c.material.settings as MetaSettings).targeting.expansion;
+          if (expanded) body.targeting_optimization_types={detailed_targeting:expanded.detailedTargeting,lookalike:expanded.lookalike};
+          else if(body.targeting.targeting_optimization === "none") body.targeting_optimization_types={detailed_targeting:0,lookalike:0};
+        }
         state.objects.set(id, { ...body, id, account_id: "123", _kind: last });
         if (last === "campaigns" && state.loseCampaignAck) throw new Error("synthetic lost campaign create acknowledgment");
         return Response.json({ id });
@@ -264,7 +273,7 @@ for (const provider of ["meta", "linkedin"] as const) test(`${provider} every of
       t.state.objects.clear(); t.state.next = 100; t.state.loseRead = true;
       eligible(t.c, t.g); let ids: Record<string, string> = {};
       await assert.rejects(t.port.prepare(t.c, t.g, [t.a], `case-${i}`, value => { ids = { ...value }; }, () => {}), /provider_request_failed/);
-      assert.ok(ids.creative && ids.campaign); assert.equal(ids.readbackVersion, provider === "meta" ? ["advantage_plus_interests", "advantage_plus_broad"].includes((t.c.material.settings as MetaSettings).delivery) ? "5" : "4" : "3"); const writes = t.state.writes;
+      assert.ok(ids.creative && ids.campaign); assert.equal(ids.readbackVersion, provider === "meta" ? ["expanded", "advantage_plus_interests", "advantage_plus_broad"].includes((t.c.material.settings as MetaSettings).delivery) ? "5" : "4" : "3"); const writes = t.state.writes;
       const payloadDigest = digest(t.port.plan(t.c, t.g, [t.a]));
       const receipt = await t.port.reconcile(t.c, t.g, { kind: "prepare", payloadDigest, receipt: { ids, payloadDigest, intent: "paused", delivery: "unverified", observedAt: new Date().toISOString(), evidence: "provider", providerRequestId: null } });
       assert.ok(receipt); assert.equal(t.state.writes, writes);
@@ -418,7 +427,7 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
         s.placements = [...placementCase.ids];
         const instagram = Boolean(placementCase.targeting.instagram_positions);
         if (instagram) s.identity.instagramUserId = "43";
-        ids = { readbackVersion: ["advantage_plus_interests", "advantage_plus_broad"].includes(row[0]) ? "5" : "4", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
+        ids = { readbackVersion: ["expanded", "advantage_plus_interests", "advantage_plus_broad"].includes(row[0]) ? "5" : "4", campaign: "100", adset: "101", creative: "102", ad: "103", image: "meta-image" };
         const strict = row[0] === "strict", employment = row[0] === "employment", awareness = row[1] === "OUTCOME_AWARENESS";
         t.state.objects.set("100", { _kind: "campaigns", id: "100", account_id: "123", status: "PAUSED", is_adset_budget_sharing_enabled: false, objective: row[1],
           special_ad_categories: employment ? ["EMPLOYMENT"] : [], ...(employment ? { special_ad_category_country: ["US"] } : {}) });
@@ -436,6 +445,11 @@ for (const provider of ["meta", "linkedin"] as const) test(`review: ${provider} 
           ...(instagram ? { instagram_user_id: "43" } : {}), link_data: { image_hash: "meta-image", link: "https://example.com/kit", message: "Body", name: "Headline",
             call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com/kit" } } } } });
         t.state.objects.set("103", { _kind: "ads", id: "103", account_id: "123", adset_id: "101", creative: { id: "102" }, status: "PAUSED" });
+        if(row[0] === "expanded") {
+          const adset=t.state.objects.get("101");
+          adset.targeting.flexible_spec=[{interests:[{id:"10",name:"Gardens"}]}];
+          adset.targeting_optimization_types=[{key:"lookalike",value:"0"},{key:"detailed_targeting",value:"1"}];
+        }
         if(["advantage_plus_interests", "advantage_plus_broad"].includes(row[0])) {
           const adset=t.state.objects.get("101"), creative=t.state.objects.get("102");
           adset.promoted_object={pixel_id:"60",custom_event_type:"LEAD"};

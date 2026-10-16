@@ -1111,9 +1111,11 @@ export class NativeProvider implements ProviderPort {
           }),
         );
         await beforeWrite();
+        // Expansion types are readback evidence, not a writable AdSet field.
+        const {targeting_optimization_types: _expectedExpansion, ...adsetRequest} = plan.adset;
         await create("adset", () =>
           client.createPausedObject(g.accountId, "adset", {
-            ...plan.adset,
+            ...adsetRequest,
             campaign_id: ids.campaign,
           }),
         );
@@ -1458,7 +1460,7 @@ export class NativeProvider implements ProviderPort {
             exactTargeting(s.creative.degrees_of_freedom_spec, plan.creative.degrees_of_freedom_spec), "creative_tracking_or_features_mismatch");
           if (plan.adset.targeting_optimization_types) requireThat(metaExpansionMatches(s.adset.targeting_optimization_types, plan.adset.targeting_optimization_types), "meta_expansion_settings_mismatch");
         }
-        if (plan.adset.targeting.targeting_optimization === "none") requireThat(metaExpansionOff(s.adset.targeting_optimization_types), "meta_expansion_off_unverified");
+        if (plan.adset.targeting.targeting_optimization === "none" && !plan.adset.targeting_optimization_types) requireThat(metaExpansionOff(s.adset.targeting_optimization_types), "meta_expansion_off_unverified");
       }
       const { name: _name, status: _status, targeting_optimization_types: _expansion, ...expected } = plan.adset;
       expected.start_time = new Date(expected.start_time).getTime();

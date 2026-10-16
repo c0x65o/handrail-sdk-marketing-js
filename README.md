@@ -1037,3 +1037,20 @@ campaign hierarchy. A later replacement creative stays distinct in the evidence;
 this does not recreate an ad, rewrite historical effects, transfer execution, or
 grant spending authority. Missing, foreign, inaccessible or active objects prevent
 saving a resolution. Request replay reads the immutable saved receipt.
+
+Meta traffic campaigns optimized for impressions or reach can retain an explicit
+`expanded` delivery contract, separate from Advantage+ Lead delivery. The two
+binary expansion expectations are required; at least one is enabled. A retained
+`targeting.optimization: "none"` hint remains a distinct provider field and does
+not imply that provider-reported expansion is disabled. Strict delivery continues
+to require both observed bits to be zero. Historical reconciliation records a
+difference when retained observations said expansion was off; it grants no
+material approval or spending authority. Missing, duplicate or non-binary readback
+still blocks execution. The editor exposes the expansion expectations without a
+Lead pixel or conversion goal.
+
+`targeting_optimization_types` stays in the expected provider plan/readback but is
+excluded from AdSet creation requests: it is a returned field, not a writable
+creation parameter. Exact account/material eligibility and complete matching
+readback remain prerequisites; the representable contract does not promise that
+Meta will accept or deliver a new campaign with those settings.

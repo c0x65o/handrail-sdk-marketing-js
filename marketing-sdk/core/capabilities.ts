@@ -32,7 +32,7 @@ export interface MetaSettings extends SettingsBase {
   format: "single_image";
   objective: "OUTCOME_TRAFFIC" | "OUTCOME_AWARENESS" | "OUTCOME_LEADS";
   optimization: "LINK_CLICKS" | "IMPRESSIONS" | "REACH" | "OFFSITE_CONVERSIONS";
-  delivery: "ordinary" | "strict" | "employment" | "advantage_plus_interests" | "advantage_plus_broad";
+  delivery: "ordinary" | "strict" | "expanded" | "employment" | "advantage_plus_interests" | "advantage_plus_broad";
   /** Explicit opt-in to Meta's evolving defaults; never an empty manual list. */
   placementMode?: "provider_defaults";
   placements: MetaPlacement[];
@@ -45,6 +45,8 @@ export interface MetaSettings extends SettingsBase {
     locationTypes?: ("home" | "recent" | "travel_in" | "frequently_in")[];
     /** WhatsApp Status age inclusion. Absence is retained, never coerced to false. */
     userAgeUnknown?: boolean;
+    /** Retained provider targeting hint; it does not prove expansion is off. */
+    optimization?: "none";
     expansion?: { detailedTargeting: 0 | 1; lookalike: 0 | 1 };
   };
   specialAdCategory?: "EMPLOYMENT";
@@ -107,6 +109,8 @@ export const META_COMBINATIONS = [
   ["employment", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
   ["advantage_plus_interests", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
   ["advantage_plus_broad", "OUTCOME_LEADS", "OFFSITE_CONVERSIONS"],
+  ["expanded", "OUTCOME_TRAFFIC", "IMPRESSIONS"],
+  ["expanded", "OUTCOME_TRAFFIC", "REACH"],
 ] as const;
 export const CAPABILITY_MATRIX = {
   version: CAPABILITY_VERSION,
@@ -159,16 +163,22 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
       usesInstagram(s.placements) ? numeric(s.identity?.instagramUserId) : s.identity?.instagramUserId === undefined, "instagram_identity_mismatch");
     if (g && s.identity?.instagramUserId) check(s.identity.instagramUserId === g.instagramUserId, "instagram_identity_mismatch");
     const t = s.targeting;
-    check(only(t, ["languages", "interestGroups", "excludedCustomAudiences", "locationTypes", "expansion", "userAgeUnknown"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");
+    check(only(t, ["languages", "interestGroups", "excludedCustomAudiences", "locationTypes", "expansion", "userAgeUnknown", "optimization"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");
     if (errors.includes("invalid_resolved_targeting")) return errors;
     check(t.locationTypes === undefined || Array.isArray(t.locationTypes) && t.locationTypes.length > 0 &&
       new Set(t.locationTypes).size === t.locationTypes.length && t.locationTypes.every(x => ["home", "recent", "travel_in", "frequently_in"].includes(x)), "invalid_location_types");
     check(t.userAgeUnknown === undefined || typeof t.userAgeUnknown === "boolean", "invalid_unknown_age_setting");
-    check(m.audience.expansion === (["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)), "targeting_expansion_mismatch");
+    check(t.optimization === undefined || s.delivery === "expanded" && t.optimization === "none", "invalid_targeting_optimization");
+    check(m.audience.expansion === (["expanded", "advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)), "targeting_expansion_mismatch");
     if (["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)) {
       check(Array.isArray(s.attribution) && s.attribution.length > 0, "explicit_attribution_required");
       check((s.delivery === "advantage_plus_broad" ? t.interestGroups.length === 0 : t.interestGroups.length > 0) && only(t.expansion, ["detailedTargeting", "lookalike"]) &&
         [t.expansion?.detailedTargeting, t.expansion?.lookalike].every(x => x === 0 || x === 1), "explicit_expansion_required");
+    } else if (s.delivery === "expanded") {
+      check(only(t.expansion, ["detailedTargeting", "lookalike"]) &&
+        [t.expansion?.detailedTargeting,t.expansion?.lookalike].every(x=>x===0||x===1) &&
+        [t.expansion?.detailedTargeting,t.expansion?.lookalike].includes(1), "explicit_expansion_required");
+      check(m.audience.locations?.length === 1 && m.audience.locations[0] === "US", "meta_country_contract_unverified");
     } else check(t.expansion === undefined, "unexpected_expansion_settings");
     check(s.attribution === undefined || Array.isArray(s.attribution) && (s.attribution.length > 0 || s.conversion === undefined) &&
       new Set(s.attribution.map(x => x.eventType)).size === s.attribution.length && s.attribution.every(x =>
