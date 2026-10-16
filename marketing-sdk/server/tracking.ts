@@ -321,9 +321,14 @@ export class MarketingTracking {
       return this.once(project,session,'rebindCampaignBudget',input,async()=>{
         const previous=await this.store.get<Campaign>(project,'campaignVersion',`${input.campaignId}:${input.previousRevision}`);
         const campaign=await this.store.get<Campaign>(project,'campaign',input.campaignId);
+        const prepared=(await this.store.list<import('../core/index.js').Operation>(project,'operation')).some(operation=>
+          operation.projectId===project&&operation.campaignId===campaign.id&&operation.kind==='prepare'&&
+          operation.campaignRevision===previous.revision&&operation.state==='succeeded'&&
+          digest(operation.receipt??null)===digest(campaign.receipt??null));
         requireThat(previous.projectId===project&&campaign.projectId===project&&previous.id===campaign.id&&
           campaign.revision===input.expectedRevision&&campaign.grantId===previous.grantId&&
-          previous.receipt&&campaign.receipt&&digest(campaign.receipt)===digest(previous.receipt)&&
+          campaign.receipt?.intent==='paused'&&digest(campaign.preparedMaterial??null)===digest(previous.material)&&
+          (prepared||previous.receipt&&digest(campaign.receipt)===digest(previous.receipt))&&
           digest(campaign.draftOrigin??null)===digest(previous.draftOrigin??null)&&digest(campaign.adoptionOrigin??null)===digest(previous.adoptionOrigin??null),
           'tracking_budget_revision_mismatch');
         const material=structuredClone(campaign.material),before=previous.material.advertisingBudget?.daily;

@@ -617,7 +617,7 @@ test('budget tracking carry-forward preserves history, requires host authority a
     const service=new MarketingServer(f.store,base.providers,base.generation,base.agent,'fixture',undefined,undefined,{studio:{sessions:f.host.authority},tracking:f.source.options,
       executionAuthority:{assertCurrent:check,withCurrent:async(_p,c,a,local)=>{assert.equal(c.id,campaign.id);assert.equal(a,'prepare');await check();const result=await local();if(revokeAfter)throw new Error('budget_authority_revoked');await check();return result;}}});
     await assert.rejects(service.call(agent,'p','bindTracking',{...setup,expectedBindingRevision:1,requestKey:'agent-edit'}),/forbidden/);
-    const changed=structuredClone(campaign);changed.revision=2;changed.state='draft';changed.material.advertisingBudget!.daily!.minor=110;
+    const changed=structuredClone(campaign);changed.preparedMaterial=structuredClone(campaign.material);changed.revision=2;changed.state='draft';changed.material.advertisingBudget!.daily!.minor=110;
     const input={campaignId:campaign.id,previousRevision:1,expectedRevision:2,expectedBindingRevision:1,requestKey:'budget-only'};
     await f.store.put('p','campaign',campaign.id,changed);
     await assert.rejects(base.rebindCampaignBudgetTracking(agent,'p',input),/host_execution_authority_required/);
@@ -639,6 +639,12 @@ test('budget tracking carry-forward preserves history, requires host authority a
     assert.deepEqual(await f.store.get('p','trackingBinding',binding.id),binding);
     const access=f.source.options.sources!.inspectAccess;f.source.options.sources!.inspectAccess=async()=>false;
     await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_source_not_authorized/);f.source.options.sources!.inspectAccess=access;
+    // Studio versions precede provider preparation. Their material is durable,
+    // but the later successful operation owns the prepared provider receipt.
+    await f.store.put('p','campaignVersion',campaign.id+':1',{...campaign,state:'draft',receipt:null});
+    await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_budget_revision_mismatch/);
+    await f.store.put('p','operation','original-preparation',{id:'original-preparation',projectId:'p',campaignId:campaign.id,
+      kind:'prepare',campaignRevision:1,state:'succeeded',receipt:campaign.receipt});
     const updated=await service.rebindCampaignBudgetTracking(agent,'p',input);
     assert.equal(updated.revision,2);assert.equal(updated.ownerRevision,2);assert.equal(updated.materialDigest,digest(changed.material));
     assert.deepEqual({...updated,revision:binding.revision,ownerRevision:binding.ownerRevision,materialDigest:binding.materialDigest,createdAt:binding.createdAt},binding);
