@@ -57,3 +57,5 @@ export * from "./campaign-execution-connection.js";
 export * from "./grant-authority.js";
 
 export {readHostActivationApproval, type RetainedHostActivationApproval} from "./activation-approval.js";
+
+export {advertisingBudgetPeriod, recurringExposureBound, type RecurringBudgetExposure} from "./recurring-budgets.js";

@@ -1703,3 +1703,56 @@ test('native host authority cannot override an explicit revoked SDK owner decisi
     assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),[]);
   }finally{await t.close();}
 });
+
+// This uses only disposable fixture effects. It qualifies the SDK lifecycle,
+// not a live owner approval, provider spend observation or campaign launch.
+test('recurring daily-only campaign prepares, activates under host authority, reconciles a lost pause, and resumes with preserved history',async()=>{
+  const t=await setupTest();try{
+    await ready(t);const base=await campaign(t);
+    const c=await t.service.saveCampaign(t.admin,'qa-alpha',{id:base.id,expectedRevision:base.revision,grantId:base.grantId,
+      material:{...base.material,budget:null,advertisingBudget:{daily:{currency:'USD',minor:500}},startAt:'2026-01-01T00:00:00Z',endAt:null}});
+    await storeFixtureCoverage(t.store,c,'acquisition');
+    const originalMaterial=structuredClone(c.material);
+    const server=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',Date.now,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local(),
+        activationApproval:async(principal,current,packet)=>{
+          assert.equal(principal.userId,t.agent.userId);assert.equal(current.id,c.id);assert.deepEqual(packet.material,originalMaterial);
+          return {authorityId:'fixture-current-host-action',revision:'1',receiptReferences:['fixture-owner-monthly-policy']};
+        }},
+    });
+    const at=Date.now(),month=new Date(at);
+    const p:AdvertisingBudgetPolicy={id:'recurring-host-policy',projectId:'qa-alpha',projectIds:['qa-alpha'],scope:'project',currency:'USD',timezone:'UTC',
+      from:new Date(Date.UTC(month.getUTCFullYear(),month.getUTCMonth(),1)).toISOString(),
+      until:new Date(Date.UTC(month.getUTCFullYear(),month.getUTCMonth()+1,1)).toISOString(),
+      recurrence:{unit:'monthly',authorityRef:'fixture-owner-monthly-policy'},dailyCeilingMinor:10000,periodCeilingMinor:100000,
+      campaignDailyCeilingMinor:1000,campaignLifetimeCeilingMinor:10000,maxObservationAgeMs:60000};
+    await server.advertisingBudgets.configure(p);
+    await server.advertisingBudgets.observe('qa-alpha',{policyId:p.id,from:p.from,until:p.until,day:localDate(at,'UTC'),currency:'USD',timezone:'UTC',
+      observedAt:new Date(at).toISOString(),todayMinor:0,periodMinor:0,source:'fixture',receipt:'synthetic-current-budget-bound'});
+    const preparation=await server.prepare(t.agent,'qa-alpha',{campaignId:c.id,requestKey:'recurring-prepare'});
+    assert.equal((await server.dispatch('qa-alpha',preparation.id)).state,'succeeded');
+    const activate=async(key:string)=>{
+      const packet=await server.packet(t.agent,'qa-alpha',{campaignId:c.id});
+      const op=await server.execute(t.agent,'qa-alpha',{packetId:packet.id,digest:packet.digest,requestKey:key});
+      assert.equal((await server.dispatch('qa-alpha',op.id)).state,'succeeded');return op;
+    };
+    const first=await activate('recurring-first');
+    const active=await t.store.get<Campaign>('qa-alpha','campaign',c.id),ids=structuredClone(active.receipt!.ids);
+    t.provider.loseNextResponse=true;
+    const pause=await server.pause(t.agent,'qa-alpha',{campaignId:c.id,requestKey:'recurring-pause'});
+    assert.equal((await server.dispatch('qa-alpha',pause.id)).state,'unknown');
+    assert.equal((await t.store.list<AdvertisingBudgetReservation>('qa-alpha','advertisingBudgetReservation'))[0]!.state,'active');
+    assert.equal((await server.reconcile(t.agent,'qa-alpha',{operationId:pause.id})).state,'succeeded');
+    const paused=(await t.store.list<AdvertisingBudgetReservation>('qa-alpha','advertisingBudgetReservation'))[0]!;
+    assert.equal(paused.state,'paused');assert.equal(paused.recurringExposure!.pauseOperationId,pause.id);
+    const second=await activate('recurring-resume');assert.notEqual(first.id,second.id);
+    const rows=await t.store.list<AdvertisingBudgetReservation>('qa-alpha','advertisingBudgetReservation');
+    assert.equal(rows.length,2);assert.deepEqual(rows.find(r=>r.operationId===first.id),paused);
+    assert.equal(rows.find(r=>r.operationId===second.id)!.state,'active');
+    const final=await t.store.get<Campaign>('qa-alpha','campaign',c.id);
+    assert.deepEqual(final.material,originalMaterial);assert.deepEqual(final.receipt!.ids,ids);
+    assert.deepEqual(await t.store.list('qa-alpha','decision'),[]);
+    assert.equal((await t.store.list('qa-alpha','hostActivationApproval')).length,2);
+    assert.equal((await t.store.list('qa-alpha','operation')).length,4);
+  }finally{await t.close();}
+});

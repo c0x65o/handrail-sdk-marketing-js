@@ -1,6 +1,7 @@
+import {advertisingBudgetPeriod,checkRecurringBudget,recurringExposureBound,type RecurringBudgetExposure} from './recurring-budgets.js';
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import { dailyExposureMinor } from "../core/index.js";
-import type { Campaign, Operation } from "../core/index.js";
+import type { Campaign, Operation, Receipt } from "../core/index.js";
 import { Store, digest, requireThat } from "./store.js";
 import { advertisingBudget, instant, text } from "./validation.js";
 import { localDate, providerDayWindow, remainingCalendarDays } from "./reporting.js";
@@ -22,6 +23,9 @@ export interface AdvertisingBudgetPolicy {
   campaignDailyCeilingMinor: number;
   campaignLifetimeCeilingMinor: number;
   maxObservationAgeMs: number;
+  /** Explicit trusted-host recurring policy. UTC accounting does not change a
+   * provider's timezone or approved daily/lifetime campaign material. */
+  recurrence?: {unit: 'weekly' | 'monthly'; authorityRef: string};
 }
 export interface ObservedAdvertisingSpend {
   policyId: string;
@@ -45,12 +49,14 @@ export interface AdvertisingBudgetReservation {
   operationId: string;
   dailyMinor: number;
   periodMinor: number;
-  state: "held" | "active" | "released";
+  state: "held" | "active" | "paused" | "released";
   observedSpendReceipt: string;
+  recurringExposure?: RecurringBudgetExposure;
 }
 
 /** Uses the existing cross-connection SQL transaction guard and durable records.
- * Unknown effects never expire. Only a proved pause releases an active hold.
+ * Unknown effects never expire. Recurring pauses bound future exposure while
+ * retaining incurred capacity and the original reservation history.
  */
 export class AdvertisingBudgets {
   constructor(readonly store: Store, readonly now = () => Date.now(), readonly evidence: "provider" | "fixture" = "provider") {}
@@ -68,11 +74,17 @@ export class AdvertisingBudgets {
       policy.campaignLifetimeCeilingMinor, policy.maxObservationAgeMs]) requireThat(Number.isSafeInteger(n) && n > 0 && n <= 1e12, "invalid_budget_policy");
     // Validate calendar boundaries without requiring a future policy to be completed.
     providerDayWindow(policy.from, policy.until, policy.timezone, Date.parse(policy.until));
+    if(policy.recurrence){
+      const anchor=advertisingBudgetPeriod(policy,Date.parse(policy.from));
+      requireThat(anchor.from===new Date(policy.from).toISOString()&&anchor.until===new Date(policy.until).toISOString(),'invalid_recurring_budget_anchor');
+    }
     await this.store.transaction(async () => {
       for (const project of [policy.projectId, ...policy.projectIds]) requireThat(
         await this.store.db.prepare("SELECT id FROM projects WHERE id=?").get(project), "budget_project_missing");
       const held = (await this.store.list<AdvertisingBudgetReservation>(policy.projectId, "advertisingBudgetReservation"))
-        .some(r => r.policyId === policy.id && r.state !== "released");
+        .some(r => r.policyId === policy.id && r.state !== "released" &&
+          !(policy.recurrence&&r.state==='paused'&&r.recurringExposure&&
+            recurringExposureBound(r.recurringExposure,advertisingBudgetPeriod(policy,this.now()).from,advertisingBudgetPeriod(policy,this.now()).until)===0));
       if (held) {
         const old = await this.store.get<AdvertisingBudgetPolicy>(policy.projectId, "advertisingBudgetPolicy", policy.id);
         requireThat(digest(old) === digest(policy), "budget_policy_has_unsettled_reservations");
@@ -87,7 +99,8 @@ export class AdvertisingBudgets {
     requireThat(observation.source === "provider" || observation.source === "fixture", "invalid_spend_source");
     await this.store.transaction(async () => {
       const p = await this.store.get<AdvertisingBudgetPolicy>(project, "advertisingBudgetPolicy", observation.policyId);
-      requireThat(observation.from === p.from && observation.until === p.until && observation.currency === p.currency &&
+      const period=advertisingBudgetPeriod(p,this.now());
+      requireThat(observation.from === period.from && observation.until === period.until && observation.currency === p.currency &&
         observation.timezone === p.timezone && observation.day === localDate(observation.observedAt, p.timezone) &&
         Date.parse(observation.observedAt) <= this.now() &&
         (observation.todayMinor === null || observation.periodMinor === null || observation.periodMinor >= observation.todayMinor), "spend_basis_mismatch");
@@ -98,6 +111,9 @@ export class AdvertisingBudgets {
   }
   private async check(p: AdvertisingBudgetPolicy, c: Campaign, own?: AdvertisingBudgetReservation) {
     const at = this.now(), daily = c.material.advertisingBudget?.daily;
+    if(p.recurrence)return checkRecurringBudget(p,c,at,this.evidence,
+      await this.store.get<ObservedAdvertisingSpend>(p.projectId,'advertisingObservedSpend',p.id),
+      await this.store.list<AdvertisingBudgetReservation>(p.projectId,'advertisingBudgetReservation'),own);
     requireThat(at >= Date.parse(p.from) && at < Date.parse(p.until), "budget_period_not_current");
     requireThat(Date.parse(c.material.startAt) >= Date.parse(p.from) && materialEndTime(c.material) <= Date.parse(p.until), "campaign_outside_budget_period");
     requireThat(daily && daily.currency === p.currency && materialCurrency(c.material) === p.currency &&
@@ -137,8 +153,12 @@ export class AdvertisingBudgets {
       const policies = await this.policies(c.projectId);
       requireThat(!c.material.advertisingBudget || policies.some(p => p.scope === "project"), "advertising_budget_policy_required");
       for (const p of policies) {
-        const id = digest([p.id, c.projectId, c.id]);
-        const old = (await this.store.list<AdvertisingBudgetReservation>(p.projectId, "advertisingBudgetReservation")).find(r => r.id === id);
+        const id = digest(p.recurrence?[p.id,c.projectId,c.id,operation.id]:[p.id,c.projectId,c.id]);
+        const records=await this.store.list<AdvertisingBudgetReservation>(p.projectId,"advertisingBudgetReservation");
+        if(p.recurrence)requireThat(!records.some(r=>r.policyId===p.id&&r.projectId===c.projectId&&r.campaignId===c.id&&
+          ['held','active'].includes(r.state)&&r.operationId!==operation.id),'budget_reservation_requires_reconciliation');
+        const old = records.find(r => r.id === id);
+        if(p.recurrence&&old)requireThat(!['active','paused'].includes(old.state),'budget_reservation_requires_reconciliation');
         requireThat(!old || old.state === "released" || old.operationId === operation.id, "budget_reservation_requires_reconciliation");
         const amounts = await this.check(p, c, old?.state !== "released" ? old : undefined);
         await this.store.put(p.projectId, "advertisingBudgetReservation", id, {
@@ -151,17 +171,32 @@ export class AdvertisingBudgets {
     const policies = await this.policies(c.projectId);
     requireThat(!c.material.advertisingBudget || policies.some(p => p.scope === "project"), "advertising_budget_policy_required");
     for (const p of policies) {
-      const r = await this.store.get<AdvertisingBudgetReservation>(p.projectId, "advertisingBudgetReservation", digest([p.id, c.projectId, c.id]));
+      const r = await this.store.get<AdvertisingBudgetReservation>(p.projectId, "advertisingBudgetReservation", digest(p.recurrence?[p.id,c.projectId,c.id,operation.id]:[p.id,c.projectId,c.id]));
       requireThat(r.operationId === operation.id && r.state === "held", "budget_reservation_lost");
       await this.check(p, c, r);
     }
   }
-  async settle(c: Campaign, operation: Operation, outcome: "enabled" | "paused" | "not_dispatched") {
+  async settle(c: Campaign, operation: Operation, outcome: "enabled" | "paused" | "not_dispatched", verifiedReceipt?: Receipt) {
     await this.store.transaction(async () => {
       for (const p of await this.policies(c.projectId)) {
         const rows = await this.store.list<AdvertisingBudgetReservation>(p.projectId, "advertisingBudgetReservation");
         for (const r of rows.filter(r => r.policyId === p.id && r.projectId === c.projectId && r.campaignId === c.id &&
           r.state !== "released" && (outcome === "paused" || r.operationId === operation.id))) {
+          if(p.recurrence&&outcome==='paused'){
+            requireThat(verifiedReceipt?.intent==='paused'&&verifiedReceipt.evidence===this.evidence&&
+              Number.isFinite(Date.parse(verifiedReceipt.observedAt))&&Date.parse(verifiedReceipt.observedAt)<=this.now()&&
+              verifiedReceipt.payloadDigest===operation.payloadDigest&&
+              operation.projectId===c.projectId&&operation.campaignId===c.id&&['prepare','pause'].includes(operation.kind),
+              'verified_pause_receipt_required');
+            const original=await this.store.get<Operation>(c.projectId,'operation',operation.id);
+            requireThat(['running','unknown'].includes(original.state)&&original.payloadDigest===operation.payloadDigest&&
+              original.campaignId===c.id&&original.kind===operation.kind&&r.recurringExposure,'verified_pause_receipt_required');
+            // The stop bounds future exposure; incurred capacity remains in the
+            // same durable reservation and is still charged in overlapping days.
+            if(r.state!=='paused')await this.store.put(p.projectId,'advertisingBudgetReservation',r.id,{...r,state:'paused',
+              recurringExposure:{...r.recurringExposure,pausedAt:new Date(this.now()).toISOString(),pauseOperationId:operation.id,pauseReceiptDigest:digest(verifiedReceipt)}});
+            continue;
+          }
           await this.store.put(p.projectId, "advertisingBudgetReservation", r.id, { ...r, state: outcome === "enabled" || (outcome === "paused" && this.evidence === "provider" && c.material.settings) ? "active" : "released" });
         }
       }

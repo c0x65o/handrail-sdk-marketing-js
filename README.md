@@ -368,6 +368,41 @@ for the same account, preserving the original operation grant revision and never
 replaying the provider write. Failed or revoked post-write authority retains an
 unknown effect and its lease until qualified readback.
 
+## Recurring host advertising budgets
+
+A trusted server host can bind an existing UTC weekly or monthly policy through
+`AdvertisingBudgetPolicy.recurrence: {unit, authorityRef}`. The initial `from` and
+`until` must identify one exact Monday-based week or calendar month.
+`advertisingBudgetPeriod(policy, now)` gives the current accounting window. This
+is explicit recurring host authority; imported history, an open schedule or a
+daily provider budget never creates that authority. Without recurrence the
+existing bounded-period/lifetime contract remains mandatory.
+
+Recurring accounting preserves original daily-only budgets, older campaign start
+times, open ends and provider timezones. It requires fresh complete observations
+for the current UTC accounting day and period, with a durable host aggregate
+receipt. The host must qualify those observations or conservative spending bounds
+across every covered campaign; this API does not convert incompatible measurement
+windows into comparable actual spend. Missing/stale/fixture-only observations
+cannot qualify provider execution. Provider exposure multipliers and approved
+campaign, project and portfolio ceilings remain enforced.
+
+Each activation retains its own immutable exposure basis and original operation
+reference. Unknown holds never expire at a day/month boundary. Current bounds
+count every provider calendar day touched, including partial boundary days and
+DST. Future recurring commitments also fit a conservative full-period bound
+(maximum 31-day month or seven-day week, plus two boundary dates outside UTC),
+so future starts and shorter months cannot overbook later periods. Bounds may
+reserve more than actual spend; they are never reported as measured delivery.
+
+Only the SDK's verified paused receipt for the original running/unknown pause or
+preparation operation bounds future exposure. It records the pause operation and
+receipt digest, retaining incurred capacity in overlapping accounting windows.
+Resumption creates a new reservation without rewriting prior activation/pause
+history. Unknown pause effects retain the original active reservation until
+read-only reconciliation. Existing host approval, current grants, tracking and
+exclusive execution checks still apply; this adds no scheduler or spending grant.
+
 ## Original source and provider upload media
 
 `prepareMetaImageUpload` owns Meta's encoding: JPEG/PNG bytes stay unchanged;

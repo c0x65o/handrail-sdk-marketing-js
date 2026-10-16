@@ -1623,7 +1623,7 @@ export class MarketingServer {
       requireThat(lease?.operation_id === o.id, "operation_lease_lost");
       const current = await this.store.get<Campaign>(c.projectId, "campaign", c.id);
       requireThat(current.revision === o.campaignRevision, "stale_material");
-      await this.advertisingBudgets.settle(c, o, receipt.intent);
+      await this.advertisingBudgets.settle(c, o, receipt.intent, receipt);
       const next = {
         ...o,
         state: "succeeded" as const,
