@@ -80,7 +80,7 @@ function StudioContent({client,workspace,onChanged,onConnections,onLaunch,onTrac
   const materialView=grant?{...initialMaterial(grant),...local.material,audience:{...initialMaterial(grant).audience,...local.material.audience},budget:{...initialMaterial(grant).budget,...local.material.budget}} as Material:null;
   const saveMaterial=()=>submit({command:'saveStudioMaterial',input:{...change(),material:{...local.material,assetIds:view?.draft.studio.assetIds??[]},step:local.step}});
   const step=(s:StudioStep)=>{if(!lock.current)update({step:s});};
-  const reportCurrent=(!grant||!grant.revokedAt&&Date.parse(grant.expiresAt)>Date.now())&&report&&report.draftId===local.id&&report.revision===local.revision&&!local.dirty&&JSON.stringify(report.inputs.account??null)===JSON.stringify(grant??null);
+  const reportCurrent=(!grant||!grant.revokedAt&&Date.parse(grant.expiresAt ?? "")>Date.now())&&report&&report.draftId===local.id&&report.revision===local.revision&&!local.dirty&&JSON.stringify(report.inputs.account??null)===JSON.stringify(grant??null);
   if(!visible)return null;
   return <section className="studio" aria-label="Campaign Studio">
     <div className="studio-library card"><div className="eyebrow">Campaign library</div><h2>Ideas to accountable campaigns</h2>

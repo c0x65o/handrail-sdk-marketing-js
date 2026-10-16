@@ -49,8 +49,8 @@ export async function provision(store: Store, input: Provision) {
       requireThat(
         g.revision === 1 &&
           g.secretRef &&
-          !g.revokedAt &&
-          Date.parse(g.expiresAt) > Date.now(),
+          !g.revokedAt && !g.lifetime &&
+          Date.parse(g.expiresAt ?? "") > Date.now(),
         "invalid_account_grant",
       );
       requireThat(g.provider !== "linkedin" || g.timezone === "UTC", "linkedin_utc_required");

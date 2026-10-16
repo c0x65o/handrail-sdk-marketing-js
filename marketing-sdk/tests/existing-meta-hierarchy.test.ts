@@ -12,7 +12,7 @@ function fixture(){
   const adset:any={id:'101',account_id:'123',campaign_id:'100',status:'PAUSED',effective_status:'CAMPAIGN_PAUSED'};
   const ad:any={id:'103',account_id:'123',campaign_id:'100',adset_id:'101',creative:{id:'102'},status:'PAUSED',effective_status:'ADSET_PAUSED'};
   const pages:Record<string,any[]>={adsets:[{data:[adset]}],ads:[{data:[ad]}]},calls:URL[]=[];
-  let afterFetch=()=>{},credentialExpiry=Date.parse(g.expiresAt);
+  let afterFetch=()=>{},credentialExpiry=Date.parse(g.expiresAt ?? "");
   const vault:VaultPort={use:async()=>{throw Error('write credential use prohibited');},useReadOnly:async(_g,guard,action)=>{
     await guard();return action({accessToken:'synthetic-secret',expiresAt:credentialExpiry,scopes:['ads_read']});
   }};

@@ -253,7 +253,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     [audienceDraft, setAudienceDraft] = useState<Material["audience"] | null>(null);
   const campaign =
     data?.campaigns.find((c) => c.id === selected) || data?.campaigns[0];
-  const reportingGrant = data?.grants.find(g => g.id === campaign?.grantId && !g.revokedAt && Date.parse(g.expiresAt) > Date.now() && g.permissions.includes("report"));
+  const reportingGrant = data?.grants.find(g => g.id === campaign?.grantId && !g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now() && g.permissions.includes("report"));
   const [creativeScope, setCreativeScope] = useState<string | undefined>(undefined);
   if (creativeScope !== campaign?.id) {
     setCreativeScope(campaign?.id); setPrompt(""); setRights(""); setStoryboard("");

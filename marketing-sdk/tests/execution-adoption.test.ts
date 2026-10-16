@@ -221,7 +221,7 @@ for(const mode of ['explicit-history','revoked-before-commit'])test(`purpose ass
   }finally{await f.close();}
 });
 
-test('adopted execution uses current host action authority, preserves uncertain effects and recovers without a browser session or replay',async()=>{
+for(const invocation of [false,true])test(`adopted execution uses current host action authority with ${invocation?'invocation':'timestamp'} grant, preserves uncertain effects and recovers without a browser session or replay`,async()=>{
   const f=await fixture();try{
     await f.service.adopt(f.principal,'p','native','transfer');
     const principal=await f.store.bindExternalPrincipal('p',{issuer:'native-action',subject:'owner',kind:'agent'},'editor');
@@ -229,6 +229,12 @@ test('adopted execution uses current host action authority, preserves uncertain 
     const check=async()=>{if(revoked)throw new DomainError('native_authority_revoked',403);};
     const authority:ExecutionAuthority={assertCurrent:async(p,c)=>{assert.equal(p.userId,principal.userId);assert.equal(c.id,'native');await check();},
       withCurrent:async(_p,_c,_a,local)=>{await check();held++;try{const result=await local();await check();if(loseHostAck&&(result as any)?.state==='succeeded')throw new DomainError('host_commit_ack_lost');return result;}finally{held--;}}};
+    if(invocation){
+      const original=await f.store.get<Grant>('p','grant',f.grant.id);
+      const scoped:Grant={...original,campaignId:'native',expiresAt:null,lifetime:{kind:'invocation',invocationRef:'current-native-action'}};
+      await f.store.put('p','grant',scoped.id,scoped);
+      authority.assertInvocationGrant=async g=>{await check();assert.equal(g.lifetime?.invocationRef,'current-native-action');assert.equal(g.campaignId,'native');assert.equal(g.projectId,'p');assert.equal(g.id,scoped.id);};
+    }
     const base=MarketingServer.unconnected(f.store);
     const provider:ProviderPort={...f.provider,verify:async()=>{assert.equal(held,0);reads++;if(revokeAt==='verify')revoked=true;return {accountId:f.grant.accountId,currency:'USD',timezone:'UTC',permissions:['pause','report']};},
       pause:async(c,_g,guard)=>{assert.equal(held,0);await guard();writes++;if(revokeAt==='write')revoked=true;return {...c.receipt!,observedAt:new Date().toISOString()};},
@@ -236,6 +242,20 @@ test('adopted execution uses current host action authority, preserves uncertain 
     const without=new MarketingServer(f.store,{...base.providers,meta:provider},base.generation,base.agent,'fixture');
     await assert.rejects(without.pause(principal,'p',{campaignId:'native',requestKey:'denied'}),/adopted_execution_authority_required/);
     const service=new MarketingServer(f.store,{...base.providers,meta:provider},base.generation,base.agent,'fixture',undefined,undefined,{executionAuthority:authority});
+    if(invocation){
+      const saved=await f.store.get<Grant>('p','grant',f.grant.id);
+      const unsupported=new MarketingServer(f.store,{...base.providers,meta:provider},base.generation,base.agent,'fixture',undefined,undefined,
+        {executionAuthority:{assertCurrent:authority.assertCurrent,withCurrent:authority.withCurrent}});
+      await assert.rejects(unsupported.pause(principal,'p',{campaignId:'native',requestKey:'no-invocation-port'}),/invocation_grant_authority_required/);
+      for(const change of [{expiresAt:'2099-01-01T00:00:00Z'}, {campaignId:undefined}, {permissions:['activate','pause','report']}]){
+        await f.store.put('p','grant',saved.id,{...saved,...change});
+        await assert.rejects(service.pause(principal,'p',{campaignId:'native',requestKey:'malformed'}),/invalid_invocation_grant/);
+      }
+      await f.store.put('p','grant',saved.id,{...saved,lifetime:undefined,expiresAt:'2020-01-01T00:00:00Z'});
+      await assert.rejects(service.pause(principal,'p',{campaignId:'native',requestKey:'expired-timestamp'}),/grant_expired_or_revoked/);
+      await f.store.put('p','grant',saved.id,saved);
+      assert.equal(writes,0);assert.equal((await f.store.list('p','operation')).length,0);
+    }
     await f.store.db.acquireExecutor();
     revokeAt='verify';let o=await service.pause(principal,'p',{campaignId:'native',requestKey:'preflight'});
     o=await service.dispatch('p',o.id);assert.equal(o.state,'blocked');assert.equal(writes,0);

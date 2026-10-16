@@ -23,7 +23,7 @@ function fixture() {
     creative:{id:"102",account_id:"123",object_story_spec:{page_id:"42",link_data:{image_hash:ids.image,link:source.destination,message:source.body,name:source.headline,description:"Original description",call_to_action:{type:"LEARN_MORE",value:{link:source.destination}}}},url_tags:"utm_source={{site_source_name}}&meta_ad_id={{ad.id}}",degrees_of_freedom_spec:{creative_features_spec:{image_touchups:{enroll_status:"OPT_OUT"},text_generation:{enroll_status:"OPT_OUT"}}}}};
   source.retainedProviderTerms=structuredClone(existingMetaTerms(observed));
   const calls:string[]=[];let afterFetch=()=>{};
-  const vault:VaultPort={use:async()=>{throw Error("write custody prohibited");},useReadOnly:async(g,guard,fn)=>{assert.equal(g,grant);await guard();return fn({accessToken:"synthetic-private-token",expiresAt:Date.parse(grant.expiresAt),scopes:["ads_management"]});}};
+  const vault:VaultPort={use:async()=>{throw Error("write custody prohibited");},useReadOnly:async(g,guard,fn)=>{assert.equal(g,grant);await guard();return fn({accessToken:"synthetic-private-token",expiresAt:Date.parse(grant.expiresAt ?? ""),scopes:["ads_management"]});}};
   const provider=new NativeProvider("meta",vault,null as unknown as Store,async(input,init)=>{
     const url=new URL(String(input));calls.push(url.pathname);assert.equal(init?.method,"GET");assert.equal(init?.redirect,"error");
     let body:any;

@@ -18,7 +18,7 @@ function fixture(){
   const page=pages[edge]?.shift();if(page instanceof Response)return page;return Response.json(page??{data:rows[edge]});
  };
  const vault={use:async()=>{throw Error('write custody forbidden');},useReadOnly:async(_g:Grant,guard:()=>Promise<void>,action:any)=>{
-  await guard();return action({accessToken:'synthetic-only',expiresAt:expired?0:Date.parse(grant.expiresAt),scopes:['ads_read']});
+  await guard();return action({accessToken:'synthetic-only',expiresAt:expired?0:Date.parse(grant.expiresAt ?? ""),scopes:['ads_read']});
  }};
  return {grant,targets,rows,pages,setHook:(h:()=>Promise<void>)=>hook=h,expire:()=>expired=true,reads:()=>reads,
   read:()=>inspectMetaDeliveryInventory({grant,targets,vault,guard:async()=>{},fetcher})};

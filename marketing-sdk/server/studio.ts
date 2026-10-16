@@ -255,7 +255,7 @@ export class CampaignStudio {
       const selection=d.studio.selection, option=d.studio.options.find(o=>o.id===selection?.optionId);
       add('options','selection',option&&option.briefDigest===d.studio.briefDigest&&option.revision===selection?.revision?'pass':'blocked',option&&option.briefDigest===d.studio.briefDigest&&option.revision===selection?.revision?'Copy option selected for this brief.':'Explicitly select a copy option for the current brief.');
       add('options','claims','unknown','Review all claims against your supplied facts; suggestions are not claim approval.','editorial');
-      add('checks','account',g&&!g.revokedAt&&Date.parse(g.expiresAt)>this.now()?'pass':'blocked','Choose a current account and identity in Connections.');
+      add('checks','account',g&&!g.revokedAt&&Date.parse(g.expiresAt ?? "")>this.now()?'pass':'blocked','Choose a current account and identity in Connections.');
       add('checks','destination',dest&&(dest as {url:string}).url===d.material.destination?'pass':'blocked','Capture matching destination evidence explicitly; checking never fetches a URL.');
       if(g){try{material(d.material as Material,g.provider);const blockers=capabilityBlockers(d.material as Material,g);for(const code of blockers)add('checks',code,'blocked',code.replaceAll('_',' '));if(!blockers.length)add('checks','material','pass','Local field and provider capability constraints pass.');}catch(e){add('checks','material','blocked',(e as Error).message.replaceAll('_',' '));}
         add('checks','account_eligibility',capabilityStatus(d.material as Material,g).accountVerified?'pass':'unknown','Current exact account eligibility evidence is separate from local format validity.','provider');
@@ -304,7 +304,7 @@ export class CampaignStudio {
       requireThat(digest(await this.inspection(p,project))===digest(session),'session_authority_changed',401);
       requireThat(digest(d)===digest(original),'revision_conflict');
       for(const [hash,bytes] of observed)requireThat(await this.store.db.prepare('SELECT 1 AS present FROM blobs WHERE project_id=? AND digest=? AND bytes=?').get(project,hash,bytes),'asset_bytes_missing_or_changed');
-      requireThat(g.revision===i.expectedGrantRevision&&!g.revokedAt&&Date.parse(g.expiresAt)>this.now(),'grant_changed');
+      requireThat(g.revision===i.expectedGrantRevision&&!g.revokedAt&&Date.parse(g.expiresAt ?? "")>this.now(),'grant_changed');
       requireThat(!g.campaignId,'campaign_specific_grant_cannot_promote');
       const chosen=d.studio.options.find(o=>o.id===d.studio.selection?.optionId);
       requireThat(chosen&&chosen.revision===d.studio.selection?.revision&&chosen.briefDigest===d.studio.briefDigest,'option_stale');

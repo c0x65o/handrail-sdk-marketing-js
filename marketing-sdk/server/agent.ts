@@ -157,12 +157,12 @@ export class HostAgent implements AgentPort, VaultPort {
   }
   /** Read-only credential access: never refreshes, grants or writes custody. */
   async useReadOnly<T>(g: Grant, guard: () => Promise<void>, action: (credentials: ConnectionCredentials) => Promise<T>) {
-    requireThat(!g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "grant_expired_or_revoked");
+    requireThat(!g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now(), "grant_expired_or_revoked");
     return this.useConnection(g.projectId, g.secretRef, [], guard, action);
   }
   async use<T>(g: Grant, action: (credentials: Credentials) => Promise<T>) {
     requireThat(
-      !g.revokedAt && Date.parse(g.expiresAt) > Date.now(),
+      !g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now(),
       "grant_expired_or_revoked",
     );
     let credentials = await this.read(g);
@@ -207,7 +207,7 @@ export class HostAgent implements AgentPort, VaultPort {
     const g = await this.store.get<Grant>(project, "grant", grantId);
     const app = this.apps[g.provider];
     requireThat(
-      app && !g.revokedAt && Date.parse(g.expiresAt) > Date.now(),
+      app && !g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now(),
       "oauth_unavailable",
     );
     const state = randomBytes(32).toString("base64url"),
@@ -270,7 +270,7 @@ export class HostAgent implements AgentPort, VaultPort {
         g.provider === provider &&
         g.revision === saved.grantRevision &&
         !g.revokedAt &&
-        Date.parse(g.expiresAt) > Date.now(),
+        Date.parse(g.expiresAt ?? "") > Date.now(),
       "oauth_grant_changed",
     );
     await this.store.transaction(async () => {
@@ -279,7 +279,7 @@ export class HostAgent implements AgentPort, VaultPort {
       requireThat(
         currentGrant.revision === g.revision &&
           !currentGrant.revokedAt &&
-          Date.parse(currentGrant.expiresAt) > Date.now(),
+          Date.parse(currentGrant.expiresAt ?? "") > Date.now(),
         "oauth_grant_changed",
       );
       const current = await this.store.get<typeof saved>(project, "oauth", key);
@@ -321,7 +321,7 @@ export class HostAgent implements AgentPort, VaultPort {
       requireThat(
         current.revision === g.revision &&
           !current.revokedAt &&
-          Date.parse(current.expiresAt) > Date.now(),
+          Date.parse(current.expiresAt ?? "") > Date.now(),
         "oauth_grant_changed",
       );
       await this.storeCredentials(g, {

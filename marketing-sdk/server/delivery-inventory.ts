@@ -32,7 +32,7 @@ export async function inspectMetaDeliveryInventory(input:{grant:Grant;targets:Me
     unique(targets.map(t=>t.campaignId))&&unique(targets.map(t=>t.nativeCampaignId)), 'delivery_inventory_scope_invalid',422);
   const account=accountPath(g.accountId),accountId=account.slice(4),scopeDigest=digest({g,targets});
   requireThat(numeric(accountId),'delivery_inventory_scope_invalid',422);
-  const current=async()=>{await guard();requireThat(!g.revokedAt&&Date.parse(g.expiresAt)>Date.now()&&
+  const current=async()=>{await guard();requireThat(!g.revokedAt&&Date.parse(g.expiresAt ?? "")>Date.now()&&
     digest({g,targets})===scopeDigest,'delivery_inventory_scope_changed',403);};
   const paths=[account,`${account}/campaigns`,`${account}/adsets`,`${account}/ads`].map(p=>`/v26.0/${p}`);
   let requestCount=0;

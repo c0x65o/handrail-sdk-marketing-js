@@ -26,7 +26,7 @@ function fixture() {
   source.retainedProviderTerms.runSchedule.end=null;
   let calls=0,afterFetch=()=>{};
   const vault:VaultPort={use:async()=>{throw Error('write custody must never open');},useReadOnly:async(g,guard,fn)=>{
-    assert.equal(g,grant);await guard();return fn({accessToken:'private-fixture',clientId:'fixture-client',clientSecret:'fixture-secret',expiresAt:Date.parse(grant.expiresAt),scopes:['r_ads']});}};
+    assert.equal(g,grant);await guard();return fn({accessToken:'private-fixture',clientId:'fixture-client',clientSecret:'fixture-secret',expiresAt:Date.parse(grant.expiresAt ?? ""),scopes:['r_ads']});}};
   const provider=new NativeProvider('linkedin',vault,null as unknown as Store,async(input,init)=>{
     calls++;assert.equal(String(input),'https://api.linkedin.com/rest/adAccounts/123/adCampaigns/111');
     assert.equal(init?.method,'GET');assert.equal(init?.redirect,'error');assert.equal(new Headers(init?.headers).get('LinkedIn-Version'),'202609');

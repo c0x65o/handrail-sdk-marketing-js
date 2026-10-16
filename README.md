@@ -807,3 +807,26 @@ input/request key. It returns the immutable result even after subsequent edits;
 missing returns `null` (unknown, not proof of rollback or permission to retry).
 It performs no provider reads, dispatch or approval, and does not cover read/check
 observations, generation or other operations with their own receipt contracts.
+
+
+### Current native stop/read grants
+
+A trusted host may retain a campaign-scoped grant with `expiresAt: null` and
+`lifetime: { kind: "invocation", invocationRef }` for the exact running native
+action. Only `pause` and `report` permissions are valid. This represents current
+host action authority when provider token expiry is unknown; it does not claim
+the provider token never expires. Timestamp grants retain their existing deadline
+checks and cannot silently fall back to invocation access.
+
+Both `ExecutionAuthority.assertInvocationGrant` and the private
+`VaultPort.assertInvocationGrant` must independently inspect the exact current
+host invocation, principal, project, campaign and retained grant. Missing custody,
+changed identity, revocation or action termination rejects before further effects
+or local receipt commits. Provider transport errors recheck current authority so a
+revocation is not mislabeled as a provider outage. Invocation grants cannot create,
+activate, edit material, approve spending or serve as human approval. Recovery
+preserves original operation/grant revisions; a later host action needs its own
+current grant revision. Ordinary SDK connections, reference provisioning, Studio
+promotion and UI readiness do not infer liveness from a saved invocation reference.
+Infinity may be used only as an internal calculation bound by guarded private
+custody; it is never a persisted deadline or a reported token-expiry fact.

@@ -101,9 +101,9 @@ export class CampaignExecutionConnections {
       const lifecycle=await this.store.list<{id:string;lifecycle:string}>(project,'campaignLifecycle');
       requireThat(!lifecycle.some(row=>row.id===c.id&&row.lifecycle!=='active'),'campaign_archived');
       requireThat(digest(await this.store.get(project,'grant',planning.id))===digest(planning)&&planning.revision===input.expectedGrantRevision&&
-        planning.projectId===project&&!planning.campaignId&&!planning.revokedAt&&Date.parse(planning.expiresAt)>Date.now()&&planning.permissions.length===0,
+        planning.projectId===project&&!planning.campaignId&&!planning.revokedAt&&Date.parse(planning.expiresAt ?? "")>Date.now()&&planning.permissions.length===0,
         'planning_grant_changed');
-      requireThat(g.id!==planning.id&&g.secretRef!==planning.secretRef&&Date.parse(g.expiresAt)>Date.now()&&Date.parse(g.expiresAt)<=sessionExpiryBound(session),
+      requireThat(g.id!==planning.id&&g.secretRef!==planning.secretRef&&Date.parse(g.expiresAt ?? "")>Date.now()&&Date.parse(g.expiresAt ?? "")<=sessionExpiryBound(session),
         'invalid_campaign_execution_grant');
       requireThat(['provider','accountId','currency','timezone','pageId','instagramUserId','organizationId'].every(key=>
         (g[key as keyof Grant]??null)===(planning[key as keyof Grant]??null))&&c.draftOrigin.accountId===g.accountId,

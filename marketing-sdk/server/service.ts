@@ -1,3 +1,4 @@
+import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import type { CampaignAccess } from "./campaign-access.js";
 import type { ExecutionAuthority, ExecutionAction } from "./execution-authority.js";
@@ -129,7 +130,7 @@ export class MarketingServer {
     requireThat(typeof access.digest === 'string' && access.digest.length > 0 && access.digest.length <= 500 &&
       Number.isFinite(access.expiresAt) && access.expiresAt > this.now() &&
       Number.isFinite(access.credentialExpiresAt) && access.credentialExpiresAt > this.now() && (expiry === undefined || expiry === access.credentialExpiresAt) &&
-      access.expiresAt <= access.credentialExpiresAt && access.expiresAt <= Date.parse(g.expiresAt) &&
+      access.expiresAt <= access.credentialExpiresAt && access.expiresAt <= Date.parse(g.expiresAt ?? "") &&
       Array.isArray(access.sessions) && access.sessions.length > 0 &&
       access.sessions.some(s => s.projectId === g.projectId && digest(s.binding) === digest(sessionBinding(p))) &&
       access.sessions.every(s => s.projectId === g.projectId && sessionExpiryBound(s) >= access.expiresAt) &&
@@ -178,10 +179,8 @@ export class MarketingServer {
     campaignId?: string,
   ): Promise<Grant> {
     const g = await this.store.get<Grant>(project, "grant", grantId);
-    requireThat(
-      valid(g.expiresAt, g.revokedAt, this.now()),
-      "grant_expired_or_revoked",
-    );
+    await assertCurrentGrant(g, this.now(), this.options.executionAuthority);
+    requireThat(!g.lifetime || permission === "pause" || permission === "report", "invocation_grant_operation_denied", 403);
     requireThat(
       !permission || g.permissions.includes(permission),
       "grant_permission_denied",
@@ -1090,7 +1089,7 @@ export class MarketingServer {
       );
       const expires = Math.min(
         this.now() + 15 * 60000,
-        Date.parse(g.expiresAt),
+        Date.parse(g.expiresAt ?? ""),
         materialEndTime(c.material),
       );
       requireThat(expires > this.now(), "delivery_window_ended");

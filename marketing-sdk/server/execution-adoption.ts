@@ -114,7 +114,7 @@ export class CampaignExecutionAdoptions {
     requireThat(Array.isArray(candidate.unsettledOperationIds) && candidate.unsettledOperationIds.length === 0, "adoption_effects_unsettled");
     const grant = await this.store.get<Grant>(project, "grant", candidate.grantId);
     requireThat(grant.id === candidate.grantId && grant.projectId === project && ["meta", "linkedin"].includes(grant.provider) && !grant.revokedAt &&
-      Date.parse(grant.expiresAt) > Date.now() && grant.permissions.includes("report") && grant.permissions.includes("pause"), "adoption_current_grant_required");
+      Date.parse(grant.expiresAt ?? "") > Date.now() && grant.permissions.includes("report") && grant.permissions.includes("pause"), "adoption_current_grant_required");
     const providerName = grant.provider as "meta" | "linkedin", provider = this.providers[providerName];
     requireThat(provider.inspectExistingCampaign, "existing_campaign_inspection_unavailable");
     requireThat(this.mode === "fixture" || provider.evidence === "provider", "fixture_provider_not_live");
@@ -214,7 +214,7 @@ export class CampaignExecutionAdoptions {
         digest(currentMedia.map(item => item.asset)) === digest(assets) &&
         (currentMedia[0]?.original ? digest({asset:currentMedia[0].original.asset,bytesDigest:byteDigest(currentMedia[0].original.bytes)}) : null) === originalDigest,
         "adoption_source_changed");
-      requireThat(Date.parse(grant.expiresAt) > Date.now(), "adoption_current_grant_required");
+      requireThat(Date.parse(grant.expiresAt ?? "") > Date.now(), "adoption_current_grant_required");
     };
     await guard();
     const inspection = await provider.inspectExistingCampaign(campaign, grant, assets, candidate.providerIds, guard);

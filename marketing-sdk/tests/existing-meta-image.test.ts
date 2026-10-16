@@ -7,7 +7,7 @@ function fixture(){
  const g:Grant={id:'g',projectId:'p',revision:1,provider:'meta',accountId:'act_123',pageId:'42',label:'Fixture',currency:'USD',timezone:'America/Chicago',permissions:['pause','report'],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,secretRef:'opaque'};
  const image:any={account_id:'123',hash:'a'.repeat(32),name:'handrail-historical-text-hash.jpg',original_width:1024,original_height:1280,status:'ACTIVE'};
  const pages:any[]=[{data:[image]}];const calls:string[]=[];let afterFetch=()=>{};
- const vault:VaultPort={use:async()=>{throw Error('no writes');},useReadOnly:async(_g,guard,fn)=>{await guard();return fn({accessToken:'synthetic-private-token',expiresAt:Date.parse(g.expiresAt),scopes:['ads_read']});}};
+ const vault:VaultPort={use:async()=>{throw Error('no writes');},useReadOnly:async(_g,guard,fn)=>{await guard();return fn({accessToken:'synthetic-private-token',expiresAt:Date.parse(g.expiresAt ?? ""),scopes:['ads_read']});}};
  const provider=new NativeProvider('meta',vault,null as unknown as Store,async(input,init)=>{
   const u=new URL(String(input));calls.push(u.pathname);assert.equal(init?.method,'GET');assert.equal(init?.redirect,'error');
   const body=u.pathname==='/v26.0/act_123'?{id:'act_123',currency:'USD',timezone_name:'America/Chicago'}:pages.shift();

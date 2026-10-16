@@ -402,7 +402,7 @@ async function campaign(
 async function storeFixtureCoverage(store: Awaited<ReturnType<typeof testStore>>, c: Campaign, purpose: "acquisition" | "recruitment") {
   const source: TrackingSource = {id:"trusted-website",projectId:c.projectId,revision:"1",label:"Formula fixture",domain:"fixture.example",environment:"production",active:true,collector:"available",reason:null,outcomes:["inquiry","qualified","purchase","mou","application","applicant_qualified","hire"],destinations:[],instructions:[]};
   await store.put(c.projectId,"formulaSource",source.id,source);
-  const grant=(await store.list<Grant>(c.projectId,"grant")).find(g=>g.accountId===c.material.settings?.accountId&&g.provider===c.material.settings?.provider&&!g.revokedAt&&Date.parse(g.expiresAt)>time);
+  const grant=(await store.list<Grant>(c.projectId,"grant")).find(g=>g.accountId===c.material.settings?.accountId&&g.provider===c.material.settings?.provider&&!g.revokedAt&&Date.parse(g.expiresAt ?? "")>time);
   await store.put(c.projectId, "trackingBinding", digest({kind:"campaign",id:c.id}), {id:digest({kind:"campaign",id:c.id}),revision:1,owner:{kind:"campaign",id:c.id},ownerRevision:c.revision,materialDigest:digest(c.material),accountDigest:grant?digest(grant):null,purpose,source});
   await store.put(c.projectId, "validatedCoverage", `fixture-${c.id}-${purpose}`, {
     id:`fixture-${c.id}-${purpose}`, version:1, campaignId:c.id, sourceId:"trusted-website", sourceRevision:"1",

@@ -155,7 +155,7 @@ export class MarketingConnectionsService implements CampaignAccess {
     requireThat(current.revision === c.revision && current.actorId === c.actorId && current.session === c.session && !["cancelled", "cancelling", "needs_reauthorization"].includes(current.view.phase), "connection_changed");
     if (c.view.grantId) {
       const g = await this.store.get<Grant>(c.projectId, "grant", c.view.grantId);
-      requireThat(!g.revokedAt && Date.parse(g.expiresAt) > Date.now() && g.revision === c.grantRevision, "grant_expired_or_revoked");
+      requireThat(!g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now() && g.revision === c.grantRevision, "grant_expired_or_revoked");
     }
   }
   /** Private prerequisite binding, never a browser receipt or an expanded grant.
@@ -178,7 +178,7 @@ export class MarketingConnectionsService implements CampaignAccess {
     const accessExpiry = observedCredentialExpiry ?? await this.options.custody.useReadOnly(g, async () => {}, async credentials => credentials.expiresAt);
     // Native credential use requires a one-minute remaining-use margin. A read-only
     // check must not label credentials ready when ordinary use would need refresh.
-    const expiresAt = Math.min(Date.parse(g.expiresAt), Date.parse(c.expiresAt), Date.parse(c.retainUntil),
+    const expiresAt = Math.min(Date.parse(g.expiresAt ?? ""), Date.parse(c.expiresAt), Date.parse(c.retainUntil),
       Date.parse(c.view.providerAuthorized.expiresAt ?? ""), accessExpiry - 60000, ...sessions.map(sessionExpiryBound));
     requireThat(Number.isFinite(expiresAt) && expiresAt > Date.now(), "connection_access_expired");
     const sealed = await this.store.get(g.projectId, "vault", g.secretRef);
@@ -253,10 +253,10 @@ export class MarketingConnectionsService implements CampaignAccess {
     // grant administrator may revoke or revise it without touching this record.
     if (c.view.grantId) {
       const g = await this.store.get<Grant>(c.projectId, "grant", c.view.grantId);
-      if (g.revokedAt || Date.parse(g.expiresAt) <= Date.now() || g.revision !== c.grantRevision) {
+      if (g.revokedAt || !(Date.parse(g.expiresAt ?? "") > Date.now()) || g.revision !== c.grantRevision) {
         v.phase = "needs_reauthorization";
         v.checkpoint = g.revokedAt ? "Access revoked. Existing campaign history is retained; active ads may still run." : "Project access expired or changed. Review fresh access before continuing.";
-        v.consented.status = g.revokedAt ? "revoked" : Date.parse(g.expiresAt) <= Date.now() ? "expired" : "unavailable";
+        v.consented.status = g.revokedAt ? "revoked" : !(Date.parse(g.expiresAt ?? "") > Date.now()) ? "expired" : "unavailable";
         v.readiness.forEach(r => { r.ready = false; r.blockers = ["Project access expired, changed or revoked"]; });
         v.accessReview = null; v.handoffPath = null;
         v.actions = [{ action: "reconnect", label: "Review a new connection", actor: "human", available: canEdit, reason: null }];

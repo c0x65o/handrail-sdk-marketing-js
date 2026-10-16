@@ -233,7 +233,7 @@ export function capabilityKey(m: Material, g: PublicGrant): string {
 /** Exact material eligibility remains separate from budget exposure accounting. */
 export function capabilityStatus(m: Material, g: PublicGrant, now = Date.now()) {
   const blockers = capabilityBlockers(m, g);
-  const grantCurrent = !g.revokedAt && Date.parse(g.expiresAt) > now;
+  const grantCurrent = !g.revokedAt && Date.parse(g.expiresAt ?? "") > now;
   const evidence = g.capabilityEvidence?.find(e => e.key === capabilityKey(m, g) && nonempty(e.receipt) &&
     Number.isFinite(Date.parse(e.verifiedAt)) && Date.parse(e.verifiedAt) <= now && Date.parse(e.expiresAt) > now);
   return { version: CAPABILITY_VERSION, key: capabilityKey(m, g), sdkSupported: !!m.settings && !blockers.length,

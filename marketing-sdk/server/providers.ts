@@ -1,3 +1,4 @@
+import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import { countryPage, countryCode } from "./countries.js";
 import { currentPrerequisite, storedCredentialBinding } from "./preflight.js";
@@ -44,6 +45,8 @@ export interface Credentials {
   loginCustomerId?: string;
 }
 export interface VaultPort {
+  /** Current exact host stop/read invocation, never inferred from saved state. */
+  assertInvocationGrant?: (grant: Grant) => Promise<void>;
   /** Trusted host custody: inspect the exact grant's current credential/config
    * revision without returning secrets or doing network I/O. Presence selects
    * native prerequisite evidence for every grant, independent of its ID. Throw
@@ -358,7 +361,7 @@ export class NativeProvider implements ProviderPort {
     const scope = digest({g,campaignId,source});
     const current = async () => {
       await guard();
-      requireThat(digest({g,campaignId,source}) === scope && !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "existing_campaign_scope_changed", 403);
+      requireThat(digest({g,campaignId,source}) === scope && !g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now(), "existing_campaign_scope_changed", 403);
     };
     const fetcher: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
@@ -391,7 +394,7 @@ export class NativeProvider implements ProviderPort {
       Object.keys(ids).length===4 && [ids.campaign,ids.adset,ids.ad,ids.creative].every(x=>typeof x==="string"&&/^\d+$/.test(x)),
       "existing_campaign_identity_invalid",422);
     const scope=digest({g,ids}),account=accountPath(g.accountId);
-    const current=async()=>{await guard();requireThat(digest({g,ids})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
+    const current=async()=>{await guard();requireThat(digest({g,ids})===scope&&!g.revokedAt&&Date.parse(g.expiresAt ?? "")>Date.now(),"existing_campaign_scope_changed",403);};
     const allowed=[account,ids.campaign,`${ids.campaign}/adsets`,`${ids.campaign}/ads`].map(x=>`/v26.0/${x}`);
     const fetcher:typeof fetch=async(input,init)=>{
       const url=new URL(String(input));
@@ -430,7 +433,7 @@ export class NativeProvider implements ProviderPort {
       [ids.campaign,ids.adset,ids.creative].every(x=>typeof x==="string"&&/^\d+$/.test(x)) &&
       (ids.image===undefined||typeof ids.image==="string"&&/^[a-f0-9]{32}$/.test(ids.image)), "existing_material_scope_invalid", 403);
     const scope=digest({g,ids,source});
-    const current=async()=>{await guard();requireThat(digest({g,ids,source})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
+    const current=async()=>{await guard();requireThat(digest({g,ids,source})===scope&&!g.revokedAt&&Date.parse(g.expiresAt ?? "")>Date.now(),"existing_campaign_scope_changed",403);};
     const paths=[accountPath(g.accountId),ids.campaign,ids.adset,ids.creative].map(x=>`/v26.0/${x}`);
     const fetcher:typeof fetch=async(input,init)=>{
       const url=new URL(String(input));
@@ -456,7 +459,7 @@ export class NativeProvider implements ProviderPort {
   async inspectExistingMetaImage(g: Grant, imageId: string, guard: () => Promise<void>) {
     requireThat(this.name==="meta"&&g.provider==="meta"&&this.vault.useReadOnly&&/^[a-f0-9]{32}$/.test(imageId),"existing_media_scope_invalid",403);
     const scope=digest({g,imageId}),account=accountPath(g.accountId);
-    const current=async()=>{await guard();requireThat(digest({g,imageId})===scope&&!g.revokedAt&&Date.parse(g.expiresAt)>Date.now(),"existing_campaign_scope_changed",403);};
+    const current=async()=>{await guard();requireThat(digest({g,imageId})===scope&&!g.revokedAt&&Date.parse(g.expiresAt ?? "")>Date.now(),"existing_campaign_scope_changed",403);};
     const fetcher:typeof fetch=async(input,init)=>{
       const url=new URL(String(input));
       requireThat(url.origin==="https://graph.facebook.com"&&[`/v26.0/${account}`,`/v26.0/${account}/adimages`].includes(url.pathname)&&
@@ -486,10 +489,14 @@ export class NativeProvider implements ProviderPort {
       const sealed = this.vault.prerequisiteBinding || this.name === "meta" && g.id.startsWith("connection:")
         ? await this.credentialBinding(g) : null;
       const assertCustody = async () => {
+        if (g.lifetime !== undefined) {
+          await assertCurrentGrant(g, Date.now(), this.vault);
+          requireThat(digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g), "provider_custody_changed");
+        }
         if (!sealed) return;
+        await assertCurrentGrant(g, Date.now(), this.vault);
         requireThat(await this.credentialBinding(g) === sealed &&
-          digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g) &&
-          !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "provider_custody_changed");
+          digest(await this.store.get(g.projectId, "grant", g.id)) === digest(g), "provider_custody_changed");
       };
       const fetcher: typeof fetch = async (input, init) => {
         await assertCustody();
@@ -525,6 +532,9 @@ export class NativeProvider implements ProviderPort {
     } catch (error) {
       // Never expose provider bodies, request configuration or credential resolver errors.
       // Partial object IDs have already been retained inside prepare's write boundary.
+      // Transport wrappers may hide a host revocation; check the real invocation
+      // before classifying its failure as a provider outage.
+      if (g.lifetime !== undefined) await assertCurrentGrant(g, Date.now(), this.vault);
       if (error instanceof DomainError) throw error;
       const failure = error as { code?: unknown; verificationReason?: unknown; providerStatus?: unknown };
       const tokenReasons = ["token_inactive", "token_active_unverified", "token_changed", "token_status_unverified", "token_client_mismatch", "token_auth_type_unverified", "token_expiry_unverified"];
@@ -1161,7 +1171,7 @@ export class NativeProvider implements ProviderPort {
     if (this.name === "meta") ids.readbackVersion = (plan as any).readbackVersion ?? "4";
     const current = async () => {
       await guard();
-      requireThat(digest({c,g,assets,providerIds}) === scope && !g.revokedAt && Date.parse(g.expiresAt) > Date.now(), "existing_campaign_scope_changed", 403);
+      requireThat(digest({c,g,assets,providerIds}) === scope && !g.revokedAt && Date.parse(g.expiresAt ?? "") > Date.now(), "existing_campaign_scope_changed", 403);
     };
     const fetcher: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
@@ -1551,6 +1561,7 @@ export class NativeProvider implements ProviderPort {
       c.receipt?.ids.readbackDigest,
       "verified_provider_objects_required",
     );
+    requireThat(!g.lifetime || !activate && g.permissions.includes("pause"), "invocation_grant_operation_denied", 403);
     const ids = c.receipt.ids;
     if (activate && this.name === "meta") requireThat(["4", "5"].includes(ids.readbackVersion!), "meta_readback_requalification_required");
     const scopeDigest = digest({ c, g });

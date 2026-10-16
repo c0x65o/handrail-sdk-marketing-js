@@ -53,3 +53,5 @@ export * from "./meta-image.js";
 export {inspectMetaDeliveryInventory,type MetaDeliveryTarget,type MetaDeliveryObject} from './delivery-inventory.js';
 
 export * from "./campaign-execution-connection.js";
+
+export * from "./grant-authority.js";

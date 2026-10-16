@@ -141,7 +141,9 @@ export interface Grant {
   /** Provider reporting/budget zone. LinkedIn is UTC by policy, not an account field. */
   timezone: string;
   permissions: Permission[];
-  expiresAt: string;
+  /** Finite connection deadline, or null only for a current trusted stop/read invocation. */
+  expiresAt: string | null;
+  lifetime?: { kind: "invocation"; invocationRef: string };
   revokedAt: string | null;
   secretRef: string;
   pageId?: string;

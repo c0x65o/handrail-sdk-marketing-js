@@ -19,8 +19,8 @@ export type SessionInspection = SessionInspectionBase & (
   | { kind: "agent"; expiresAt: null; lifetime: { kind: "invocation"; invocationRef: string } }
 );
 /** A calculation bound only, never an authority receipt or persisted deadline.
- * Grant, credential, check and billing expiry remain finite and independently
- * enforced. This does not replace inspectSession/withLiveSessions. */
+ * Connection, check and billing expiry remain independently enforced. Explicit
+ * stop/read invocation grants instead require assertInvocationGrant on every use. This does not replace inspectSession/withLiveSessions. */
 export function sessionExpiryBound(session: SessionInspection): number {
   if (session.expiresAt === null) {
     requireThat(session.kind === "agent" && session.binding.issuer !== "marketing:store" &&
