@@ -1,0 +1,6 @@
+
+### Campaign image workflow (2026-10-16)
+
+`createCampaignImageGenerator` owns provider image calls, reference edits, exact-placement complete compositions, decoded resize/ratio checks and reuse of checkpointed images. Embedders supply current credential custody, existing model settings, product prompts/platform contracts and durable usage accounting through `CampaignImagePorts`; the factory supplies no grant, spending authority or scheduler. OpenAI organization/project credential routing is preserved. The existing generation and edit shapes were checked against [the official image guide](https://developers.openai.com/api/docs/guides/image-generation) on 2026-10-16.
+
+Each paid request has SDK retries disabled and no outer retry loop. Response/error/unknown accounting precedes image processing; failures to retain accounting stop the workflow. Original request IDs are retained in accounting and generated-image provenance. Unknown outcomes, malformed output and postprocessing failures are not automatically resubmitted. Provider errors expose bounded codes/IDs, not raw messages. Host persistence/reconciliation remains responsible for preventing a separate invocation from replaying an unsettled operation. This interface does not install a Studio generation grant or replace Studio's independent authority contract.

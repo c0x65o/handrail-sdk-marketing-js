@@ -70,3 +70,6 @@ export {MetaMarketingClient,MetaMarketingError,META_AD_FIELDS,META_INSIGHT_FIELD
 export {recordMarketingCredentials,withMarketingCredentialCoverage,projectMarketingCredentialEvidence} from '../support/owner-marketing/evidence-credentials.js';
 
 export {LinkedInMarketingClient,LinkedInMarketingError,linkedInObjectName,linkedInFailureEvidence,linkedInCommentaryText,linkedInCommentaryPlainText,linkedInMarketingSafety} from '../support/owner-marketing/linkedin-client.js';
+
+export {createCampaignImageGenerator,CampaignImageError} from '../support/owner-marketing/campaign-images.js';
+export type {CampaignImagePorts,CampaignImageInput,CampaignImage,CampaignImageSpec,CampaignImageContract} from './campaign-images-types.js';
