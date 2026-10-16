@@ -35,6 +35,8 @@ export interface ObservedAdvertisingSpend {
   currency: string;
   timezone: string;
   observedAt: string;
+  /** Oldest underlying provider collection, distinct from a later host read. */
+  oldestSourceCollectedAt?: string;
   todayMinor: number | null;
   periodMinor: number | null;
   source: "provider" | "fixture";
@@ -94,6 +96,10 @@ export class AdvertisingBudgets {
   }
   async observe(project: string, observation: ObservedAdvertisingSpend) {
     instant(observation.observedAt); text(observation.receipt);
+    if(observation.oldestSourceCollectedAt!==undefined){
+      instant(observation.oldestSourceCollectedAt);
+      requireThat(Date.parse(observation.oldestSourceCollectedAt)<=Date.parse(observation.observedAt),'spend_collection_after_observation');
+    }
     for (const n of [observation.todayMinor, observation.periodMinor]) requireThat(n === null ||
       (Number.isSafeInteger(n) && n >= 0), "invalid_observed_spend");
     requireThat(observation.source === "provider" || observation.source === "fixture", "invalid_spend_source");
@@ -134,7 +140,7 @@ export class AdvertisingBudgets {
       "campaign_budget_ceiling_exceeded");
     const spend = await this.store.get<ObservedAdvertisingSpend>(p.projectId, "advertisingObservedSpend", p.id);
     requireThat(spend.from === p.from && spend.until === p.until && spend.currency === p.currency && spend.timezone === p.timezone &&
-      spend.day === localDate(at, p.timezone) && Date.parse(spend.observedAt) <= at && at - Date.parse(spend.observedAt) <= p.maxObservationAgeMs &&
+      spend.day === localDate(at, p.timezone) && Date.parse(spend.observedAt) <= at && at - Date.parse(spend.oldestSourceCollectedAt??spend.observedAt) <= p.maxObservationAgeMs &&
       spend.todayMinor !== null && spend.periodMinor !== null && (this.evidence === "fixture" || spend.source === "provider"), "current_observed_spend_required");
     const rows = (await this.store.list<AdvertisingBudgetReservation>(p.projectId, "advertisingBudgetReservation"))
       .filter(r => r.policyId === p.id && r.state !== "released" && r.id !== own?.id);

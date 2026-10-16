@@ -403,6 +403,18 @@ history. Unknown pause effects retain the original active reservation until
 read-only reconciliation. Existing host approval, current grants, tracking and
 exclusive execution checks still apply; this adds no scheduler or spending grant.
 
+Budget composition can use `readBudgetSpendObservation` to read immutable
+measurement revisions for provider windows enclosing a UTC accounting interval.
+It returns `observed_provider_calendar_upper_bound`, component windows and exact
+parent evidence IDs. Different timezone windows remain incompatible for actual
+performance aggregation. Missing scope, changed identities, currencies, stale
+collections, partial pagination and newer incomplete corrections make the bound
+unknown. The reader writes nothing and does not hide provider reporting lag.
+`ObservedAdvertisingSpend.oldestSourceCollectedAt` preserves underlying freshness
+when a host reads existing evidence later; a new host observation time cannot
+renew stale provider data. The host must still prove the campaign inventory and
+current policy under its original authority guard.
+
 ## Original source and provider upload media
 
 `prepareMetaImageUpload` owns Meta's encoding: JPEG/PNG bytes stay unchanged;

@@ -77,6 +77,10 @@ test('unsettled commitments survive restart and month rollover; current spend, s
     t.setTime(t.time+1);await restarted.observe('p',obs);
     await assert.rejects(restarted.assert(c,op),/current_observed_spend_required/);
     await assert.rejects(restarted.observe('p',{...obs,currency:'EUR'}),/spend_basis_mismatch/);
+    t.setTime(t.time+1);
+    await restarted.observe('p',{...obs,source:'provider',observedAt:new Date(t.time).toISOString(),oldestSourceCollectedAt:new Date(t.time-60001).toISOString(),receipt:'old-provider-read-reobserved-now'});
+    await assert.rejects(restarted.assert(c,op),/current_observed_spend_required/);
+    await assert.rejects(restarted.observe('p',{...obs,oldestSourceCollectedAt:new Date(t.time+1000).toISOString()}),/spend_collection_after_observation/);
   }finally{await second?.close();await t.close();}
 });
 

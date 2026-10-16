@@ -83,7 +83,7 @@ export function checkRecurringBudget(policy: AdvertisingBudgetPolicy,campaign: C
   const period=advertisingBudgetPeriod(policy,at),current=recurringCampaignExposure(policy,campaign,at,evidence);
   requireThat(at>=Date.parse(policy.from),'budget_period_not_current');
   requireThat(spend.from===period.from&&spend.until===period.until&&spend.currency===policy.currency&&spend.timezone===policy.timezone&&
-    spend.day===localDate(at,policy.timezone)&&Date.parse(spend.observedAt)<=at&&at-Date.parse(spend.observedAt)<=policy.maxObservationAgeMs&&
+    spend.day===localDate(at,policy.timezone)&&Date.parse(spend.observedAt)<=at&&at-Date.parse(spend.oldestSourceCollectedAt??spend.observedAt)<=policy.maxObservationAgeMs&&
     spend.todayMinor!==null&&spend.periodMinor!==null&&(evidence==='fixture'||spend.source==='provider'),'current_observed_spend_required');
   const today=`${localDate(at,'UTC')}T00:00:00.000Z`,tomorrow=new Date(Date.parse(today)+86400000).toISOString();
   const selected=own?.recurringExposure??current;
