@@ -12,14 +12,17 @@ const options = { type: "array", items: option, maxItems: 30 };
 const facets = schemaObject(Object.fromEntries(["titles", "jobFunctions", "seniorities", "employers", "industries", "staffCountRanges"].map(k => [k, options])), []);
 const settingsBase = { version: { const: CAPABILITY_VERSION }, accountId: string, nondiscriminationAccepted: { const: true } };
 const providerSettings = { oneOf: [
-  schemaObject({ ...settingsBase, provider: { const: "meta" }, apiVersion: { const: "v26.0" }, format: { const: "single_image" },
+  Object.assign(schemaObject({ ...settingsBase, provider: { const: "meta" }, apiVersion: { const: "v26.0" }, format: { const: "single_image" },
     objective: { enum: ["OUTCOME_TRAFFIC", "OUTCOME_AWARENESS", "OUTCOME_LEADS"] }, optimization: { enum: ["LINK_CLICKS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS"] },
-    delivery: { enum: ["ordinary", "strict", "employment"] }, placements: { type: "array", minItems: 1, maxItems: META_PLACEMENTS.length, uniqueItems: true, items: { enum: META_PLACEMENTS.map(p => p.id) } },
+    delivery: { enum: ["ordinary", "strict", "employment"] }, placementMode: { const: "provider_defaults" }, placements: { type: "array", minItems: 0, maxItems: META_PLACEMENTS.length, uniqueItems: true, items: { enum: META_PLACEMENTS.map(p => p.id) } },
     identity: schemaObject({ pageId: string, instagramUserId: string }, ["pageId"]), targeting: schemaObject({ languages: options,
-      interestGroups: { type: "array", maxItems: 5, items: options }, excludedCustomAudiences: options }),
+      interestGroups: { type: "array", maxItems: 5, items: options }, excludedCustomAudiences: options, userAgeUnknown: {type:"boolean"} }, ["languages","interestGroups","excludedCustomAudiences"]),
     specialAdCategory: { const: "EMPLOYMENT" }, specialAdCategoryCountry: { const: "US" },
     conversion: schemaObject({ pixelId: string, customConversionId: string, event: { const: "ApplicantRequestMOU" } }),
-  }, [...Object.keys(settingsBase), "provider", "apiVersion", "format", "objective", "optimization", "delivery", "placements", "identity", "targeting"]),
+  }, [...Object.keys(settingsBase), "provider", "apiVersion", "format", "objective", "optimization", "delivery", "placements", "identity", "targeting"]), {allOf:[{
+    if:{required:["placementMode"]}, then:{properties:{placements:{maxItems:0}}},
+    else:{properties:{placements:{minItems:1}}},
+  }]}),
   schemaObject({ ...settingsBase, provider: { const: "linkedin" }, apiVersion: { const: "202609" }, format: { const: "STANDARD_UPDATE" },
     objective: { enum: ["WEBSITE_VISIT", "WEBSITE_CONVERSION", "BRAND_AWARENESS", "ENGAGEMENT"] }, optimization: { enum: ["NONE", "MAX_CLICK", "MAX_CONVERSION", "ENHANCED_CONVERSION", "MAX_REACH"] },
     bid: { oneOf: [schemaObject({ mode: { const: "manual" }, costType: { const: "CPC" }, amountMinor: { type: "integer", minimum: 1, maximum: 1e9 } }),

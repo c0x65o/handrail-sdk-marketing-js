@@ -335,3 +335,46 @@ for(const [label,value] of Object.entries({missing:undefined,empty:[],nullEntry:
       return true;
     });
   });
+
+for(const unknownAge of [undefined,false,true])test(`Meta provider-default placements preserve omission and unknown-age ${unknownAge}`,async()=>{
+  const f=fixture(),t=f.observed.adset.targeting;
+  delete t.publisher_platforms;delete t.facebook_positions;
+  if(unknownAge!==undefined)t.user_age_unknown=unknownAge;
+  f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+  const before=structuredClone(f.source),r=await f.capture(),m=r.material;
+  assert.equal(m.settings?.provider,'meta');if(m.settings?.provider!=='meta')throw Error('meta');
+  assert.equal(m.settings.placementMode,'provider_defaults');assert.deepEqual(m.settings.placements,[]);
+  assert.equal(m.settings.targeting.userAgeUnknown,unknownAge);
+  f.grant.targetingOptions=r.targetingOptions;
+  const g=f.grant,c={id:'c',projectId:'p',grantId:'g',material:m,state:'paused',receipt:null} as Campaign;
+  const assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  const plan:any=providerPlan(c,g,assets);
+  assert.deepEqual(plan.adset.targeting,t);assert.ok(!Object.hasOwn(plan.adset.targeting,'publisher_platforms'));
+  assert.equal(Object.hasOwn(plan.adset.targeting,'user_age_unknown'),unknownAge!==undefined);
+  assert.deepEqual(f.source,before);assert.equal(r.executionReady,false);assert.equal(capabilityStatus(m,g).accountVerified,false);
+  const inspection=await f.provider.inspectExistingCampaign(c,g,assets,{...f.ids,ad:'103'},async()=>{});
+  assert.equal(inspection.candidateReceipt.ids.ad,'103');
+  // A provider changing to manual placements or changing a known age bit cannot
+  // be accepted merely because both configurations might currently serve alike.
+  t.publisher_platforms=['facebook'];t.facebook_positions=['feed'];
+  await assert.rejects(f.provider.inspectExistingCampaign(c,g,assets,{...f.ids,ad:'103'},async()=>{}),/provider_targeting_mismatch/);
+  const review=renderToStaticMarkup(createElement(MaterialReview,{material:m,assets:[],client:{assetUrl:()=>'/image'} as any,grant:g}));
+  assert.match(review,/Meta automatic placements/);
+  const editor=renderToStaticMarkup(createElement(GuidedFields,{value:m,grant:g,onChange:()=>{}}));
+  assert.match(editor,/Meta chooses eligible placements/);assert.match(editor,/People whose age is unknown/);
+});
+
+for(const [label,patch] of Object.entries({nullPlatforms:{publisher_platforms:null},emptyPlatforms:{publisher_platforms:[]},
+  omittedPositions:{publisher_platforms:['facebook']},orphanPositions:{facebook_positions:['feed']},
+  deviceRestriction:{device_platforms:['mobile']},ageNull:{user_age_unknown:null},ageText:{user_age_unknown:'false'},ageNumber:{user_age_unknown:0},unknownField:{private:'secret'}}))
+  test(`Meta default-placement adoption rejects partial or malformed ${label}`,async()=>{
+    const f=fixture(),t=f.observed.adset.targeting;delete t.publisher_platforms;delete t.facebook_positions;Object.assign(t,patch);
+    f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));await assert.rejects(f.capture());
+  });
+
+test('Meta provider-default placement mode cannot hide a manual selection or an invalid mode',async()=>{
+  const f=fixture(),r=await f.capture(),s=r.material.settings! as any;
+  s.placementMode='provider_defaults';assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('unsupported_placement'));
+  s.placements=[];s.placementMode='arbitrary';assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('unsupported_placement_mode'));
+  delete s.placementMode;assert.ok(capabilityStatus(r.material,f.grant).blockers.includes('unsupported_placement'));
+});

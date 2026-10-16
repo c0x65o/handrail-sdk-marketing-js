@@ -445,3 +445,26 @@ This changes setup qualification, not campaign tuples or daily/budget denials.
 Account reference/display alone never establishes Page rights. The associated
 organization/campaign entity/post author equality is an SDK restriction.
 Live app/account evidence and independent final-candidate review remain open.
+
+
+### Meta provider-default placements
+
+`MetaSettings.placementMode = "provider_defaults"` requires an empty `placements`
+list and emits no publisher-platform/position restrictions. Omitting the mode
+keeps the explicit manual-placement contract; an empty manual list is invalid.
+Adoption selects this mode only when every placement/device restriction is absent
+from the complete requested targeting object. Nulls, partial restrictions and
+unknown fields are not defaults. Original observations and discrepancies remain.
+
+Meta documents omitted placement fields as selection of provider defaults, which
+may grow to include new positions. Configured mode does not prove actual eligible
+placements or delivery. Exact material/account capability checks, spending
+controls and full readback still apply. `targeting.userAgeUnknown` preserves an
+explicit Boolean or omission, including the separate WhatsApp Status age rule.
+Web review/editor and agent schemas expose the same representation. Explicit
+Instagram creative identity is retained when present; none is invented from an
+account's available identity.
+
+Primary references (read 2026-10-16):
+- https://developers.facebook.com/documentation/ads-commerce/marketing-api/audiences/reference/placement-targeting
+- https://developers.facebook.com/documentation/ads-commerce/marketing-api/audiences/reference/basic-targeting

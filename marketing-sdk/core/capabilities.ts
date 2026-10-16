@@ -33,6 +33,8 @@ export interface MetaSettings extends SettingsBase {
   objective: "OUTCOME_TRAFFIC" | "OUTCOME_AWARENESS" | "OUTCOME_LEADS";
   optimization: "LINK_CLICKS" | "IMPRESSIONS" | "REACH" | "OFFSITE_CONVERSIONS";
   delivery: "ordinary" | "strict" | "employment" | "advantage_plus_interests" | "advantage_plus_broad";
+  /** Explicit opt-in to Meta's evolving defaults; never an empty manual list. */
+  placementMode?: "provider_defaults";
   placements: MetaPlacement[];
   identity: { pageId: string; instagramUserId?: string };
   targeting: {
@@ -41,6 +43,8 @@ export interface MetaSettings extends SettingsBase {
     interestGroups: ResolvedOption[][];
     excludedCustomAudiences: ResolvedOption[];
     locationTypes?: ("home" | "recent" | "travel_in" | "frequently_in")[];
+    /** WhatsApp Status age inclusion. Absence is retained, never coerced to false. */
+    userAgeUnknown?: boolean;
     expansion?: { detailedTargeting: 0 | 1; lookalike: 0 | 1 };
   };
   specialAdCategory?: "EMPLOYMENT";
@@ -105,7 +109,7 @@ export const META_COMBINATIONS = [
 export const CAPABILITY_MATRIX = {
   version: CAPABILITY_VERSION,
   meta: { apiVersion: "v26.0", format: "single_image", combinations: META_COMBINATIONS,
-    placements: META_PLACEMENTS.map(p => p.id), strictCountries: ["US"], employmentCountries: ["US"],
+    placements: META_PLACEMENTS.map(p => p.id), placementModes: ["manual", "provider_defaults"], strictCountries: ["US"], employmentCountries: ["US"],
     gate: "Exact account eligibility receipt and complete provider readback; application contract is not a Meta delivery guarantee" },
   linkedin: { apiVersion: "202609", format: "STANDARD_UPDATE", combinations: LINKEDIN_COMBINATIONS,
     placements: ["linkedin_feed"], gate: "Exact account eligibility receipt, resolved taxonomy, conversion binding and complete readback" },
@@ -142,18 +146,22 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
   else check(m.applicantGoal === undefined, "purpose_outcome_mismatch");
   if (!record(s.identity) || !record(s.targeting) || !Array.isArray(s.placements)) return [...errors, "invalid_provider_settings"];
   if (s.provider === "meta") {
-    check(only(s, [...base, "delivery", "specialAdCategory", "specialAdCategoryCountry", "attribution", "creative"]), "unexpected_settings_fields");
+    check(only(s, [...base, "delivery", "placementMode", "specialAdCategory", "specialAdCategoryCountry", "attribution", "creative"]), "unexpected_settings_fields");
     check(s.apiVersion === "v26.0" && s.format === "single_image", "unsupported_format_or_api");
     check(META_COMBINATIONS.some(row => row[0] === s.delivery && row[1] === s.objective && row[2] === s.optimization), "unsupported_objective_optimization");
-    check(Array.isArray(s.placements) && s.placements.length > 0 && s.placements.length <= META_PLACEMENTS.length && new Set(s.placements).size === s.placements.length && s.placements.every(id => META_PLACEMENTS.some(p => p.id === id)), "unsupported_placement");
+    check(s.placementMode === undefined || s.placementMode === "provider_defaults", "unsupported_placement_mode");
+    check(s.placementMode === "provider_defaults" ? s.placements.length === 0 :
+      s.placements.length > 0 && s.placements.length <= META_PLACEMENTS.length && new Set(s.placements).size === s.placements.length && s.placements.every(id => META_PLACEMENTS.some(p => p.id === id)), "unsupported_placement");
     check(only(s.identity, ["pageId", "instagramUserId"]) && numeric(s.identity?.pageId) && (!g || s.identity.pageId === g.pageId), "meta_page_required");
-    check(usesInstagram(s.placements) ? numeric(s.identity?.instagramUserId) : s.identity?.instagramUserId === undefined, "instagram_identity_mismatch");
+    check(s.placementMode === "provider_defaults" ? s.identity.instagramUserId === undefined || numeric(s.identity.instagramUserId) :
+      usesInstagram(s.placements) ? numeric(s.identity?.instagramUserId) : s.identity?.instagramUserId === undefined, "instagram_identity_mismatch");
     if (g && s.identity?.instagramUserId) check(s.identity.instagramUserId === g.instagramUserId, "instagram_identity_mismatch");
     const t = s.targeting;
-    check(only(t, ["languages", "interestGroups", "excludedCustomAudiences", "locationTypes", "expansion"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");
+    check(only(t, ["languages", "interestGroups", "excludedCustomAudiences", "locationTypes", "expansion", "userAgeUnknown"]) && options(t?.languages, /^\d+$/) && options(t?.excludedCustomAudiences, /^\d+$/) && Array.isArray(t?.interestGroups) && t.interestGroups.length <= 5 && t.interestGroups.every(a => options(a, /^\d+$/) && a.length > 0), "invalid_resolved_targeting");
     if (errors.includes("invalid_resolved_targeting")) return errors;
     check(t.locationTypes === undefined || Array.isArray(t.locationTypes) && t.locationTypes.length > 0 &&
       new Set(t.locationTypes).size === t.locationTypes.length && t.locationTypes.every(x => ["home", "recent", "travel_in", "frequently_in"].includes(x)), "invalid_location_types");
+    check(t.userAgeUnknown === undefined || typeof t.userAgeUnknown === "boolean", "invalid_unknown_age_setting");
     check(m.audience.expansion === (["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)), "targeting_expansion_mismatch");
     if (["advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery)) {
       check(Array.isArray(s.attribution) && s.attribution.length > 0, "explicit_attribution_required");

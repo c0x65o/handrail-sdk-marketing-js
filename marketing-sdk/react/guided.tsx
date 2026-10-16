@@ -109,12 +109,21 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
       <p>One image per creative set. Document and video ad publishing remain unavailable.</p>
       {s.provider === "meta" ? <>
         <IdentifierField label="Page identity" kind="page" grant={g} allowed={g.pageId || ""} value={s.identity.pageId} onChange={pageId => settings({ identity: { ...s.identity, pageId } })} />
-        <fieldset><legend>Placements</legend>{META_PLACEMENTS.map(p => <label className="check" key={p.id}>
+        <fieldset><legend>Placements</legend>
+        <label>Placement selection<select value={s.placementMode || 'manual'} onChange={e=>settings({placementMode:e.target.value==='provider_defaults'?'provider_defaults':undefined,placements:[]})}>
+          <option value="manual">Choose placements</option><option value="provider_defaults">Meta automatic placements</option>
+        </select></label>
+        {s.placementMode==='provider_defaults' && <p>Meta chooses eligible placements and may add new ones. This does not verify delivery or creative eligibility.</p>}
+        {s.placementMode!=='provider_defaults' && META_PLACEMENTS.map(p => <label className="check" key={p.id}>
           <input type="checkbox" checked={s.placements.includes(p.id)} onChange={e => settings({ placements: e.target.checked ? [...s.placements, p.id] : s.placements.filter(id => id !== p.id) })} />{p.label}
         </label>)}</fieldset>
         {s.placements.some(p => p === "facebook_reels" || p === "instagram_reels") && <p>Reels uses the selected image. Review a vertical 9:16 asset and safe zones; this preview does not verify provider rendering or delivery.</p>}
-        {usesInstagram(s.placements) && <IdentifierField label="Instagram identity" kind="instagram" grant={g} allowed={g.instagramUserId || ""} value={s.identity.instagramUserId || ""} onChange={instagramUserId => settings({ identity: { ...s.identity, instagramUserId } })} />}
-        {s.identity.instagramUserId && !usesInstagram(s.placements) && <button type="button" onClick={() => settings({ identity: { pageId: s.identity.pageId } })}>Remove unused Instagram identity</button>}
+        {(usesInstagram(s.placements) || s.placementMode==='provider_defaults' && Boolean(s.identity.instagramUserId)) && <IdentifierField label="Instagram identity" kind="instagram" grant={g} allowed={g.instagramUserId || ""} value={s.identity.instagramUserId || ""} onChange={instagramUserId => settings({ identity: { ...s.identity, instagramUserId } })} />}
+        {s.identity.instagramUserId && s.placementMode!=='provider_defaults' && !usesInstagram(s.placements) && <button type="button" onClick={() => settings({ identity: { pageId: s.identity.pageId } })}>Remove unused Instagram identity</button>}
+        {(s.placementMode==='provider_defaults' || s.targeting.userAgeUnknown!==undefined) && <label>People whose age is unknown (WhatsApp Status)
+          <select value={s.targeting.userAgeUnknown===undefined?'unspecified':s.targeting.userAgeUnknown?'include':'exclude'} onChange={e=>settings({targeting:{...s.targeting,userAgeUnknown:e.target.value==='unspecified'?undefined:e.target.value==='include'}})}>
+            <option value="unspecified">Use provider default</option><option value="exclude">Exclude</option><option value="include">Include</option>
+          </select></label>}
         {s.delivery === "ordinary" && g.id.startsWith("connection:") ? <p>Languages, interests and exclusions are unavailable in this country-only journey.
           {(s.targeting.languages.length > 0 || s.targeting.interestGroups.length > 0 || s.targeting.excludedCustomAudiences.length > 0) && <><br />Retained targeting needs review. <button type="button" onClick={() => settings({ targeting: { languages: [], interestGroups: [], excludedCustomAudiences: [] } })}>Remove unsupported targeting</button></>}
         </p> : <>

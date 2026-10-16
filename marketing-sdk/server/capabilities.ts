@@ -45,8 +45,9 @@ export function metaTargeting(c: Campaign, s: MetaSettings) {
   const platforms = [...new Set(placements.map(p => p.platform))];
   return {
     geo_locations: { countries: a.locations, ...(t.locationTypes ? { location_types: t.locationTypes } : {}) }, age_min: a.ageMin, age_max: a.ageMax,
-    publisher_platforms: platforms,
-    ...Object.fromEntries(platforms.map(platform => [`${platform}_positions`, placements.filter(p => p.platform === platform).map(p => p.position)])),
+    ...(s.placementMode === "provider_defaults" ? {} : {publisher_platforms: platforms,
+      ...Object.fromEntries(platforms.map(platform => [`${platform}_positions`, placements.filter(p => p.platform === platform).map(p => p.position)]))}),
+    ...(t.userAgeUnknown !== undefined ? {user_age_unknown:t.userAgeUnknown} : {}),
     ...(t.languages.length ? { locales: t.languages.map(x => Number(x.id)) } : {}),
     ...(t.interestGroups.length ? { flexible_spec: t.interestGroups.map(group => ({ interests: group.map(x => ({ id: x.id, name: x.label })) })) } : {}),
     ...(t.excludedCustomAudiences.length ? { excluded_custom_audiences: t.excludedCustomAudiences.map(x => ({ id: x.id, name: x.label })) } : {}),

@@ -170,11 +170,20 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
       ...(t.geo_locations?.location_types ? {locationTypes:structuredClone(t.geo_locations.location_types)}:{}),
+      ...(Object.hasOwn(t,'user_age_unknown') ? {userAgeUnknown:t.user_age_unknown}:{}),
       ...(lead?{expansion:{detailedTargeting:bits.detailed_targeting,lookalike:bits.lookalike}}:{})},
     creative:{...(link.description!==undefined?{description:link.description}:{}),...(creative.url_tags!==undefined?{urlTags:creative.url_tags}:{}),
       ...(features?{features:Object.fromEntries(Object.entries(features).map(([k,v]:[string,any])=>[k,v.enroll_status]))}:{})}};
-  requireThat(Array.isArray(t.publisher_platforms),"existing_material_placement_unknown");
-  for(const platform of t.publisher_platforms){
+  // Meta documents omitted placement fields as evolving provider defaults.
+  // Preserve omission, not a fabricated current/effective list. Partial manual
+  // restrictions still require their own exact representation.
+  // https://developers.facebook.com/documentation/ads-commerce/marketing-api/audiences/reference/placement-targeting
+  const placementFields=['publisher_platforms','facebook_positions','instagram_positions','messenger_positions',
+    'audience_network_positions','threads_positions','whatsapp_positions','device_platforms'];
+  const providerDefaults=placementFields.every(field=>!Object.hasOwn(t,field));
+  if(providerDefaults)settings.placementMode='provider_defaults';
+  else requireThat(Array.isArray(t.publisher_platforms)&&t.publisher_platforms.length>0,"existing_material_placement_unknown");
+  for(const platform of providerDefaults?[]:t.publisher_platforms){
     requireThat(["facebook","instagram"].includes(platform),"existing_material_placement_unsupported");
     const positions=t[`${platform}_positions`];
     requireThat(Array.isArray(positions)&&positions.length>0,"existing_material_placement_unknown");
@@ -184,7 +193,10 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
       settings.placements.push(placement.id);
     }
   }
-  if(usesInstagram(settings.placements))settings.identity.instagramUserId=grant.instagramUserId;
+  if(providerDefaults&&story.instagram_user_id!==undefined){
+    requireThat(story.instagram_user_id===grant.instagramUserId,'existing_material_instagram_identity_mismatch');
+    settings.identity.instagramUserId=story.instagram_user_id;
+  }else if(usesInstagram(settings.placements))settings.identity.instagramUserId=grant.instagramUserId;
   const instant=(value:unknown)=>{requireThat(typeof value==="string"&&/T.*(?:Z|[+-]\d{2}:?\d{2})$/.test(value)&&Number.isFinite(Date.parse(value)),"existing_material_schedule_unknown");return new Date(value as string).toISOString();};
   const material:Material={name:source.name,headline:source.headline,body:source.body,destination:source.destination,destinationDigest:source.destinationDigest,
     assetIds:[source.assetId],purpose:source.purpose,settings,
