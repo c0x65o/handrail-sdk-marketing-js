@@ -316,8 +316,8 @@ without SDK session hashes or credentials. Current authority is rechecked before
 provider effects and final commit. This is a write-authorized continuation, not
 the read-only reconciliation API, and starts no scheduler.
 
-Preparation/update provider ports accept a separate optional `beforeRead` guard
-for permission discovery. MarketingServer checks the current actor, exact grant
+Preparation, update, activation and pause provider ports accept a separate optional
+`beforeRead` guard for permission discovery. MarketingServer checks the current actor, exact grant
 and material, executor ownership and operation lease at each discovery boundary.
 LinkedIn discovery also uses the client's sealed credential transport. The full
 campaign/tracking/budget write proof is still checked after discovery and before

@@ -1598,8 +1598,8 @@ export class MarketingServer {
               beforeRead,
             ); })()
           : o.kind === "activate"
-            ? await provider.activate(c, g, beforeWrite)
-            : await provider.pause(c, g, beforeWrite);
+            ? await provider.activate(c, g, beforeWrite, beforeRead)
+            : await provider.pause(c, g, beforeWrite, beforeRead);
       return await withWriteAuthority(() => this.finish(o, c, g, receipt));
     } catch (error) {
       return this.store.transaction(async () => {

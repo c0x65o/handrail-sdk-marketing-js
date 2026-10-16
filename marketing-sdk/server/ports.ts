@@ -83,11 +83,14 @@ export interface ProviderPort {
     campaign: Campaign,
     grant: Grant,
     beforeWrite: () => void | Promise<void>,
+    /** Current actor/grant/material/lease guard for permission discovery. */
+    beforeRead?: () => void | Promise<void>,
   ): Promise<Receipt>;
   pause(
     campaign: Campaign,
     grant: Grant,
     beforeWrite: () => void | Promise<void>,
+    beforeRead?: () => void | Promise<void>,
   ): Promise<Receipt>;
   reconcile(
     campaign: Campaign,

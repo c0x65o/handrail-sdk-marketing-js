@@ -11,7 +11,7 @@ import { FixtureProvider, FixtureAgent, FixtureGeneration } from "../server/fixt
 import { MarketingServer } from "../server/service.js";
 import { metaExpansionOff, exactLinkedInTargeting } from "../server/capabilities.js";
 import { testStore } from "./datastore.js";
-import { byteDigest, digest } from "../server/store.js";
+import { byteDigest, digest, DomainError } from "../server/store.js";
 
 // Independent expected provider placement documents, not derived from the SDK catalogue.
 const metaPlacementCases: {ids: MetaSettings["placements"]; targeting: Record<string,string[]>}[] = [
@@ -348,6 +348,30 @@ test("LinkedIn OTHER/ApplicantRequestMOU uses its exact association and never jo
     assert.equal(t.state.objects.get("102").objectiveType, "WEBSITE_CONVERSION");
     assert.equal(t.state.objects.get("102").optimizationTargetType, "MAX_CONVERSION");
   } finally { await t.close(); }
+});
+
+test("LinkedIn delivery guards discovery reads separately and rechecks writes after discovery", async () => {
+  const t = await native("linkedin");
+  try {
+    eligible(t.c,t.g);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],"delivery-guards",()=>{},()=>{});
+    const campaign={...t.c,receipt};
+    let reads=0,writes=0;
+    const before=t.state.writes;
+    await assert.rejects(t.port.activate(campaign,t.g,()=>{},()=>{throw new DomainError("read_authority_revoked",403);}),/read_authority_revoked/);
+    assert.equal(t.state.writes,before);
+    await assert.rejects(t.port.activate(campaign,t.g,()=>{if(reads)throw new DomainError("write_authority_revoked_after_discovery",403);},()=>{reads++;}),/write_authority_revoked_after_discovery/);
+    assert.ok(reads>0);assert.equal(t.state.writes,before);
+    reads=0;
+    const active=await t.port.activate(campaign,t.g,()=>{writes++;},()=>{reads++;});
+    assert.equal(t.state.writes-before,2);assert.equal(active.intent,"enabled");
+    assert.ok(reads>writes,"permission discovery must not consume the full spending proof for every page");
+    assert.ok(writes>=2&&writes<=4,"each external effect retains a full write check without recursive discovery checks");
+    reads=0;writes=0;
+    const stopped=await t.port.pause({...campaign,receipt:active},t.g,()=>{writes++;},()=>{reads++;});
+    assert.equal(stopped.intent,"paused");assert.equal(t.state.writes-before,4);
+    assert.ok(reads>writes);assert.ok(writes>=2&&writes<=4);
+  } finally {await t.close();}
 });
 
 test("review: post-await scope changes stop before native writes and expired eligibility still permits pause", async () => {

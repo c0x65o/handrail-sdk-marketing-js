@@ -1561,6 +1561,7 @@ export class NativeProvider implements ProviderPort {
     g: Grant,
     activate: boolean,
     beforeWrite: () => void | Promise<void>,
+    beforeRead?: () => void | Promise<void>,
   ) {
     requireThat(
       c.receipt?.ids.readbackDigest,
@@ -1579,7 +1580,13 @@ export class NativeProvider implements ProviderPort {
     if (activate) await this.prerequisite(c, g, "activate");
     return await this.use(g, async (client) => {
       if (this.name === "linkedin") client.beforeWrite = async () => {
-        const guard = async () => { await beforeWrite(); };
+        // Discovery reads retain current actor/grant/material/lease authority.
+        // They do not repeatedly consume the launch approval/budget proof;
+        // that full proof is checked after discovery, before the actual write.
+        const guard = async () => {
+          await (beforeRead ?? beforeWrite)();
+          requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
+        };
         const intent = activate ? "activate" : "pause";
         requireThat((await this.linkedInPermissions(client, g, undefined, guard, intent)).includes(intent), "provider_capability_missing");
         await beforeWrite();
@@ -1667,13 +1674,14 @@ export class NativeProvider implements ProviderPort {
     c: Campaign,
     g: Grant,
     beforeWrite: () => void | Promise<void>,
+    beforeRead?: () => void | Promise<void>,
   ) {
     requireThat(this.name !== "linkedin" || c.material.advertisingBudget?.daily, "linkedin_explicit_daily_budget_required");
     if (g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
-    return await this.status(c, g, true, beforeWrite);
+    return await this.status(c, g, true, beforeWrite, beforeRead);
   }
-  async pause(c: Campaign, g: Grant, beforeWrite: () => void | Promise<void>) {
-    return await this.status(c, g, false, beforeWrite);
+  async pause(c: Campaign, g: Grant, beforeWrite: () => void | Promise<void>, beforeRead?: () => void | Promise<void>) {
+    return await this.status(c, g, false, beforeWrite, beforeRead);
   }
   async reconcile(
     c: Campaign,
