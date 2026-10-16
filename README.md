@@ -931,6 +931,32 @@ It performs no provider reads, dispatch or approval, and does not cover read/che
 observations, generation or other operations with their own receipt contracts.
 
 
+### Cancelling an untouched queued launch
+
+The trusted host can call `cancelQueuedActivation(principal, projectId,
+{campaignId, operationId, expectedOperationDigest, requestKey})` under current
+pause authority and exclusive executor custody. It closes only a queued launch
+with no account lease, provider receipt or in-process dispatch. Running and
+unknown operations still require reconciliation or a separately authorized stop.
+The old grant/packet may have expired or been revoked; neither is renewed or used
+as current authority. Changed identities, revisions, material, packet or budget
+claims are rejected.
+
+The immutable `ActivationCancellationReceipt` retains the original operation,
+packet, campaign, grant, actors and reservations, including portfolio storage.
+Only that untouched operation's held reservations are released; its original
+request, actor, approval and history remain readable. This server-only receipt
+includes private grant references: public hosts must project a redacted summary.
+`readActivationCancellation` reads by operation and
+`readActivationCancellationRequest` reads an exact request before retrying a
+partial host workflow. Local cancellation is **not** a provider pause or delivery
+observation. Hosts should finish their usual provider pause and verify it.
+
+A later launch uses the normal fresh grant, packet, approval, prerequisite and
+budget checks with a new request key. Repeating the original launch key observes
+its cancelled operation and cannot dispatch it again. Cancellation is not exposed
+as a public command or a new execution worker.
+
 ### Current native invocation grants
 
 A trusted host may retain a campaign-scoped grant with `expiresAt: null` and

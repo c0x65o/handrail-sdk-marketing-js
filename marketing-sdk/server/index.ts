@@ -62,3 +62,4 @@ export {advertisingBudgetPeriod, recurringExposureBound, type RecurringBudgetExp
 export * from './budget-observation.js';
 
 export type {ActivationStopIntent,ActivationStopReceipt} from './activation-stops.js';
+export type {ActivationCancellationReceipt} from './activation-cancellation.js';

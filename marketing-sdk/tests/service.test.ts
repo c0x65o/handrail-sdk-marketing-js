@@ -33,6 +33,115 @@ import { agentTools } from "../agent/index.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 const time = Date.now();
+test('current pause cancels only an untouched launch and preserves expired authority, portfolio holds and replay history',async()=>{
+  const t=await setupTest();try{
+    const {c,p,observation,input}=await budgeted(t);
+    await t.service.advertisingBudgets.configure({...p,id:'portfolio',projectId:'qa-beta',projectIds:['qa-alpha','qa-beta'],scope:'portfolio'});
+    await t.service.advertisingBudgets.observe('qa-beta',{...observation,policyId:'portfolio'});
+    const original={...t.admin,externalSessionRef:'ended-launch'},current={...t.admin,externalSessionRef:'current-stop'};
+    const launch=await t.service.execute(original,c.projectId,input);
+    const saved=await t.store.get<Campaign>(c.projectId,'campaign',c.id),grant=await t.store.get<Grant>(c.projectId,'grant',c.grantId);
+    const expired={...grant,expiresAt:new Date(time-1).toISOString(),revokedAt:new Date(time).toISOString()};
+    await t.store.put(c.projectId,'grant',grant.id,expired);
+    const check=async(p:import('../server/store.js').Principal)=>assert.equal(p.externalSessionRef,current.externalSessionRef,'current stop required');
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      executionAuthority:{assertCurrent:check,withCurrent:async(p,_c,_a,local)=>{await check(p);return local();}},
+    });
+    const cancel={campaignId:c.id,operationId:launch.id,expectedOperationDigest:digest(launch),requestKey:'cancel-original'};
+    await assert.rejects(t.service.cancelQueuedActivation(current,c.projectId,cancel),/host_execution_authority_required/);
+    await assert.rejects(service.cancelQueuedActivation(original,c.projectId,cancel),/current stop required/);
+    const receipt=await service.cancelQueuedActivation(current,c.projectId,cancel);
+    assert.deepEqual(receipt.operation,launch);assert.deepEqual(receipt.grant,expired);assert.deepEqual(receipt.campaign,saved);
+    assert.equal(receipt.outcome,'not_dispatched');assert.equal(receipt.reservations.length,2);
+    assert.ok(receipt.reservations.every(r=>r.reservation.state==='held'));
+    assert.deepEqual(receipt.reservations.map(r=>r.storageProjectId).sort(),['qa-alpha','qa-beta']);
+    assert.equal(receipt.originalActor.hostSessionRef,original.externalSessionRef);assert.equal(receipt.actor.hostSessionRef,current.externalSessionRef);
+    assert.deepEqual(await t.store.get(c.projectId,'executionActor',launch.id),original);
+    assert.doesNotMatch(JSON.stringify(receipt),/sessionTokenHash/);
+    for(const project of ['qa-alpha','qa-beta'])assert.ok((await t.store.list<AdvertisingBudgetReservation>(project,'advertisingBudgetReservation')).every(r=>r.state==='released'));
+    assert.deepEqual(await service.cancelQueuedActivation(current,c.projectId,cancel),receipt);
+    assert.deepEqual(await service.readActivationCancellation(current,c.projectId,c.id,launch.id),receipt);
+    assert.deepEqual(await service.readActivationCancellationRequest(current,c.projectId,c.id,cancel.requestKey),receipt);
+    assert.equal(await service.readActivationCancellationRequest(current,c.projectId,c.id,'missing-cancellation'),null);
+    await assert.rejects(service.readActivationCancellationRequest(current,c.projectId,'another-campaign',cancel.requestKey),/not_found/);
+    await assert.rejects(service.readActivationCancellationRequest(current,c.projectId,c.id,input.requestKey),/request_key_payload_conflict/);
+    await assert.rejects(service.cancelQueuedActivation(current,c.projectId,{...cancel,operationId:'other'}),/request_key_payload_conflict/);
+    assert.equal((await t.service.dispatch(c.projectId,launch.id)).state,'blocked');
+    assert.deepEqual(await t.store.get(c.projectId,'campaign',c.id),saved);
+    assert.equal((await t.service.execute(t.admin,c.projectId,input)).cancelledByReceiptId,receipt.id);
+    // A new launch must get a fresh packet and approval after grant renewal.
+    await t.store.put(c.projectId,'grant',grant.id,{...grant,revision:grant.revision+1});
+    await assert.rejects(t.service.execute(t.admin,c.projectId,{...input,requestKey:'new-launch'}),/grant_changed/);
+    const packet=await t.service.packet(t.admin,c.projectId,{campaignId:c.id});
+    const next={packetId:packet.id,digest:packet.digest,requestKey:'new-launch'};
+    await assert.rejects(t.service.execute(t.admin,c.projectId,next),/human_authorization_required/);
+    await t.service.decide(t.admin,c.projectId,{...next,decision:'approved'});
+    const replacement=await t.service.execute(t.admin,c.projectId,next);
+    assert.equal((await t.service.dispatch(c.projectId,replacement.id)).state,'succeeded');
+    assert.deepEqual(await service.readActivationCancellation(current,c.projectId,c.id,launch.id),receipt);
+    for(const project of ['qa-alpha','qa-beta'])assert.ok((await t.store.list<AdvertisingBudgetReservation>(project,'advertisingBudgetReservation')).every(r=>r.operationId===replacement.id&&r.state==='active'));
+  }finally{await t.close();}
+});
+
+test('queued cancellation rejects changed scope, material, packet, claims and budgets; revoked current custody rolls back',async()=>{
+  const t=await setupTest();try{
+    const {c,input}=await budgeted(t),launch=await t.service.execute(t.admin,c.projectId,input);
+    const saved=await t.store.get<Campaign>(c.projectId,'campaign',c.id),grant=await t.store.get<Grant>(c.projectId,'grant',c.grantId);
+    let revokeAfter=false;
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>t.store.transaction(async()=>{const result=await local();if(revokeAfter)throw Error('current stop revoked');return result;})},
+    });
+    const cancel={campaignId:c.id,operationId:launch.id,expectedOperationDigest:digest(launch),requestKey:'cancel-original'};
+    for(const state of ['running','unknown','blocked','stopped','succeeded'] as const){
+      const changed={...launch,state};await t.store.put(c.projectId,'operation',launch.id,changed);
+      await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,{...cancel,expectedOperationDigest:digest(changed)}),/activation_not_queued/);
+    }
+    await t.store.put(c.projectId,'operation',launch.id,launch);
+    await t.store.put(c.projectId,'grant',grant.id,{...grant,revision:grant.revision+1});
+    await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,cancel),/queued_activation_changed/);
+    await t.store.put(c.projectId,'grant',grant.id,grant);
+    await t.store.put(c.projectId,'campaign',c.id,{...saved,material:{...saved.material,headline:'changed'}});
+    await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,cancel),/queued_activation_changed/);
+    await t.store.put(c.projectId,'campaign',c.id,saved);
+    const packet=await t.store.get<import('../core/index.js').Packet>(c.projectId,'packet',launch.packetId!);
+    await t.store.put(c.projectId,'packet',packet.id,{...packet,digest:'changed'});
+    await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,cancel),/packet_corrupt/);
+    await t.store.put(c.projectId,'packet',packet.id,packet);
+    await t.store.db.prepare('INSERT INTO leases VALUES(?,?,?)').run(c.projectId,grant.accountId,'foreign-effect');
+    await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,cancel),/account_execution_pending/);
+    await t.store.db.prepare('DELETE FROM leases WHERE project_id=?').run(c.projectId);
+    const held=(await t.store.list<AdvertisingBudgetReservation>(c.projectId,'advertisingBudgetReservation'))[0]!;
+    await t.store.put(c.projectId,'advertisingBudgetReservation',held.id,{...held,state:'active'});
+    await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,cancel),/queued_activation_budget_changed/);
+    await t.store.put(c.projectId,'advertisingBudgetReservation',held.id,held);
+    revokeAfter=true;await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,cancel),/current stop revoked/);
+    assert.deepEqual(await t.store.get(c.projectId,'operation',launch.id),launch);
+    assert.deepEqual(await t.store.get(c.projectId,'advertisingBudgetReservation',held.id),held);
+    assert.deepEqual(await t.store.list(c.projectId,'activationCancellation'),[]);
+    revokeAfter=false;assert.equal((await service.cancelQueuedActivation(t.admin,c.projectId,cancel)).outcome,'not_dispatched');
+  }finally{await t.close();}
+});
+
+test('queued activation in asynchronous preflight cannot be cancelled by a concurrent current stop',async()=>{
+  const t=await setupTest();let release!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  try{
+    const {c,input}=await budgeted(t),launch=await t.service.execute(t.admin,c.projectId,input);
+    let entered!:()=>void;const started=new Promise<void>(resolve=>{entered=resolve;});
+    const verify=t.provider.verify.bind(t.provider);
+    t.provider.verify=async(...args)=>{entered();await gate;return verify(...args);};
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local()},
+    });
+    const running=t.service.dispatch(c.projectId,launch.id);await started;
+    assert.equal((await t.store.get<Operation>(c.projectId,'operation',launch.id)).state,'queued');
+    await assert.rejects(service.cancelQueuedActivation(t.admin,c.projectId,{campaignId:c.id,operationId:launch.id,
+      expectedOperationDigest:digest(launch),requestKey:'cancel-in-flight'}),/execution_still_running/);
+    release();assert.equal((await running).state,'succeeded');
+    assert.deepEqual(await t.store.list(c.projectId,'activationCancellation'),[]);
+  }finally{release();await t.close();}
+});
+
 test("queued preparation continues under a new invocation while preserving original request, actor and effect identity", async () => {
   const t = await setupTest();
   try {

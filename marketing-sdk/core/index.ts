@@ -217,6 +217,8 @@ export interface Operation {
   precedingStopIds?: string[];
   /** Verified later stop; the original launch outcome remains unknown. */
   stoppedByOperationId?: string;
+  /** Local cancellation before provider dispatch; not a provider pause receipt. */
+  cancelledByReceiptId?: string;
   reason: string | null;
   receipt: Receipt | null;
   createdAt: string;

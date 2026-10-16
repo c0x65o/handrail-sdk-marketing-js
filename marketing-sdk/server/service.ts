@@ -1,4 +1,5 @@
 import {ActivationStops,type ActivationStopIntent,type ActivationStopReceipt} from './activation-stops.js';
+import {cancelUnclaimedActivation,type ActivationCancellationReceipt} from './activation-cancellation.js';
 import {assertHostActivationApproval} from './activation-approval.js';
 import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
@@ -1375,6 +1376,43 @@ export class MarketingServer {
    * never queued. An uncertain account lease remains fenced until readback. */
   async dispatch(project: string, operationId: string) {
     return this.dispatchOperation(project, operationId);
+  }
+  /** Current host pause authority can close an untouched queued launch, even
+   * after its launch invocation expires. A later launch uses a new packet,
+   * action and request; this method never dispatches or renews the old attempt. */
+  async cancelQueuedActivation(p:Principal,project:string,input:{campaignId:string;operationId:string;expectedOperationDigest:string;requestKey:string}):Promise<ActivationCancellationReceipt>{
+    requireThat(this.options.executionAuthority,'host_execution_authority_required',403);
+    await this.store.db.assertExecutionOwner();
+    const actor=structuredClone(p);
+    return this.executionTransaction(actor,project,input.campaignId,'pause',async()=>{
+      await this.store.db.assertExecutionOwner();
+      return this.request(project,input.requestKey,{...input,actorId:actor.userId},'activationCancellation',async()=>{
+        requireThat(!activeExecutions.get(this.store)?.has(executionKey(project,input.operationId)),'execution_still_running');
+        const operation=await this.store.get<Operation>(project,'operation',input.operationId);
+        requireThat(digest(operation)===input.expectedOperationDigest,'queued_activation_changed');
+        const campaign=await this.store.get<Campaign>(project,'campaign',input.campaignId);
+        return cancelUnclaimedActivation(this.store,campaign,operation,actor,input.requestKey,this.now());
+      });
+    });
+  }
+  async readActivationCancellation(p:Principal,project:string,campaignId:string,operationId:string):Promise<ActivationCancellationReceipt>{
+    return this.executionTransaction(p,project,campaignId,'read',async()=>{
+      const receipt=await this.store.get<ActivationCancellationReceipt>(project,'activationCancellation',operationId);
+      requireThat(receipt.projectId===project&&receipt.campaignId===campaignId,'activation_operation_scope_mismatch');
+      return receipt;
+    });
+  }
+  async readActivationCancellationRequest(p:Principal,project:string,campaignId:string,requestKey:string):Promise<ActivationCancellationReceipt|null>{
+    text(requestKey,160);
+    return this.executionTransaction(p,project,campaignId,'read',async()=>{
+      const row=await this.store.db.prepare('SELECT kind,record_id FROM requests WHERE project_id=? AND request_key=?').get(project,requestKey);
+      if(!row)return null;
+      requireThat(row.kind==='activationCancellation','request_key_payload_conflict');
+      const receipt=await this.store.get<ActivationCancellationReceipt>(project,'activationCancellation',String(row.record_id));
+      requireThat(receipt.projectId===project&&receipt.campaignId===campaignId&&receipt.actor.userId===p.userId&&receipt.requestKey===requestKey,
+        'request_key_payload_conflict');
+      return receipt;
+    });
   }
   /** A new, explicitly authorized host invocation may dispatch an original
    * preparation that never claimed provider effects. This is not reconciliation
