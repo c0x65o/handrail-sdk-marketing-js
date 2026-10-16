@@ -1,4 +1,10 @@
 import crypto from "node:crypto";
+import {recordMarketingCredentials} from "./evidence-credentials.js";
+import {safeMarketingEvidence} from "./evidence-projection.js";
+export const META_AD_FIELDS = "id,name,status,effective_status,campaign_id,adset_id,creative,updated_time";
+export const META_INSIGHT_FIELDS = "account_id,account_name,campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,date_start,date_stop,spend,reach,impressions,frequency,cpm,clicks,inline_link_clicks,outbound_clicks,actions,cost_per_action_type";
+
+
 
 const DEFAULT_VERSION = "v26.0";
 const GRAPH_ROOT = "https://graph.facebook.com";
@@ -13,26 +19,51 @@ export function redactProviderMessage(message, secrets = []) {
 }
 
 export class MetaMarketingError extends Error {
-  constructor(message, { code = "provider_error", status = 502, providerCode = null, httpStatus = null, providerSubcode = null, retryAfterMs = null, retryable = false } = {}) {
+  constructor(message, { code = "provider_error", status = 502, httpStatus = null, providerCode = null, providerSubcode = null, providerType = null, retryable = false, retryAfterMs = null } = {}) {
     super(redactProviderMessage(message));
     this.name = "MetaMarketingError";
     this.code = code;
     this.statusCode = status;
-    this.providerCode = providerCode;
     this.httpStatus = Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null;
+    this.providerCode = Number.isSafeInteger(providerCode) && providerCode >= 0 ? providerCode : null;
     this.providerSubcode = Number.isSafeInteger(providerSubcode) && providerSubcode >= 0 ? providerSubcode : null;
-    this.retryAfterMs = Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0 ? retryAfterMs : null;
+    this.providerType = typeof providerType === "string" && /^[A-Za-z][A-Za-z0-9_]{0,99}$/.test(providerType) ? providerType : null;
     this.retryable = retryable;
+    this.retryAfterMs = Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0 ? retryAfterMs : null;
   }
 }
 
 function classifyError(status, payload, method) {
   const providerCode = payload?.error?.code ?? null;
-  if (status === 429 || providerCode === 4 || providerCode === 17 || providerCode === 32 || method === 'GET' && providerCode === 80004) return { code: "rate_limited", status: 429, retryable: true, providerCode };
-  if (status === 401 || status === 403 || providerCode === 10 || providerCode === 190 || providerCode === 200) return { code: "permission_error", status: 403, providerCode };
-  if (providerCode === 100) return { code: "provider_error", status: 422, retryable: false, providerCode };
-  if (status >= 500) return { code: "provider_unavailable", status: 503, retryable: true, providerCode };
-  return { code: "provider_error", status: 502, providerCode };
+  const evidence = {httpStatus: status, providerCode, providerSubcode: payload?.error?.error_subcode, providerType: payload?.error?.type};
+  // Reporting admission only: retain existing write rejection/uncertain-effect
+  // semantics for 80004. Recognizing a read throttle never retries a write.
+  if (status === 429 || providerCode === 4 || providerCode === 17 || providerCode === 32 || method === 'GET' && providerCode === 80004) return { code: "rate_limited", status: 429, retryable: true, ...evidence };
+  if (status === 401 || status === 403 || providerCode === 10 || providerCode === 190 || providerCode === 200) return { code: "permission_error", status: 403, ...evidence };
+  if (providerCode === 100) return { code: "provider_error", status: 422, retryable: false, ...evidence };
+  if (status >= 500) return { code: "provider_unavailable", status: 503, retryable: true, ...evidence };
+  return { code: "provider_error", status: 502, ...evidence };
+}
+
+// Optional bounded collection reads consume decoded bytes while streaming, before
+// JSON parsing. Existing calls retain their response behavior and cost.
+async function boundedJson(response,maxBytes,budget) {
+  const limit=Math.min(maxBytes,budget.remaining);
+  const tooLarge=()=>new MetaMarketingError("Meta response exceeded the read byte limit",{code:"provider_response_limit"});
+  if(!response.body?.getReader)throw new MetaMarketingError("Meta response stream unavailable",{code:"provider_response_invalid"});
+  const reader=response.body.getReader(),chunks=[];
+  let bytes=0;
+  try {
+    while(true) {
+      const {done,value}=await reader.read();
+      if(done)break;
+      bytes+=value.byteLength;budget.received+=value.byteLength;budget.remaining=Math.max(0,budget.remaining-value.byteLength);
+      if(bytes>limit)throw tooLarge();
+      chunks.push(Buffer.from(value));
+    }
+    try {return JSON.parse(Buffer.concat(chunks).toString('utf8'));}
+    catch {throw new MetaMarketingError("Meta response was not JSON",{code:"provider_response_invalid"});}
+  } finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 
 export function accountPath(accountId) {
@@ -58,14 +89,24 @@ export class MetaMarketingClient {
     this.timeoutMs = timeoutMs;
   }
 
-  async request(path, { method = "GET", params = {}, body = null, form = null } = {}) {
+  /** @param {string} path @param {{method?: string, params?: Record<string, any>, body?: any, form?: any, maxResponseBytes?: number | null, responseBudget?: {remaining: number, received: number} | null}} options */
+  async request(path, { method = "GET", params = {}, body = null, form = null, maxResponseBytes = null, responseBudget = null } = {}) {
+    if (maxResponseBytes !== null) {
+      if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0)
+        throw new MetaMarketingError("A positive response byte limit is required", {code:"invalid_configuration",status:400});
+      responseBudget ??= {remaining:maxResponseBytes,received:0};
+      if (!Number.isSafeInteger(responseBudget.remaining) || responseBudget.remaining < 0 || !Number.isSafeInteger(responseBudget.received) || responseBudget.received < 0)
+        throw new MetaMarketingError("A valid response budget is required", {code:"invalid_configuration",status:400});
+    }
     const url = new URL(`${this.graphRoot}/${this.apiVersion}/${String(path).replace(/^\//, "")}`);
     const values = { ...params };
     if (this.appSecret) values.appsecret_proof = crypto.createHmac("sha256", this.appSecret).update(this.accessToken).digest("hex");
+    const secrets = [this.accessToken, this.appSecret, values.appsecret_proof].filter(Boolean);
+    recordMarketingCredentials(this, ...secrets);
     Object.entries(values).forEach(([key, value]) => value != null && url.searchParams.set(key, typeof value === "object" ? JSON.stringify(value) : String(value)));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response;
+    let response,payload;
     try {
       response = await this.fetchImpl(url, {
         method,
@@ -74,17 +115,28 @@ export class MetaMarketingClient {
         headers: { authorization: `Bearer ${this.accessToken}`, ...(body ? { "content-type": "application/json" } : {}) },
         body: form || (body ? JSON.stringify(body) : undefined),
       });
+      if(maxResponseBytes!==null) {
+        try {payload=await boundedJson(response,maxResponseBytes,responseBudget);}
+        catch(error) {
+          // An HTTP rejection still feeds the shared cooldown/permission guard
+          // when its body cannot be read safely. Never retain that raw body.
+          if(!response.ok)payload={};else throw error;
+        }
+      }
     } catch (error) {
+      if(maxResponseBytes!==null&&error instanceof MetaMarketingError)throw error;
       throw new MetaMarketingError(error?.name === "AbortError" ? "Meta request timed out" : "Meta is unavailable", { code: "provider_unavailable", status: 503, retryable: true });
     } finally { clearTimeout(timer); }
-    const payload = await response.json().catch(() => ({}));
+    if(maxResponseBytes===null)payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.error) {
-      const info = {...classifyError(response.status, payload, method), httpStatus:response.status, providerSubcode:payload?.error?.error_subcode};
-      if(info.code==='rate_limited' && method==='GET'){
-        const after=response.headers?.get?.('retry-after');
-        if(after)info.retryAfterMs=/^\d+$/.test(after)?Number(after)*1000:Math.max(0,Date.parse(after)-Date.now());
+      const info = classifyError(response.status, payload, method);
+      if (info.code === 'rate_limited' && method === 'GET') {
+        const retryAfter = response.headers?.get?.('retry-after');
+        if (retryAfter) info.retryAfterMs = /^\d+$/.test(retryAfter)
+          ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now());
       }
-      const message = redactProviderMessage(payload?.error?.error_user_msg || payload?.error?.message || "Meta request failed", [this.accessToken, this.appSecret]);
+      info.providerType = safeMarketingEvidence(info.providerType, {lifecycle_credentials: secrets});
+      const message = safeMarketingEvidence(redactProviderMessage(payload?.error?.error_user_msg || payload?.error?.message || "Meta request failed", secrets), {lifecycle_credentials: secrets});
       throw new MetaMarketingError(message, info);
     }
     return payload;
@@ -101,6 +153,7 @@ export class MetaMarketingClient {
     url.search = new URLSearchParams({ type: "adgeolocation", location_types: '["country"]', q: query,
       limit: "50", locale: "en_US", ...(after ? { after } : {}) }).toString();
     if (this.appSecret) url.searchParams.set("appsecret_proof", crypto.createHmac("sha256", this.appSecret).update(this.accessToken).digest("hex"));
+    recordMarketingCredentials(this, this.accessToken, this.appSecret, url.searchParams.get("appsecret_proof"));
     const controller = new AbortController();
     let timer;
     const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
@@ -245,7 +298,7 @@ export class MetaMarketingClient {
     const contract = {
       adset: {
         edge: "adsets",
-        fields: "id,name,status,effective_status,campaign_id,billing_event,optimization_goal,destination_type,promoted_object,targeting,attribution_spec,daily_budget,bid_strategy,updated_time",
+        fields: "id,name,status,effective_status,campaign_id,billing_event,optimization_goal,targeting_optimization_types,destination_type,promoted_object,targeting,attribution_spec,daily_budget,bid_strategy,updated_time",
       },
       creative: {
         edge: "adcreatives",
@@ -266,11 +319,17 @@ export class MetaMarketingClient {
     return this.request("search", { params: { type, q, limit: 100 } });
   }
 
-  listCustomAudiences(adAccountId) {
+  readAudienceAccount(adAccountId) {
+    return this.request(accountPath(adAccountId), { params: { fields: "id,account_status,disable_reason,currency" } });
+  }
+
+  /** @param {string} adAccountId @param {{eligibilityMetadata?:boolean,assertCurrent?:()=>void|Promise<void>}} options */
+  listCustomAudiences(adAccountId, { eligibilityMetadata = false, assertCurrent } = {}) {
     return this.readAllPages(`${accountPath(adAccountId)}/customaudiences`, {
-      fields: "id,name,subtype,operation_status,delivery_status",
+      fields: "id,name,subtype,operation_status,delivery_status" + (eligibilityMetadata
+        ? ",data_source{type,sub_type},customer_file_source,pixel_id,external_event_source{id}" : ""),
       limit: 100,
-    });
+    }, assertCurrent);
   }
 
   listImages(adAccountId) {
@@ -346,6 +405,31 @@ export class MetaMarketingClient {
       throw error;
     }
     return { id: objectId, dailyBudgetCents: dailyBudget, configuredStatus: verified.status || null, effectiveStatus: verified.effective_status || null, verified };
+  }
+
+  async attachCreativeToAd(adId, creativeId) {
+    if (!/^\d+$/.test(String(adId)) || !/^\d+$/.test(String(creativeId))) {
+      throw new MetaMarketingError("Numeric Meta ad and creative IDs are required", { code: "invalid_configuration", status: 400 });
+    }
+    try {
+      await this.request(adId, { method: "POST", params: { creative: { creative_id: creativeId } } });
+    } catch (error) {
+      error.providerOutcome = error?.retryable ? "unknown" : "rejected";
+      throw error;
+    }
+    try {
+      const verified = await this.getObject(adId, "id,name,status,effective_status,campaign_id,adset_id,creative,updated_time");
+      const attachedId = typeof verified.creative === "string" ? verified.creative : verified.creative?.id;
+      if (String(verified.id) === String(adId) && String(attachedId) === String(creativeId)) return verified;
+    } catch (cause) {
+      const error = new MetaMarketingError("Meta accepted the ad edit, but readback failed", { code: "provider_outcome_unknown" });
+      error.providerOutcome = "unknown";
+      error.cause = cause;
+      throw error;
+    }
+    const error = new MetaMarketingError("Meta has not confirmed the ad's new creative", { code: "provider_outcome_unknown" });
+    error.providerOutcome = "unknown";
+    throw error;
   }
 
   /** @param {string} pixelId @param {{since?: string, until?: string, event?: string}} options */

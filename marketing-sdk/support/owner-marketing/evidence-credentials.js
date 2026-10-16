@@ -17,11 +17,18 @@ export function recordMarketingCredentials(client, ...values) {
     state.secrets.add(value);
   }
 }
+/** Project while the private lifecycle coverage is live, before truncation.
+ * A host can supply its own typed projection; credential storage stays SDK-owned. */
+export function projectMarketingCredentialEvidence(value, redact) {
+  const state = coverage.getStore();
+  if (state?.exceeded) return '[redacted-credential-coverage-limit]';
+  return redact(value, {lifecycle_credentials: [...(state?.secrets || [])]});
+}
 export async function withMarketingCredentialCoverage(client, read, redact) {
   const state = {client, secrets: new Set(), bytes: 0, exceeded: false};
   return coverage.run(state, async () => {
     try {
-      recordMarketingCredentials(client, client.accessToken, client.refreshToken, client.clientId, client.clientSecret);
+      recordMarketingCredentials(client, client.accessToken, client.appSecret, client.refreshToken, client.clientId, client.clientSecret);
       const result = await read();
       if (state.exceeded) throw new Error('Marketing evidence credential coverage limit exceeded');
       return redact(result, {lifecycle_credentials: [...state.secrets]});

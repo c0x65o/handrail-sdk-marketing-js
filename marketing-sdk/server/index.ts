@@ -63,3 +63,7 @@ export * from './budget-observation.js';
 
 export type {ActivationStopIntent,ActivationStopReceipt} from './activation-stops.js';
 export type {ActivationCancellationReceipt} from './activation-cancellation.js';
+
+// Shared provider transport and private lifecycle coverage for native bindings.
+export {MetaMarketingClient,MetaMarketingError,META_AD_FIELDS,META_INSIGHT_FIELDS,redactProviderMessage,metaMarketingSafety} from '../support/owner-marketing/meta-client.js';
+export {recordMarketingCredentials,withMarketingCredentialCoverage,projectMarketingCredentialEvidence} from '../support/owner-marketing/evidence-credentials.js';
