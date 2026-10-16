@@ -33,6 +33,88 @@ import { agentTools } from "../agent/index.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 const time = Date.now();
+test("queued preparation continues under a new invocation while preserving original request, actor and effect identity", async () => {
+  const t = await setupTest();
+  try {
+    await ready(t); const c = await campaign(t);
+    const originalActor = {...t.admin, externalSessionRef: "first-host-action"};
+    const currentActor = {...t.admin, externalSessionRef: "next-host-action"};
+    let activeRef = originalActor.externalSessionRef;
+    const check = async (p: import("../server/store.js").Principal) => {assert.equal(p.externalSessionRef, activeRef, "current invocation required");};
+    const server = new MarketingServer(t.store, t.service.providers, t.generation, t.service.agent, "fixture", () => time, undefined, {
+      tracking: formulaTracking(t.store), executionAuthority: {
+        assertCurrent: check, withCurrent: async (p, _c, _a, local) => {await check(p); const result = await local(); await check(p); return result;},
+      },
+    });
+    const queued = await server.prepare(originalActor, c.projectId, {campaignId: c.id, requestKey: "original-queued"});
+    const input = {campaignId: c.id, operationId: queued.id, expectedRevision: queued.campaignRevision, expectedGrantRevision: queued.grantRevision};
+    activeRef = currentActor.externalSessionRef;
+    let writes = 0; const prepare = t.provider.prepare.bind(t.provider);
+    t.provider.prepare = async (...args) => {writes++; return prepare(...args);};
+    await assert.rejects(server.continuePreparation(originalActor, c.projectId, input), /current invocation required/);
+    await assert.rejects(t.service.continuePreparation(currentActor, c.projectId, input), /host_execution_authority_required/);
+    for (const patch of [{expectedRevision: input.expectedRevision + 1}, {expectedGrantRevision: input.expectedGrantRevision + 1}])
+      await assert.rejects(server.continuePreparation(currentActor, c.projectId, {...input,...patch}), /revision_conflict/);
+    for (const state of ["running", "unknown", "blocked", "succeeded"] as const) {
+      await t.store.put(c.projectId, "operation", queued.id, {...queued,state});
+      await assert.rejects(server.continuePreparation(currentActor, c.projectId, input), /preparation_not_queued/);
+    }
+    await t.store.put(c.projectId, "operation", queued.id, queued);
+    const grant = await t.store.get<Grant>(c.projectId, "grant", c.grantId);
+    await t.store.put(c.projectId, "grant", grant.id, {...grant, revision: grant.revision + 1});
+    await assert.rejects(server.continuePreparation(currentActor, c.projectId, input), /queued_preparation_changed/);
+    await t.store.put(c.projectId, "grant", grant.id, grant);
+    await t.store.put(c.projectId, "campaign", c.id, {...c, material: {...c.material, headline: "Unapproved change"}});
+    await assert.rejects(server.continuePreparation(currentActor, c.projectId, input), /payload_changed|capability/);
+    await t.store.put(c.projectId, "campaign", c.id, c);
+    await t.store.db.prepare("INSERT INTO leases VALUES(?,?,?)").run(c.projectId, grant.accountId, "unsettled-other-effect");
+    await assert.rejects(server.continuePreparation(currentActor, c.projectId, input), /account_execution_pending/);
+    await t.store.db.prepare("DELETE FROM leases WHERE project_id=? AND account_id=?").run(c.projectId, grant.accountId);
+    assert.deepEqual(await t.store.get(c.projectId, "operation", queued.id), queued);
+    assert.equal(writes, 0);
+    const result = await server.continuePreparation(currentActor, c.projectId, input);
+    assert.equal(result.state, "succeeded"); assert.equal(result.id, queued.id); assert.equal(writes, 1);
+    assert.deepEqual(await t.store.get(c.projectId, "executionActor", queued.id), originalActor);
+    assert.equal((await server.readExecutionRequest(currentActor, c.projectId, c.id, "prepare", "original-queued"))!.id, queued.id);
+    assert.equal((await t.store.list(c.projectId, "operation")).length, 1);
+    const events = await t.store.db.prepare("SELECT body FROM outbox WHERE project_id=? AND aggregate_id=? AND type=?").all(c.projectId, queued.id, "execution.preparation_continued");
+    assert.equal(events.length, 1); const event = JSON.parse(String(events[0]!.body));
+    assert.equal(event.originalActor.hostSessionRef, originalActor.externalSessionRef);
+    assert.equal(event.actor.hostSessionRef, currentActor.externalSessionRef);
+    assert.ok(!String(events[0]!.body).includes("sessionTokenHash"));
+    await assert.rejects(server.continuePreparation(currentActor, c.projectId, input), /preparation_not_queued/);
+    assert.equal(writes, 1); assert.deepEqual(await t.store.list(c.projectId, "advertisingBudgetReservation"), []);
+  } finally {await t.close();}
+});
+
+test("queued continuation fences a newly ended invocation and never resets its uncertain claim", async () => {
+  const t = await setupTest();
+  try {
+    await ready(t); const c = await campaign(t);
+    const original = {...t.admin, externalSessionRef: "original-action"}, next = {...t.admin, externalSessionRef: "next-action"};
+    let activeRef = original.externalSessionRef;
+    const check = async (p: import("../server/store.js").Principal) => {assert.equal(p.externalSessionRef, activeRef, "invocation ended");};
+    const server = new MarketingServer(t.store, t.service.providers, t.generation, t.service.agent, "fixture", () => time, undefined, {
+      tracking: formulaTracking(t.store), executionAuthority: {assertCurrent: check,
+        withCurrent: async (p, _c, _a, local) => {await check(p); const result = await local(); await check(p); return result;}},
+    });
+    const queued = await server.prepare(original, c.projectId, {campaignId: c.id, requestKey: "original-queued"});
+    activeRef = next.externalSessionRef;
+    const prepare = t.provider.prepare.bind(t.provider);
+    t.provider.prepare = async (...args) => {await args[5](); activeRef = "ended"; return prepare(...args);};
+    const input = {campaignId: c.id, operationId: queued.id, expectedRevision: queued.campaignRevision, expectedGrantRevision: queued.grantRevision};
+    const result = await server.continuePreparation(next, c.projectId, input);
+    assert.equal(result.state, "unknown"); assert.equal(result.id, queued.id);
+    assert.deepEqual(await t.store.list(c.projectId, "fixtureEffect"), []);
+    assert.deepEqual(await t.store.get(c.projectId, "executionActor", queued.id), original);
+    activeRef = next.externalSessionRef;
+    await assert.rejects(server.continuePreparation(next, c.projectId, input), /preparation_not_queued/);
+    assert.equal((await server.readExecutionRequest(next, c.projectId, c.id, "prepare", "original-queued"))!.state, "unknown");
+    assert.equal((await t.store.list(c.projectId, "operation")).length, 1);
+    assert.deepEqual(await t.store.list(c.projectId, "advertisingBudgetReservation"), []);
+  } finally {await t.close();}
+});
+
 for (const changed of ["none", "host", "grant", "material", "lease"] as const) test(`preparation discovery read guard fences ${changed} without substituting write authority`, async () => {
   const t = await setupTest();
   try {

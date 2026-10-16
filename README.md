@@ -277,6 +277,19 @@ disposable PostgreSQL; live consumer adoption remains separate qualification.
 
 ## Native execution authority
 
+`MarketingServer.continuePreparation(principal, projectId, {campaignId,
+operationId, expectedRevision, expectedGrantRevision})` is an explicit trusted-host
+continuation of an original **queued** preparation. It requires the exclusive
+SDK executor, current host execution authority, unchanged material/grant/plan and
+no competing account lease. The caller supplies fresh current prerequisite and
+credential custody through the same server ports as ordinary preparation. It
+never resets a running, unknown or terminal operation and never creates a new
+operation/request/approval. The original execution actor stays unchanged; an
+atomic dispatch event records the new actor's opaque host reference separately,
+without SDK session hashes or credentials. Current authority is rechecked before
+provider effects and final commit. This is a write-authorized continuation, not
+the read-only reconciliation API, and starts no scheduler.
+
 Preparation/update provider ports accept a separate optional `beforeRead` guard
 for permission discovery. MarketingServer checks the current actor, exact grant
 and material, executor ownership and operation lease at each discovery boundary.

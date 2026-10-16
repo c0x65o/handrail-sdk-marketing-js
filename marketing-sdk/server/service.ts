@@ -1328,9 +1328,43 @@ export class MarketingServer {
    * A process lost during I/O leaves running; recover() changes it to unknown,
    * never queued. An uncertain account lease remains fenced until readback. */
   async dispatch(project: string, operationId: string) {
+    return this.dispatchOperation(project, operationId);
+  }
+  /** A new, explicitly authorized host invocation may dispatch an original
+   * preparation that never claimed provider effects. This is not reconciliation
+   * and never resets running/unknown/terminal operations or grants authority.
+   * The original request/actor are immutable; the dispatch audit records the
+   * current actor separately. The host must supply fresh prerequisite custody. */
+  async continuePreparation(p: Principal, project: string, input: {
+    campaignId: string; operationId: string; expectedRevision: number; expectedGrantRevision: number;
+  }): Promise<Operation> {
+    requireThat(this.options.executionAuthority, "host_execution_authority_required", 403);
+    await this.store.db.assertExecutionOwner();
+    const actor = structuredClone(p);
+    await this.executionTransaction(actor, project, input.campaignId, "prepare", async () => {
+      const operation = await this.store.get<Operation>(project, "operation", input.operationId);
+      requireThat(operation.campaignId === input.campaignId && operation.kind === "prepare", "preparation_operation_scope_mismatch");
+      requireThat(operation.state === "queued" && !operation.receipt, "preparation_not_queued");
+      requireThat(operation.campaignRevision === input.expectedRevision && operation.grantRevision === input.expectedGrantRevision, "revision_conflict");
+      const campaign = await this.store.get<Campaign>(project, "campaign", operation.campaignId);
+      const grant = await this.grant(project, campaign.grantId, "prepare", campaign.id);
+      requireThat(campaign.revision === operation.campaignRevision && grant.revision === operation.grantRevision && grant.accountId === operation.accountId, "queued_preparation_changed");
+      requireThat(digest(this.providers[grant.provider].plan(campaign, grant, await this.assets(campaign, false))) === operation.payloadDigest, "payload_changed");
+      requireThat(!await this.store.db.prepare("SELECT operation_id FROM leases WHERE project_id=? AND account_id=?").get(project, grant.accountId), "account_execution_pending");
+    });
+    return this.dispatchOperation(project, input.operationId, actor);
+  }
+  private async dispatchOperation(project: string, operationId: string, continuationActor?: Principal) {
     await this.store.db.assertExecutionOwner();
     let o = await this.store.get<Operation>(project, "operation", operationId);
     if (o.state !== "queued") return o;
+    if (continuationActor) requireThat(o.kind === "prepare" && !o.receipt, "preparation_not_queued");
+    const originalActor = await this.store.get<Principal>(project, "executionActor", o.id);
+    const currentActor = async () => {
+      const original = await this.store.get<Principal>(project, "executionActor", o.id);
+      requireThat(digest(original) === digest(originalActor), "execution_actor_changed");
+      return continuationActor ?? original;
+    };
     const c = await this.store.get<Campaign>(project, "campaign", o.campaignId);
     // Preserve queued identities, leases and holds when tracking delivery is unqualified.
     requireThat(o.kind === "pause" || !c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
@@ -1341,11 +1375,7 @@ export class MarketingServer {
         g.revision === o.grantRevision && g.accountId === o.accountId,
         "grant_changed",
       );
-      const p = await this.store.get<Principal>(
-        project,
-        "executionActor",
-        o.id,
-      );
+      const p = await currentActor();
       if (o.kind === "activate")
         await this.store.authorize(p, project, ["admin", "editor", "approver"]);
       else await this.auth(p, project, true);
@@ -1405,11 +1435,7 @@ export class MarketingServer {
             current.accountId === o.accountId,
           "grant_changed",
         );
-        const actor = await this.store.get<Principal>(
-          project,
-          "executionActor",
-          o.id,
-        );
+        const actor = await currentActor();
         if (o.kind === "activate")
           await this.store.authorize(actor, project, [
             "admin",
@@ -1443,6 +1469,14 @@ export class MarketingServer {
           state: "running",
         };
         await this.store.put(project, "operation", o.id, o);
+        if (continuationActor) {
+          // Audit opaque host references, never SDK session hashes or tokens.
+          const identity = (value: Principal) => ({userId: value.userId, hostSessionRef: value.externalSessionRef ?? null});
+          await this.store.append(project, o.id, "execution.preparation_continued", {
+            originalActor: identity(originalActor), actor: identity(continuationActor),
+            campaignRevision: o.campaignRevision, grantRevision: o.grantRevision, payloadDigest: o.payloadDigest,
+          });
+        }
         await this.store.append(project, o.id, "execution.dispatched", {
           kind: o.kind,
           payloadDigest: o.payloadDigest,
@@ -1472,7 +1506,7 @@ export class MarketingServer {
 
     const provider = this.providers[g.provider];
     const withWriteAuthority = async <T>(action: () => Promise<T>) => {
-      const actor = await this.store.get<Principal>(project, "executionActor", o.id);
+      const actor = await currentActor();
       const proof = this.requiresCampaignCheck(g, o.kind)
         ? await this.consumeCampaignCheck(actor, c, g) : null;
       const local = () => this.store.transaction(async () => {
@@ -1483,11 +1517,7 @@ export class MarketingServer {
             current.accountId === o.accountId,
           "grant_changed",
         );
-        const actor = await this.store.get<Principal>(
-          project,
-          "executionActor",
-          o.id,
-        );
+        const actor = await currentActor();
         if (o.kind === "activate")
           await this.store.authorize(actor, project, [
             "admin",
@@ -1530,7 +1560,7 @@ export class MarketingServer {
     // The provider must still call beforeWrite after discovery and immediately
     // before each external effect. Credential custody is fenced by its Vault.
     const beforeRead = async () => {
-      const actor = await this.store.get<Principal>(project, "executionActor", o.id);
+      const actor = await currentActor();
       await this.executionTransaction(actor, project, c.id, "read", async () => {
         await this.store.db.assertExecutionOwner();
         const current = await this.grant(project, g.id, o.kind, c.id);
