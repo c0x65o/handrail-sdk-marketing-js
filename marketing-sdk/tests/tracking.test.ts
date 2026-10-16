@@ -594,3 +594,59 @@ test('source-retained admission digest binds the original test snapshot and pres
   const events=await f.store.list<FirstPartyEvent>('p','event');assert.equal(events.length,1);assert.equal(events[0]!.productionMetricsExcluded,true);
  }finally{await f.close();}
 });
+
+
+test('budget tracking carry-forward preserves history, requires host authority and cannot edit configuration',async()=>{
+  const f=await fixture();try{
+    const campaign:Campaign={id:'budget-tracking',projectId:'p',revision:1,grantId:'none',creativeSetId:'set',state:'paused',
+      receipt:{ids:{campaignId:'existing-provider'},payloadDigest:'original',intent:'paused',delivery:'unverified',providerRequestId:null,observedAt:new Date().toISOString(),evidence:'fixture'},
+      material:{name:'Budget fixture',purpose:'acquisition',headline:'Tour',body:'Visit',destination:f.source.source.destinations[0]!.url,destinationDigest:'fixture',assetIds:[],
+        budget:{minor:10000,currency:'USD'},advertisingBudget:{daily:{minor:100,currency:'USD'},lifetime:{minor:10000,currency:'USD'}},audience:{provider:'meta',locations:[],expansion:false},timezone:'UTC',startAt:new Date().toISOString(),endAt:null}};
+    await f.store.put('p','campaign',campaign.id,campaign);await f.store.put('p','campaignVersion',campaign.id+':1',campaign);
+    const owner={kind:'campaign' as const,id:campaign.id};
+    const setup={owner,expectedRevision:1,expectedBindingRevision:0,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry' as const,refundTreatment:null,requestKey:'original'};
+    const binding=await f.service.call(f.p,'p','bindTracking',setup);
+    const testReceipt=await f.service.call(f.p,'p','startTrackingTest',{owner,expectedBindingRevision:1,requestKey:'before-budget'});
+    await f.interact(testReceipt.id,'inquiry','original-qa');
+    const events=await f.store.list('p','event'),tests=await f.store.list('p','trackingTest');
+    const inspect=f.host.host.inspect;f.host.host.inspect=async(...args)=>{const result=await inspect(...args);return result&&args[0].subject==='bob'?{...result,kind:'agent'}:result;};
+    const agentLogin=await f.host.login('bob'),agent=await f.host.principal(agentLogin.token);
+    let authorized=true,revokeAfter=false;
+    const check=async()=>{if(!authorized)throw new Error('budget_authority_revoked');};
+    const base=f.service;
+    const service=new MarketingServer(f.store,base.providers,base.generation,base.agent,'fixture',undefined,undefined,{studio:{sessions:f.host.authority},tracking:f.source.options,
+      executionAuthority:{assertCurrent:check,withCurrent:async(_p,c,a,local)=>{assert.equal(c.id,campaign.id);assert.equal(a,'prepare');await check();const result=await local();if(revokeAfter)throw new Error('budget_authority_revoked');await check();return result;}}});
+    await assert.rejects(service.call(agent,'p','bindTracking',{...setup,expectedBindingRevision:1,requestKey:'agent-edit'}),/forbidden/);
+    const changed=structuredClone(campaign);changed.revision=2;changed.state='draft';changed.material.advertisingBudget!.daily!.minor=110;
+    const input={campaignId:campaign.id,previousRevision:1,expectedRevision:2,expectedBindingRevision:1,requestKey:'budget-only'};
+    await f.store.put('p','campaign',campaign.id,changed);
+    await assert.rejects(base.rebindCampaignBudgetTracking(agent,'p',input),/host_execution_authority_required/);
+    for(const field of ['headline','destination','currency','cap','receipt','grant'] as const){
+      const bad=structuredClone(changed);
+      if(field==='headline')bad.material.headline='Different offer';
+      if(field==='destination')bad.material.destination+='?changed=1';
+      if(field==='currency')bad.material.advertisingBudget!.daily!.currency='EUR';
+      if(field==='cap')bad.material.advertisingBudget!.lifetime!.minor=20000;
+      if(field==='receipt')bad.receipt!.ids.campaignId='different-provider';
+      if(field==='grant')bad.grantId='other-account';
+      await f.store.put('p','campaign',campaign.id,bad);
+      await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_budget/);
+      assert.deepEqual(await f.store.get('p','trackingBinding',binding.id),binding);
+    }
+    await f.store.put('p','campaign',campaign.id,changed);
+    authorized=false;await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/budget_authority_revoked/);authorized=true;
+    revokeAfter=true;await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/budget_authority_revoked/);revokeAfter=false;
+    assert.deepEqual(await f.store.get('p','trackingBinding',binding.id),binding);
+    const access=f.source.options.sources!.inspectAccess;f.source.options.sources!.inspectAccess=async()=>false;
+    await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_source_not_authorized/);f.source.options.sources!.inspectAccess=access;
+    const updated=await service.rebindCampaignBudgetTracking(agent,'p',input);
+    assert.equal(updated.revision,2);assert.equal(updated.ownerRevision,2);assert.equal(updated.materialDigest,digest(changed.material));
+    assert.deepEqual({...updated,revision:binding.revision,ownerRevision:binding.ownerRevision,materialDigest:binding.materialDigest,createdAt:binding.createdAt},binding);
+    assert.deepEqual(await f.store.get('p','trackingBindingHistory',binding.id+':1'),binding);
+    assert.deepEqual(await f.store.list('p','event'),events);assert.deepEqual(await f.store.list('p','trackingTest'),tests);
+    assert.notEqual((await service.call(agent,'p','tracking',{owner})).readiness,'passed');
+    assert.deepEqual(await service.rebindCampaignBudgetTracking(agent,'p',input),updated);
+    await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',{...input,expectedRevision:3}),/invalid_budget_tracking_revision/);
+    authorized=false;await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/budget_authority_revoked/);
+  }finally{await f.close();}
+});

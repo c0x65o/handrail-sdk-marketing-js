@@ -841,3 +841,12 @@ current grant revision. Ordinary SDK connections, reference provisioning, Studio
 promotion and UI readiness do not infer liveness from a saved invocation reference.
 Infinity may be used only as an internal calculation bound by guarded private
 custody; it is never a persisted deadline or a reported token-expiry fact.
+
+
+`MarketingServer.rebindCampaignBudgetTracking` is a host-only carry-forward for an
+existing campaign's daily-budget-only revision. It requires current host execution
+authority for preparation throughout the transaction and current session/source
+access. The previous campaign revision, provider receipt, account/grant identity,
+and all non-budget material must match. It appends a tracking binding revision and
+preserves the original binding, tests and events; it neither copies a passing QA
+result nor grants spending authority. General tracking setup remains human-only.

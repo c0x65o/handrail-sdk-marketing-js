@@ -299,6 +299,53 @@ export class MarketingTracking {
       return result;
     });
   }
+  /** Host-only carry-forward of unchanged configuration after an exact daily
+   * budget edit. This does not expose agent tracking setup or copy QA/coverage.
+   * The host must guard current execution authority through the entire commit. */
+  async rebindCampaignBudget(p: Principal, project: string, input: {
+    campaignId: string; previousRevision: number; expectedRevision: number;
+    expectedBindingRevision: number; requestKey: string;
+  }, withHostBudgetAuthority: <T>(local: () => Promise<T>) => Promise<T>): Promise<TrackingBinding> {
+    keys(input,['campaignId','previousRevision','expectedRevision','expectedBindingRevision','requestKey']);
+    text(input.campaignId,160);text(input.requestKey,160);
+    requireThat(typeof withHostBudgetAuthority==='function','host_execution_authority_required',403);
+    requireThat(Number.isSafeInteger(input.previousRevision)&&input.previousRevision>0&&
+      input.expectedRevision===input.previousRevision+1&&Number.isSafeInteger(input.expectedBindingRevision)&&input.expectedBindingRevision>0,
+      'invalid_budget_tracking_revision',422);
+    const session=await this.inspection(p,project),owner:TrackingOwner={kind:'campaign',id:input.campaignId};
+    const old=await this.store.get<TrackingBinding>(project,'trackingBindingHistory',`${this.ownerKey(owner)}:${input.expectedBindingRevision}`);
+    requireThat(old.owner.kind==='campaign'&&old.owner.id===input.campaignId&&old.ownerRevision===input.previousRevision,
+      'tracking_material_or_binding_changed');
+    return this.guarded(p,session,false,()=>withHostBudgetAuthority(async()=>{
+      await this.store.authorize(p,project,['admin','editor']);
+      return this.once(project,session,'rebindCampaignBudget',input,async()=>{
+        const previous=await this.store.get<Campaign>(project,'campaignVersion',`${input.campaignId}:${input.previousRevision}`);
+        const campaign=await this.store.get<Campaign>(project,'campaign',input.campaignId);
+        requireThat(previous.projectId===project&&campaign.projectId===project&&previous.id===campaign.id&&
+          campaign.revision===input.expectedRevision&&campaign.grantId===previous.grantId&&
+          previous.receipt&&campaign.receipt&&digest(campaign.receipt)===digest(previous.receipt)&&
+          digest(campaign.draftOrigin??null)===digest(previous.draftOrigin??null)&&digest(campaign.adoptionOrigin??null)===digest(previous.adoptionOrigin??null),
+          'tracking_budget_revision_mismatch');
+        const material=structuredClone(campaign.material),before=previous.material.advertisingBudget?.daily;
+        requireThat(before&&material.advertisingBudget?.daily&&before.currency===material.advertisingBudget.daily.currency,
+          'tracking_budget_only_update_required');
+        material.advertisingBudget!.daily!.minor=before!.minor;
+        requireThat(digest(material)===digest(previous.material)&&old.materialDigest===digest(previous.material),
+          'tracking_budget_only_update_required');
+        const current=await this.binding(project,owner),facts=await this.owner(project,owner);
+        requireThat(current?.revision===old.revision&&digest(current)===digest(old)&&
+          facts.material.destination===old.destination&&facts.purpose===old.purpose,'tracking_material_or_binding_changed');
+        const binding:TrackingBinding={...old,revision:old.revision+1,ownerRevision:facts.revision,
+          materialDigest:facts.digest,accountDigest:facts.accountDigest,createdAt:new Date(this.now()).toISOString()};
+        await this.store.put(project,'trackingBinding',binding.id,binding,old.revision);
+        await this.store.put(project,'trackingBindingHistory',`${binding.id}:${binding.revision}`,binding);
+        await this.store.append(project,campaign.id,'tracking.budget_revision_bound',{
+          previousBindingRevision:old.revision,bindingRevision:binding.revision,previousCampaignRevision:previous.revision,
+          campaignRevision:campaign.revision,configurationChanged:false,testsReplayed:false,spendingAuthorityGranted:false});
+        return binding;
+      });
+    }),[old.source]);
+  }
   async call<K extends keyof TrackingCommands>(p: Principal, project: string, command: K, input: TrackingCommands[K]['input']): Promise<TrackingCommands[K]['output']> {
     keys(input,trackingCommandFields[command]); this.ownerKey(input.owner);
     const fn=this[command] as (p:Principal,project:string,input:TrackingCommands[K]['input'])=>Promise<TrackingCommands[K]['output']>;

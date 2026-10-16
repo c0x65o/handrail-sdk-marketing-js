@@ -1322,6 +1322,17 @@ export class MarketingServer {
       );
     });
   }
+  /** Bind unchanged tracking to a daily-budget revision under the same current
+   * execution authority used for its paused provider update. Not an HTTP/agent
+   * setup command; human-only tracking configuration remains unchanged. */
+  async rebindCampaignBudgetTracking(p: Principal, project: string, input: {
+    campaignId: string; previousRevision: number; expectedRevision: number;
+    expectedBindingRevision: number; requestKey: string;
+  }) {
+    requireThat(this.options.executionAuthority, "host_execution_authority_required", 403);
+    return this.tracking.rebindCampaignBudget(p, project, input,
+      local => this.executionTransaction(p, project, input.campaignId, "prepare", local));
+  }
   /** Called by the one host execution owner. Claims are persisted before any I/O.
    * A process lost during I/O leaves running; recover() changes it to unknown,
    * never queued. An uncertain account lease remains fenced until readback. */
