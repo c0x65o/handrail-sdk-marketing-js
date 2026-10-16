@@ -545,6 +545,58 @@ test("Meta client refuses omitted, enabling or malformed sharing input before tr
   assert.equal(calls, 0);
 });
 
+test("Meta campaign-level budgets preserve exact amounts and pause/readback without ad-set sharing", async () => {
+  for (const budget of [{daily_budget:1500},{lifetime_budget:12000}]) {
+    const requests:{method:string;url:URL}[]=[];
+    const client=new MetaMarketingClient({accessToken:'fixture',fetchImpl:async (url,init)=>{
+      requests.push({method:init?.method||'GET',url:new URL(String(url))});
+      return Response.json(init?.method==='POST'?{id:'12345'}:{id:'12345',status:'PAUSED',effective_status:'PAUSED',...budget});
+    }});
+    const input={name:'Existing native budget contract',objective:'OUTCOME_TRAFFIC',status:'PAUSED',...budget};
+    const original=structuredClone(input);
+    const result=await client.createPausedObject('act_123','campaign',input);
+    assert.equal(result.id,'12345');assert.deepEqual(input,original);
+    assert.deepEqual(requests.map(r=>r.method),['POST','GET']);
+    const sent=requests[0]!.url.searchParams;
+    for(const [key,value] of Object.entries(budget))assert.equal(sent.get(key),String(value));
+    assert.equal(sent.get('status'),'PAUSED');assert.equal(sent.has('is_adset_budget_sharing_enabled'),false);
+  }
+  let calls=0;
+  const client=new MetaMarketingClient({accessToken:'fixture',fetchImpl:async()=>{calls++;throw Error('unexpected transport');}});
+  for(const budget of [
+    ...[undefined,null,0,-1,1.2,NaN,Infinity,Number.MAX_SAFE_INTEGER+1,'1500',true,{},[]].map(daily_budget=>({daily_budget})),
+    {daily_budget:1500,lifetime_budget:12000},
+    ...[false,true,null,undefined].map(is_adset_budget_sharing_enabled=>({daily_budget:1500,is_adset_budget_sharing_enabled})),
+  ])await assert.rejects(client.createPausedObject('act_123','campaign',{status:'PAUSED',...budget}),/explicit positive budget/);
+  await assert.rejects(client.createPausedObject('act_123','campaign',{daily_budget:1500,status:'ACTIVE'}),/only creates PAUSED/);
+  assert.equal(calls,0);
+});
+
+test("Meta campaign budget mismatch and unsafe readback preserve original creation identity",async()=>{
+  for(const readback of [{daily_budget:'1400'},{daily_budget:null},{daily_budget:'1500',lifetime_budget:'12000'},
+    {daily_budget:'1500',lifetime_budget:'unknown'},{daily_budget:'1500',status:'ACTIVE',effective_status:'ACTIVE'}]){
+    let posts=0,reads=0;
+    const client=new MetaMarketingClient({accessToken:'fixture',fetchImpl:async(_url,init)=>{
+      if(init?.method==='POST'){posts++;return Response.json({id:'12345'});}
+      reads++;return Response.json({id:'12345',status:'PAUSED',effective_status:'PAUSED',...readback});
+    }});
+    await assert.rejects(client.createPausedObject('act_123','campaign',{daily_budget:1500,status:'PAUSED'}),
+      (error:any)=>error.providerOutcome==='unknown'&&error.providerObjectId==='12345'&&error.code==='verification_failed');
+    assert.equal(posts,1);assert.equal(reads,1);
+  }
+});
+
+test("Meta campaign budget transport retains uncertain creation without retry or amount changes",async()=>{
+  let posts=0,reads=0;
+  const client=new MetaMarketingClient({accessToken:'fixture',fetchImpl:async(_url,init)=>{
+    if(init?.method==='POST'){posts++;return Response.json({id:'12345'});}
+    reads++;return Response.json({error:{code:2,message:'external read unavailable'}},{status:503});
+  }});
+  await assert.rejects(client.createPausedObject('act_123','campaign',{daily_budget:1500,status:'PAUSED'}),
+    (error:any)=>error.providerOutcome==='unknown'&&error.providerObjectId==='12345');
+  assert.equal(posts,1);assert.equal(reads,1);
+});
+
 test("Meta lost campaign-create acknowledgment retains only known IDs; no automatic transport retry or invented recovery", async () => {
   const t = await native("meta");
   try {

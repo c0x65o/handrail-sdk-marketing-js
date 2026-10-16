@@ -321,10 +321,20 @@ is neither a Ready-for-Clinton claim nor overall parity or real-account acceptan
 New explicit Meta plans include literal `is_adset_budget_sharing_enabled: false`
 on the PAUSED campaign and a separate plan/readback version 4. The existing client
 transmits `false` through its query serializer and rejects omitted/non-false
-campaign-create input. No sharing-enabled option is exposed. Both representable
+ad-set-budget campaign-create input. No sharing-enabled option is exposed. Both representable
 ad-set lifetime and daily plans carry the flag; daily preparation/activation and
 native daily-cap accounting remain denied, including with an account receipt.
 The approved amounts, targeting, identity, material and authority fences are unchanged.
+
+The shared low-level Meta client also accepts an explicit campaign-level daily or
+lifetime budget from existing native consumers. Exactly one positive safe-integer
+minor-unit amount is required, with no ad-set-sharing field. It preserves the
+amount, creates only PAUSED objects and reads the selected budget back before
+returning success. Invalid or conflicting budget input never reaches transport.
+Failed budget/status verification retains the created provider identity as an
+unknown outcome; it does not retry creation. This repairs a guard that incorrectly
+applied the ad-set rule to campaign budgets. It does not add campaign-budget
+selection to the SDK material contract or qualify live campaign publication.
 
 Version 4 requests and hashes the campaign sharing field in addition to every v3
 account, media, identity, objective, optimization, expansion, targeting, creative,

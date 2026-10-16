@@ -470,10 +470,22 @@ export class MetaMarketingClient {
     const endpoints = { campaign: "campaigns", adset: "adsets", creative: "adcreatives", ad: "ads" };
     const endpoint = endpoints[type];
     if (!endpoint) throw new MetaMarketingError("Unsupported Meta object type", { code: "invalid_object_type", status: 400 });
-    // New ad-set-budget campaigns must explicitly disable sharing (API v24+).
-    // Do not default omitted/unknown input or offer an enabling option.
-    if (type === "campaign" && input?.is_adset_budget_sharing_enabled !== false)
-      throw new MetaMarketingError("Meta campaign budget sharing must be explicitly false", { code: "invalid_configuration", status: 400 });
+    let campaignBudget = null;
+    if (type === "campaign") {
+      // Campaign-level budgets and ad-set budgets have different payloads.
+      // Preserve explicit amounts; never infer a budget or enable sharing.
+      const budgets = ["daily_budget", "lifetime_budget"].filter(key => Object.hasOwn(input || {}, key));
+      if (budgets.length) {
+        const amount = input[budgets[0]];
+        if (budgets.length !== 1 || !Number.isSafeInteger(amount) || amount <= 0
+          || Object.hasOwn(input, "is_adset_budget_sharing_enabled"))
+          throw new MetaMarketingError("Meta campaign requires one explicit positive budget without ad-set sharing", { code: "invalid_configuration", status: 400 });
+        campaignBudget = budgets[0];
+      } else if (input?.is_adset_budget_sharing_enabled !== false) {
+        // New ad-set-budget campaigns must explicitly disable sharing (API v24+).
+        throw new MetaMarketingError("Meta campaign budget sharing must be explicitly false", { code: "invalid_configuration", status: 400 });
+      }
+    }
     const safe = type === "creative" ? { ...input } : requirePaused(input);
     const created = await this.request(`${accountPath(adAccountId)}/${endpoint}`, { method: "POST", params: safe });
     if (!created?.id) throw new MetaMarketingError("Meta did not return an object ID", { code: "verification_failed", status: 502 });
@@ -481,7 +493,7 @@ export class MetaMarketingClient {
       ? "id,name,object_story_spec,asset_feed_spec,image_hash,url_tags"
       : type === "adset"
         ? "id,name,status,effective_status,campaign_id,targeting,daily_budget,updated_time"
-        : "id,name,status,effective_status";
+        : "id,name,status,effective_status" + (campaignBudget ? ",daily_budget,lifetime_budget" : "");
     let verified;
     try {
       verified = await this.request(created.id, { params: { fields } });
@@ -491,7 +503,14 @@ export class MetaMarketingClient {
       throw error;
     }
     if (type !== "creative" && !["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"].includes(verified.status) && !String(verified.effective_status || "").includes("PAUSED")) {
-      throw new MetaMarketingError("Meta object was not verified as paused", { code: "verification_failed", status: 502 });
+      throw Object.assign(new MetaMarketingError("Meta object was not verified as paused", { code: "verification_failed", status: 502 }),
+        {providerOutcome:"unknown",providerObjectId:created.id});
+    }
+    if (campaignBudget && (Number(verified[campaignBudget]) !== input[campaignBudget]
+      || !Number.isFinite(Number(verified[campaignBudget === "daily_budget" ? "lifetime_budget" : "daily_budget"] ?? 0))
+      || Number(verified[campaignBudget === "daily_budget" ? "lifetime_budget" : "daily_budget"] ?? 0) !== 0)) {
+      throw Object.assign(new MetaMarketingError("Meta campaign budget was not verified", {code:"verification_failed",status:502}),
+        {providerOutcome:"unknown",providerObjectId:created.id});
     }
     return { id: created.id, type, status: type === "creative" ? "CREATED" : "PAUSED", verified };
   }
