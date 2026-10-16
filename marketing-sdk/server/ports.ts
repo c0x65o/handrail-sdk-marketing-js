@@ -37,6 +37,11 @@ export interface ExistingMetaHierarchyInspection {
   scope:'exact_campaign_and_complete_children'; historicalEffectsSettled:false;
   materialVerified:false; executionTransferred:false; spendingAuthorityGranted:false;
 }
+/** The original creative may have been superseded. Its account/identity read is
+ * separate from the currently attached creative and complete paused hierarchy. */
+export interface ExistingMetaReconciledCreativeInspection extends ExistingMetaHierarchyInspection {
+  snapshot:ExistingMetaHierarchyInspection['snapshot'] & {reconciledCreative:{id:string;accountId:string}};
+}
 /** Campaign-local stopped state; the shared group is observed, never claimed or stopped. */
 export interface ExistingLinkedInHierarchyInspection {
   provider:'linkedin'; source:'provider_api';
@@ -79,6 +84,7 @@ export interface ProviderPort {
   ): Promise<ExistingCampaignInspection>;
   inspectExistingMetaImage?(grant:Grant, imageId:string, guard:()=>Promise<void>):Promise<ExistingMetaImageInspection>;
   inspectExistingMetaHierarchy?(grant:Grant, ids:{campaign:string;adset:string;ad:string;creative:string}, guard:()=>Promise<void>):Promise<ExistingMetaHierarchyInspection>;
+  inspectExistingMetaReconciledCreative?(grant:Grant, ids:{campaign:string;adset:string;ad:string;creative:string;reconciledCreative:string}, guard:()=>Promise<void>):Promise<ExistingMetaReconciledCreativeInspection>;
   inspectExistingLinkedInHierarchy?(grant:Grant, ids:{group:string;campaign:string;creative:string}, guard:()=>Promise<void>):Promise<ExistingLinkedInHierarchyInspection>;
   prepare(
     campaign: Campaign,

@@ -1027,3 +1027,13 @@ and every current session reference the same invocation. Persisted prerequisite
 records encode unknown credential expiry as `null`; proof expiration remains
 bounded by the existing two-minute check validity and known material/session
 limits. Neither a saved grant nor an unknown expiry makes an ended action live.
+
+`HistoricalEffectResolutions` also accepts a host-proven
+`mapped_meta_creative_after_creation_reconciliation` candidate. The host retains
+an explicit original creation reconciliation, run/mapping provenance, and the
+original partial status and unknown request coverage. The provider independently
+reads the reconciled creative's exact ID/account and the entire current paused
+campaign hierarchy. A later replacement creative stays distinct in the evidence;
+this does not recreate an ad, rewrite historical effects, transfer execution, or
+grant spending authority. Missing, foreign, inaccessible or active objects prevent
+saving a resolution. Request replay reads the immutable saved receipt.

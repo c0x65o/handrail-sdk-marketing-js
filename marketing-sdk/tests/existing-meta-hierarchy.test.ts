@@ -11,6 +11,7 @@ function fixture(){
   const campaign:any={id:'100',account_id:'123',status:'PAUSED',effective_status:'PAUSED'};
   const adset:any={id:'101',account_id:'123',campaign_id:'100',status:'PAUSED',effective_status:'CAMPAIGN_PAUSED'};
   const ad:any={id:'103',account_id:'123',campaign_id:'100',adset_id:'101',creative:{id:'102'},status:'PAUSED',effective_status:'ADSET_PAUSED'};
+  const historical:any={id:'104',account_id:'123'};
   const pages:Record<string,any[]>={adsets:[{data:[adset]}],ads:[{data:[ad]}]},calls:URL[]=[];
   let afterFetch=()=>{},credentialExpiry=Date.parse(g.expiresAt ?? "");
   const vault:VaultPort={use:async()=>{throw Error('write credential use prohibited');},useReadOnly:async(_g,guard,action)=>{
@@ -19,10 +20,10 @@ function fixture(){
   const provider=new NativeProvider('meta',vault,null as unknown as Store,async(input,init)=>{
     const u=new URL(String(input));calls.push(u);assert.equal(init?.method,'GET');assert.equal(init?.redirect,'error');
     assert.equal(u.searchParams.has('filtering'),false);
-    const body=u.pathname==='/v26.0/act_123'?account:u.pathname==='/v26.0/100'?campaign:pages[u.pathname.split('/').at(-1)!]?.shift();
+    const body=u.pathname==='/v26.0/104'?historical:u.pathname==='/v26.0/act_123'?account:u.pathname==='/v26.0/100'?campaign:pages[u.pathname.split('/').at(-1)!]?.shift();
     assert.ok(body,'unexpected request');afterFetch();return body instanceof Response?body:Response.json(body);
   });
-  return {g,ids,account,campaign,adset,ad,pages,calls,read:(guard=async()=>{})=>provider.inspectExistingMetaHierarchy(g,ids,guard),
+  return {g,ids,account,campaign,adset,ad,pages,calls,historical,reconciled:(guard=async()=>{})=>provider.inspectExistingMetaReconciledCreative(g,{...ids,reconciledCreative:'104'},guard),read:(guard=async()=>{})=>provider.inspectExistingMetaHierarchy(g,ids,guard),
     after:(fn:()=>void)=>{afterFetch=fn;},expire:()=>{credentialExpiry=0;}};
 }
 test('Meta hierarchy proof is complete current state with no historical settlement or material/authority claim',async()=>{
@@ -52,4 +53,18 @@ test('Meta hierarchy rejects expired credentials, grant changes and lost native 
   const f=fixture();f.expire();await assert.rejects(f.read(),{code:'provider_access_expired_or_denied'});assert.equal(f.calls.length,0);
   const g=fixture();g.after(()=>{g.g.accountId='act_999';});await assert.rejects(g.read(),{code:'existing_campaign_scope_changed'});
   const h=fixture();let revoked=false;h.after(()=>{revoked=true;});await assert.rejects(h.read(async()=>{if(revoked)throw Error('native access revoked');}),/native access revoked/);
+});
+
+test('Meta reconciled creative inspection retains superseded identity separately from current paused hierarchy',async()=>{
+  const f=fixture(),e=await f.reconciled();assert.equal(e.snapshot.ads[0]!.creativeId,'102');
+  assert.deepEqual(e.snapshot.reconciledCreative,{id:'104',accountId:'123'});assert.equal(e.digest,digest(e.snapshot));
+  assert.deepEqual(f.calls.map(u=>u.pathname),['/v26.0/act_123','/v26.0/100','/v26.0/100/adsets','/v26.0/100/ads','/v26.0/104']);
+  assert.equal(f.calls.at(-1)!.searchParams.get('fields'),'id,account_id');assert.equal(e.executionTransferred,false);
+});
+for(const mode of ['foreignAccount','wrongIdentity','expired','revoked'])test(`Meta historical creative inspection rejects ${mode}`,async()=>{
+  const f=fixture();if(mode==='foreignAccount')f.historical.account_id='999';if(mode==='wrongIdentity')f.historical.id='999';
+  if(mode==='expired')f.after(()=>{if(f.calls.length===4)f.expire();});
+  let revoked=false;if(mode==='revoked')f.after(()=>{if(f.calls.length===5)revoked=true;});
+  await assert.rejects(f.reconciled(async()=>{if(revoked)throw Error('native access revoked');}));
+  if(mode==='expired')assert.equal(f.calls.length,4);
 });

@@ -421,6 +421,31 @@ export class NativeProvider implements ProviderPort {
         materialVerified:false as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
     }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_campaign_read_unavailable",error);});
   }
+  /** Preserve an explicitly reconciled historical creative independently of the
+   * currently attached creative. This reads one exact account-owned object only. */
+  async inspectExistingMetaReconciledCreative(g:Grant,ids:{campaign:string;adset:string;ad:string;creative:string;reconciledCreative:string},guard:()=>Promise<void>){
+    requireThat(this.name==='meta'&&g.provider==='meta'&&this.vault.useReadOnly&&Object.keys(ids).length===5&&
+      typeof ids.reconciledCreative==='string'&&/^\d+$/.test(ids.reconciledCreative),'existing_campaign_identity_invalid',422);
+    const scope=digest({g,ids});
+    const current=async()=>{await guard();requireThat(digest({g,ids})===scope&&!g.revokedAt&&Date.parse(g.expiresAt??'')>Date.now(),'existing_campaign_scope_changed',403);};
+    const {reconciledCreative,...currentIds}=ids;
+    const hierarchy=await this.inspectExistingMetaHierarchy(g,currentIds,current);
+    const fetcher:typeof fetch=async(input,init)=>{
+      const url=new URL(String(input));
+      requireThat(url.origin==='https://graph.facebook.com'&&url.pathname===`/v26.0/${reconciledCreative}`&&
+        (!init?.method||init.method==='GET')&&init?.redirect==='error','existing_campaign_read_only_boundary',403);
+      await current();const response=await this.fetcher(input,init);await current();return response;
+    };
+    await current();
+    return this.vault.useReadOnly!(g,current,async credentials=>{
+      requireThat(credentials.expiresAt>Date.now(),'provider_access_expired_or_denied',403);
+      const client=new MetaMarketingClient({...credentials,fetchImpl:fetcher});
+      const creative=await client.getObject(reconciledCreative,'id,account_id');
+      requireThat(creative.id===reconciledCreative&&creative.account_id===accountPath(g.accountId).slice(4),'existing_campaign_account_mismatch');
+      const snapshot={...hierarchy.snapshot,reconciledCreative:{id:creative.id,accountId:creative.account_id}};
+      await current();return {...hierarchy,snapshot,digest:digest(snapshot),observedAt:new Date().toISOString()};
+    }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure('existing_campaign_read_unavailable',error);});
+  }
   /** Read the entire selected campaign's creative inventory. An ACTIVE shared
    * group is retained as observed and cannot authorize or activate this campaign. */
   async inspectExistingLinkedInHierarchy(g:Grant,ids:{group:string;campaign:string;creative:string},guard:()=>Promise<void>){

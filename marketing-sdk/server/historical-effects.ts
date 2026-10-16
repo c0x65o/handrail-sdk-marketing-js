@@ -1,6 +1,6 @@
 import type {Grant} from '../core/index.js';
 import {readHistoricalCampaignSnapshot} from './adoption.js';
-import type {ExistingMetaHierarchyInspection,ExistingLinkedInHierarchyInspection,ProviderPort} from './ports.js';
+import type {ExistingMetaHierarchyInspection,ExistingMetaReconciledCreativeInspection,ExistingLinkedInHierarchyInspection,ProviderPort} from './ports.js';
 import {Store,DomainError,digest,requireThat,type Principal} from './store.js';
 import {sessionBinding,inspectLiveSessions,type SessionAuthority} from './session-authority.js';
 import {text} from './validation.js';
@@ -14,6 +14,7 @@ interface HistoricalEffectFacts {
 export type HistoricalEffectCandidate = HistoricalEffectFacts & (
   {basis:'mapped_objects_after_material_readback_failure'|'mapped_objects_after_pause_readback_failure';
    providerIds:{campaign:string;adset:string;ad:string;creative:string}} |
+  {basis:'mapped_meta_creative_after_creation_reconciliation';providerIds:{campaign:string;adset:string;ad:string;creative:string;reconciledCreative:string}} |
   {basis:'mapped_creative_after_creation_reconciliation';providerIds:{group:string;campaign:string;creative:string}}
 );
 export interface HistoricalEffectSource {
@@ -28,7 +29,7 @@ export interface HistoricalEffectResolution {
   id:string;projectId:string;nativeCampaignId:string;historyImportId:string;sourceDigest:string;operationId:string;sourceRevision:string;
   basis:HistoricalEffectCandidate['basis'];originalStatus:'partial';originalRequestCoverage:'unknown';
   evidenceRecordIds:string[];affectedProviderIds:string[];providerIds:HistoricalEffectCandidate['providerIds'];
-  providerEvidence:ExistingMetaHierarchyInspection|ExistingLinkedInHierarchyInspection;resolution:'known_effects_preserved_paused';
+  providerEvidence:ExistingMetaHierarchyInspection|ExistingMetaReconciledCreativeInspection|ExistingLinkedInHierarchyInspection;resolution:'known_effects_preserved_paused';
   missingReasons:['historical_request_receipts_unavailable'];recordedBy:string;recordedAt:string;
   originalOperationRewritten:false;executionTransferred:false;spendingAuthorityGranted:false;
 }
@@ -90,7 +91,7 @@ export class HistoricalEffectResolutions {
       candidate.grant.projectId===project&&typeof history.snapshot.accountId==='string'&&candidate.grant.accountId===(history.snapshot.provider==='meta'?`act_${history.snapshot.accountId.replace(/^act_/,'')}`:history.snapshot.accountId)&&
       history.snapshot.providerCampaignIds.length===1&&history.snapshot.providerCampaignIds[0]===candidate.providerIds.campaign&&
       history.receipt.unsettledOperationIds.includes(frozen.operationId),'historical_effect_scope_invalid');
-    requireThat(['mapped_objects_after_material_readback_failure','mapped_objects_after_pause_readback_failure','mapped_creative_after_creation_reconciliation'].includes(candidate.basis)&&candidate.originalStatus==='partial'&&candidate.originalRequestCoverage==='unknown'&&
+    requireThat(['mapped_objects_after_material_readback_failure','mapped_objects_after_pause_readback_failure','mapped_creative_after_creation_reconciliation','mapped_meta_creative_after_creation_reconciliation'].includes(candidate.basis)&&candidate.originalStatus==='partial'&&candidate.originalRequestCoverage==='unknown'&&
       typeof candidate.sourceRevision==='string'&&candidate.sourceRevision.length>0&&Array.isArray(candidate.evidenceRecordIds)&&
       candidate.evidenceRecordIds.length>0&&new Set(candidate.evidenceRecordIds).size===candidate.evidenceRecordIds.length&&
       candidate.evidenceRecordIds.every(id=>history.receipt.recordRefs.some(r=>r.digest===id&&['operation','provider_object'].includes(r.kind)))&&
@@ -102,6 +103,11 @@ export class HistoricalEffectResolutions {
               ['image','creative'].includes(String(r.payload.object_type))&&r.payload.provider_object_id===id&&
               r.payload.parent_provider_object_id===candidate.providerIds.campaign&&
               candidate.evidenceRecordIds.includes(digest({project,nativeCampaignId:history.snapshot.nativeCampaignId,system:history.snapshot.source.system,record:r}))))
+        : candidate.basis==='mapped_meta_creative_after_creation_reconciliation'
+          ? candidate.affectedProviderIds.includes(candidate.providerIds.reconciledCreative)&&candidate.affectedProviderIds.every(id=>
+              history.snapshot.records.some(r=>r.kind==='provider_object'&&r.payload.provider==='meta'&&
+                (r.payload.object_type==='image'||(r.payload.object_type==='creative'&&id===candidate.providerIds.reconciledCreative))&&
+                r.payload.provider_object_id===id&&candidate.evidenceRecordIds.includes(digest({project,nativeCampaignId:history.snapshot.nativeCampaignId,system:history.snapshot.source.system,record:r}))))
         : candidate.affectedProviderIds.some(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id))&&
           candidate.affectedProviderIds.every(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id)||
             (candidate.basis==='mapped_objects_after_pause_readback_failure'&&history.snapshot.records.some(r=>
@@ -126,7 +132,15 @@ export class HistoricalEffectResolutions {
         'historical_effect_provider_evidence_invalid');
     }else{
     const provider=this.providers.meta;requireThat(provider?.inspectExistingMetaHierarchy,'historical_effect_inspection_unavailable');
-    await guard();evidence=await provider.inspectExistingMetaHierarchy(candidate.grant,candidate.providerIds,guard);await guard();
+    await guard();
+    if(candidate.basis==='mapped_meta_creative_after_creation_reconciliation'){
+      requireThat(provider.inspectExistingMetaReconciledCreative,'historical_effect_inspection_unavailable');
+      const inspected=await provider.inspectExistingMetaReconciledCreative(candidate.grant,candidate.providerIds,guard);
+      requireThat(inspected.snapshot.reconciledCreative?.id===candidate.providerIds.reconciledCreative&&
+        inspected.snapshot.reconciledCreative.accountId===candidate.grant.accountId.slice(4),'historical_effect_provider_evidence_invalid');
+      evidence=inspected;
+    }else evidence=await provider.inspectExistingMetaHierarchy(candidate.grant,candidate.providerIds,guard);
+    await guard();
     const s=evidence.snapshot,ids=candidate.providerIds;
     requireThat(evidence.provider==='meta'&&evidence.source==='provider_api'&&evidence.inventoryComplete===true&&evidence.allPaused===true&&
       evidence.digest===digest(s)&&s.account.id===candidate.grant.accountId&&s.account.currency===candidate.grant.currency&&s.account.timezone===candidate.grant.timezone&&
