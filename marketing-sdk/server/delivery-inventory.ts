@@ -14,10 +14,15 @@ export interface MetaDeliveryObject {
   campaignId:string; adsetId:string|null; creativeId:string|null;
   configuredStatus:string|null; effectiveStatus:string|null;
 }
+export interface MetaUnmappedDeliveryCampaign {
+  nativeCampaignId:null; campaignId:string; ownership:'unverified';
+  reason:'no_native_campaign_mapping'; objects:MetaDeliveryObject[];
+  campaignObserved:boolean; orphanAdIds:string[]; unknownStatusIds:string[];
+}
 const numeric=(v:unknown):v is string=>typeof v==='string'&&/^\d+$/.test(v);
 const state=(v:unknown)=>typeof v==='string'&&v.length>0?v:null;
 
-/** A fresh account-level read, projected only onto explicit host-owned mappings.
+/** A fresh account-level read with separate mapped and ownership-unverified rows.
  * Collection completion is not proof of historical requests, delivery or ownership
  * of unrelated rows. Missing expected objects remain unknown; no write is possible. */
 export async function inspectMetaDeliveryInventory(input:{grant:Grant;targets:MetaDeliveryTarget[];
@@ -59,7 +64,6 @@ export async function inspectMetaDeliveryInventory(input:{grant:Grant;targets:Me
           (type==='campaign'||numeric(row.campaign_id))&&(type!=='ad'||numeric(row.adset_id)),
           'delivery_inventory_identity_invalid');seen.add(row.id);
         const campaignId=type==='campaign'?row.id:row.campaign_id;
-        if(!targets.some(t=>t.campaignId===campaignId))continue;
         objects.push({id:row.id,accountId,type,campaignId,adsetId:type==='ad'?row.adset_id:null,
           creativeId:type==='ad'&&numeric(row.creative?.id)?row.creative.id:null,
           configuredStatus:state(row.status),effectiveStatus:state(row.effective_status)});
@@ -77,8 +81,17 @@ export async function inspectMetaDeliveryInventory(input:{grant:Grant;targets:Me
         allPaused:complete?found.every(o=>o.configuredStatus==='PAUSED'&&
           (o.type==='campaign'?o.effectiveStatus==='PAUSED':['PAUSED','CAMPAIGN_PAUSED',...(o.type==='ad'?['ADSET_PAUSED']:[])].includes(o.effectiveStatus!))):null};
     });
-    await current();const snapshot={account:{id:account,currency:g.currency,timezone:g.timezone},campaigns};
-    return {provider:'meta' as const,source:'provider_api' as const,scope:'mapped_campaigns_and_visible_account_children' as const,
+    const unmappedCampaignIds=[...new Set(objects.filter(o=>!targets.some(t=>t.campaignId===o.campaignId)).map(o=>o.campaignId))].sort();
+    const unmappedProviderCampaigns:MetaUnmappedDeliveryCampaign[]=unmappedCampaignIds.map(campaignId=>{
+      const found=objects.filter(o=>o.campaignId===campaignId).sort((a,b)=>a.type.localeCompare(b.type)||a.id.localeCompare(b.id));
+      return {nativeCampaignId:null,campaignId,ownership:'unverified',reason:'no_native_campaign_mapping',objects:found,
+        campaignObserved:found.some(o=>o.type==='campaign'),
+        orphanAdIds:found.filter(o=>o.type==='ad'&&!found.some(p=>p.type==='adset'&&p.id===o.adsetId)).map(o=>o.id),
+        unknownStatusIds:found.filter(o=>!o.configuredStatus||!o.effectiveStatus).map(o=>o.id)};
+    });
+    await current();const snapshot={account:{id:account,currency:g.currency,timezone:g.timezone},campaigns,unmappedProviderCampaigns};
+    return {provider:'meta' as const,source:'provider_api' as const,scope:'visible_account_campaigns_and_children' as const,
+      ownershipBasis:'explicit_native_mappings_only' as const,pauseScope:'mapped_campaigns_only' as const,
       startedAt,observedAt:new Date().toISOString(),requestCount,paginationComplete:true as const,
       complete:campaigns.every(c=>c.complete),allPaused:campaigns.every(c=>c.complete&&c.allPaused===true),
       snapshot,digest:digest(snapshot),providerWritesPerformed:false as const,spendingAuthorityGranted:false as const,

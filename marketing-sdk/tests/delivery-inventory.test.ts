@@ -23,10 +23,25 @@ function fixture(){
  return {grant,targets,rows,pages,setHook:(h:()=>Promise<void>)=>hook=h,expire:()=>expired=true,reads:()=>reads,
   read:()=>inspectMetaDeliveryInventory({grant,targets,vault,guard:async()=>{},fetcher})};
 }
-test('one Meta account read projects all mapped campaigns and visible children without unrelated data or writes',async()=>{
+test('one Meta account read separates mapped campaigns from unverified provider identities without writes',async()=>{
  const f=fixture();const x=await f.read();assert.equal(x.requestCount,4);assert.equal(x.paginationComplete,true);
- assert.equal(x.allPaused,true);assert.equal(x.snapshot.campaigns[0]?.objects.length,3);assert.equal(JSON.stringify(x).includes('999'),false);
+ assert.equal(x.allPaused,true);assert.equal(x.snapshot.campaigns[0]?.objects.length,3);
+ assert.equal(x.pauseScope,'mapped_campaigns_only');assert.equal(x.ownershipBasis,'explicit_native_mappings_only');
+ assert.deepEqual(x.snapshot.unmappedProviderCampaigns,[{nativeCampaignId:null,campaignId:'999',ownership:'unverified',reason:'no_native_campaign_mapping',
+  objects:[{id:'999',accountId:'123',type:'campaign',campaignId:'999',adsetId:null,creativeId:null,configuredStatus:'ACTIVE',effectiveStatus:'ACTIVE'}],
+  campaignObserved:true,orphanAdIds:[],unknownStatusIds:[]}]);
  assert.equal(x.providerWritesPerformed,false);assert.equal(x.deliveryVerified,false);assert.equal(x.historicalEffectsSettled,false);
+});
+test('unmapped child pages retain missing parents, unknown states and identities without implying ownership',async()=>{
+ const f=fixture();f.pages.ads=[{data:f.rows.ads,paging:{next:'https://foreign.invalid/token',cursors:{after:'next'}}},
+  {data:[{account_id:'123',id:'777',campaign_id:'888',adset_id:'889',status:'ACTIVE',creative:{id:'778'},name:'Unrequested private copy'}]}];
+ const x=await f.read();assert.equal(x.requestCount,5);assert.equal(x.allPaused,true);
+ const row=x.snapshot.unmappedProviderCampaigns.find(c=>c.campaignId==='888')!;
+ assert.equal(row.ownership,'unverified');assert.equal(row.nativeCampaignId,null);assert.equal(row.campaignObserved,false);
+ assert.deepEqual(row.orphanAdIds,['777']);assert.deepEqual(row.unknownStatusIds,['777']);
+ assert.equal(row.objects[0]?.effectiveStatus,null);assert.equal(row.objects[0]?.creativeId,'778');
+ assert.equal(JSON.stringify(x).includes('Unrequested private copy'),false);
+ assert.ok(!x.snapshot.campaigns.some(c=>c.campaignId==='888'));
 });
 test('all pages are required and newly discovered active children prevent paused proof',async()=>{
  const f=fixture();f.pages.ads=[{data:f.rows.ads,paging:{next:'https://foreign.invalid/token',cursors:{after:'next'}}},

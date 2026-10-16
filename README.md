@@ -569,8 +569,15 @@ returns it as `policyEvidence` separately from current provider material.
 `inspectMetaDeliveryInventory` is a read-only server API for refreshing exact
 host-owned campaign mappings across one Meta account. It paginates the account's
 campaign/ad-set/ad edges once, checks account/currency/timezone and current Vault
-custody, and returns only the requested campaign hierarchies with collection times
-and a snapshot digest. Newly observed children participate in paused-state checks;
+custody, and returns the requested campaign hierarchies with collection times
+and a snapshot digest. Account campaigns outside those mappings are retained in
+`snapshot.unmappedProviderCampaigns`, with `nativeCampaignId: null` and explicit
+`ownership: "unverified"`. Only IDs, hierarchy and status fields are retained;
+there is no inferred campaign ownership or automatic native binding. Missing
+parents and unknown statuses remain explicit. The account visibility scope is
+`visible_account_campaigns_and_children`; `allPaused` and `complete` continue to
+describe the mapped campaigns only, identified by `pauseScope` and `ownershipBasis`.
+Newly observed mapped children participate in paused-state checks;
 missing mapped objects/statuses remain unknown. The visibility scope is explicit:
 this does not settle historical requests, prove actual impressions, authorize
 spending, or claim that an unmapped historical campaign never created an object.
