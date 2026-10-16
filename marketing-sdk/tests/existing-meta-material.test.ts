@@ -432,3 +432,36 @@ test('page promotion rejects malformed settings, extra fields and use on lead ca
   const lead=await fixture().capture();(lead.material.settings as any).pagePromotion={smartPseEnabled:false};
   assert.ok(capabilityStatus(lead.material,f.grant).blockers.includes('invalid_meta_page_promotion'));
 });
+
+for(const mode of ['absent','empty','explicit'] as const)test(`awareness attribution ${mode} stays distinct through history and exact readback`,async()=>{
+  const f=awarenessFixture(),{retainedProviderTerms,...source}=f.source;
+  if(mode==='absent')delete f.observed.adset.attribution_spec;
+  if(mode==='explicit')f.observed.adset.attribution_spec=[{event_type:'CLICK_THROUGH',window_days:1}];
+  const r=await f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...source,retainedObservations:[
+    {key:'adset.attribution',value:[],provenance:'legacy_observation',historyRecordId:'a'.repeat(64)}]},async()=>{});
+  const s=r.material.settings!;if(s.provider!=='meta')throw Error('Meta required');
+  assert.deepEqual(s.attribution,mode==='absent'?undefined:mode==='empty'?[]:[{eventType:'CLICK_THROUGH',windowDays:1}]);
+  assert.equal(s.conversion,undefined);assert.deepEqual(retainedProviderTerms.adset.attribution_spec,[]);
+  const comparison=r.materialReconciliation.comparisons.find(x=>x.key==='adset.attribution')!;
+  assert.equal(comparison.status,mode==='absent'?'current_not_returned':mode==='empty'?'equal':'different');
+  assert.equal(comparison.currentPresent,mode!=='absent');
+  assert.equal(comparison.missingReason,mode==='absent'?'provider_field_not_returned':null);
+  f.grant.targetingOptions=r.targetingOptions;
+  const c={id:'c',projectId:'p',grantId:'g',material:r.material,state:'paused',receipt:null} as Campaign;
+  const assets=[{id:'original-asset',projectId:'p',campaignId:'c',kind:'image',digest:'b'.repeat(64)} as Asset];
+  const plan:any=providerPlan(c,f.grant,assets);
+  assert.equal(Object.hasOwn(plan.adset,'attribution_spec'),mode!=='absent');
+  assert.deepEqual(plan.adset.attribution_spec,f.observed.adset.attribution_spec);
+  await f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{});
+  if(mode==='absent')f.observed.adset.attribution_spec=[];else delete f.observed.adset.attribution_spec;
+  await assert.rejects(f.provider.inspectExistingCampaign(c,f.grant,assets,{...f.ids,ad:'103'},async()=>{}),/attribution_spec_mismatch/);
+});
+for(const value of [null,{},'unknown',false])test(`awareness rejects malformed attribution ${JSON.stringify(value)}`,async()=>{
+  const f=awarenessFixture();f.observed.adset.attribution_spec=value;
+  f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+  await assert.rejects(f.capture(),/existing_material_attribution_unknown/);
+});
+test('lead capture still requires explicit provider attribution',async()=>{
+  const f=fixture();delete f.observed.adset.attribution_spec;f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+  await assert.rejects(f.capture(),/existing_material_attribution_unknown/);
+});

@@ -160,7 +160,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
   const features=creative.degrees_of_freedom_spec?.creative_features_spec;
   requireThat(creative.degrees_of_freedom_spec===undefined || Object.keys(creative.degrees_of_freedom_spec).length===1&&features&&
     Object.values(features).every((v:any)=>v&&Object.keys(v).length===1&&["OPT_IN","OPT_OUT"].includes(v.enroll_status)),"existing_material_creative_features_unknown");
-  requireThat(Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
+  requireThat(!lead&&adset.attribution_spec===undefined || Array.isArray(adset.attribution_spec)&&adset.attribution_spec.every((x:any)=>x&&Object.keys(x).length===2),"existing_material_attribution_unknown");
   const settings:MetaSettings={version:CAPABILITY_VERSION,provider:"meta",apiVersion:"v26.0",accountId:grant.accountId,format:"single_image",
     objective:campaign.objective,optimization:adset.optimization_goal,
     delivery:lead?(interestGroups.length?"advantage_plus_interests":"advantage_plus_broad"):(adset.optimization_goal==="LINK_CLICKS"?"ordinary":"strict"),
@@ -168,7 +168,7 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     placements:[],identity:{pageId:grant.pageId!},
     ...(lead?{conversion:{pixelId:source.conversion!.pixelId,event:"Lead" as const,...(hasSmartPse?{smartPseEnabled:adset.promoted_object.smart_pse_enabled}:{})}}:{}),
     ...(awareness&&hasSmartPse?{pagePromotion:{smartPseEnabled:adset.promoted_object.smart_pse_enabled}}:{}),
-    attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days})),
+    ...(adset.attribution_spec===undefined?{}:{attribution:adset.attribution_spec.map((x:any)=>({eventType:x.event_type,windowDays:x.window_days}))}),
     targeting:{languages,interestGroups,excludedCustomAudiences:excluded,
       ...(t.geo_locations?.location_types ? {locationTypes:structuredClone(t.geo_locations.location_types)}:{}),
       ...(Object.hasOwn(t,'user_age_unknown') ? {userAgeUnknown:t.user_age_unknown}:{}),

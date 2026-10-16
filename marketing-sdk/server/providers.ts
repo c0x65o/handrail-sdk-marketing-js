@@ -1391,6 +1391,7 @@ export class NativeProvider implements ProviderPort {
             call_to_action: { type: "LEARN_MORE", value: { link: plan.creative.link } } },
         }), "creative_identity_or_content_mismatch");
         if (plan.readbackVersion === "5") {
+          requireThat(exactTargeting(s.adset.attribution_spec, plan.adset.attribution_spec), "attribution_spec_mismatch");
           requireThat(exactTargeting(s.creative.url_tags, plan.creative.url_tags) &&
             exactTargeting(s.creative.degrees_of_freedom_spec, plan.creative.degrees_of_freedom_spec), "creative_tracking_or_features_mismatch");
           if (plan.adset.targeting_optimization_types) requireThat(metaExpansionMatches(s.adset.targeting_optimization_types, plan.adset.targeting_optimization_types), "meta_expansion_settings_mismatch");

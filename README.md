@@ -535,7 +535,10 @@ from lead conversion configuration. Absence, `false` and `true` are distinct;
 readback verifies the exact `promoted_object` including the optional provider
 `smart_pse_enabled` boolean. Reconciliation preserves the original observation
 and records differences without inventing conversions. Web editing and review
-expose all three states. Provider acceptance of a write still requires the
+expose all three states. Non-conversion campaigns preserve an omitted provider
+attribution list as unknown, distinct from an explicit empty list. Reconciliation
+records `current_not_returned`; exact readback rejects a subsequent difference.
+Lead capture continues to require explicit attribution. Provider acceptance of a write still requires the
 existing eligibility, authority and budget checks; capture is read-only.
 
 Meta daily preparation preserves the requested amount and disables ad-set budget
