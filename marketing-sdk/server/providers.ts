@@ -875,12 +875,16 @@ export class NativeProvider implements ProviderPort {
     // Only qualified budget fields are mutable in this update contract. Shared
     // group budgets, creatives, targeting and schedules cannot be recreated.
     if (this.name === "meta") {
-      requireThat(!previous.advertisingBudget?.daily && !normalized.advertisingBudget?.daily,
-        "meta_daily_budget_update_unqualified");
-      requireThat(normalized.budget && previous.budget, "lifetime_budget_required");
-      normalized.budget.minor = previous.budget.minor;
-      if (normalized.advertisingBudget?.lifetime && previous.advertisingBudget?.lifetime)
-        normalized.advertisingBudget.lifetime.minor = previous.advertisingBudget.lifetime.minor;
+      requireThat(Boolean(previous.advertisingBudget?.daily) === Boolean(normalized.advertisingBudget?.daily),
+        "existing_campaign_budget_mode_changed");
+      if (previous.advertisingBudget?.daily && normalized.advertisingBudget?.daily) {
+        normalized.advertisingBudget.daily.minor = previous.advertisingBudget.daily.minor;
+      } else {
+        requireThat(normalized.budget && previous.budget, "lifetime_budget_required");
+        normalized.budget.minor = previous.budget.minor;
+        if (normalized.advertisingBudget?.lifetime && previous.advertisingBudget?.lifetime)
+          normalized.advertisingBudget.lifetime.minor = previous.advertisingBudget.lifetime.minor;
+      }
     } else {
       requireThat(previous.advertisingBudget?.daily && normalized.advertisingBudget?.daily,
         "linkedin_explicit_daily_budget_required");
@@ -921,7 +925,8 @@ export class NativeProvider implements ProviderPort {
       await guard();
       if (c.receipt!.payloadDigest !== digest(plan)) {
         if (this.name === "meta") await client.request(ids.adset, {
-          method: "POST", body: { lifetime_budget: plan.adset.lifetime_budget },
+          method: "POST", body: c.material.advertisingBudget?.daily
+            ? { daily_budget: plan.adset.daily_budget } : { lifetime_budget: plan.adset.lifetime_budget },
         });
         else await client.updateCampaignBudget(g.accountId, ids.campaign, plan.campaign.dailyBudgetCents, g.currency);
       }

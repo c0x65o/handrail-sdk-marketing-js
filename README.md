@@ -422,8 +422,9 @@ The SDK does not use the weekly average to release daily capacity. Activation
 requires current readback proving sharing remains disabled, exact account/material
 eligibility and sufficient current spending authority. Historical native daily
 ceilings remain unchanged; insufficient ceilings block execution rather than being
-raised during import. Uncertain operations retain their reservations. Daily budget
-updates remain unqualified (`meta_daily_budget_update_unqualified`). The public
+raised during import. Uncertain operations retain their reservations. Paused daily
+budget updates change only the existing ad set's nominal amount; budget mode,
+currency, campaign ceilings, lifetime caps and other material remain fixed. The public
 material capture returns `executionReady: false`. Tests use real SDK clients and
 disposable SQL storage with intercepted provider HTTP; they are not live account
 eligibility or delivery proof. Provider field references: [Meta creative schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adcreative.py)
@@ -523,11 +524,12 @@ creates execution authority or transfers campaign ownership.
 Editing a prepared campaign retains its provider receipt and the last verified
 `preparedMaterial`. Preparing that edited revision invokes the provider's update
 contract; an unavailable update never falls back to creating replacement objects.
-The qualified update fields are Meta lifetime budget and LinkedIn campaign daily
+The qualified update fields are Meta lifetime or daily budget and LinkedIn campaign daily
 budget, while all owned objects are stopped. LinkedIn group budgets/status and
 original campaign/ad/creative/image identities remain unchanged. Other edits are
 retained locally but cannot be prepared until their update behavior is qualified.
-Meta daily-budget execution remains unqualified.
+Meta daily updates use the same 175% exposure check and read-only lost-response
+recovery as preparation. Changing budget mode or ceilings is outside this contract.
 
 Original daily-only campaigns can retain `budget: null` and an explicit
 `advertisingBudget.daily` without a lifetime amount. `endAt: null` preserves an

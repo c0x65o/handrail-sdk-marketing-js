@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { NativeProvider } from "../server/providers.js";
 import { byteDigest, digest, DomainError } from "../server/store.js";
 import type { Asset, Campaign, Grant } from "../core/index.js";
-test("native Meta HTTP write/readback, external drift guard and lost acknowledgment reconciliation", async () => {
+for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${budgetMode} HTTP write/readback, external drift guard and lost acknowledgment reconciliation`, async () => {
+  const daily = budgetMode === "daily", initialBudget = daily ? 3000 : 42000, updatedBudget = initialBudget + 100, recoveredBudget = initialBudget + 200;
+  const budgetField = daily ? "daily_budget" : "lifetime_budget";
   const dir = mkdtempSync(join(tmpdir(), "marketing-native-write-"));
   const store = await testStore(join(dir, "db.sqlite"));
   await store.db.prepare("INSERT INTO projects VALUES(?,?)").run("p", "test");
@@ -87,6 +89,10 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
       timezone: "America/Chicago",
     },
   };
+  if (daily) {
+    campaign.material.budget = null;
+    campaign.material.advertisingBudget = { daily: {currency: "USD", minor: initialBudget}, campaignDailyCeiling: {currency: "USD", minor: 6000} };
+  }
   fixtureEligibility(campaign, grant);
   const objects = new Map<string, any>();
   const requests: {path:string;method:string;body?:unknown}[]=[];
@@ -140,14 +146,14 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
             );
       requests[requests.length-1]!.body=structuredClone(body);
       if(last==='campaigns'){assert.equal(body.status,'PAUSED');assert.equal(body.objective,'OUTCOME_TRAFFIC');assert.equal(body.is_adset_budget_sharing_enabled,false);assert.equal(body.daily_budget,undefined);}
-      if(last==='adsets'){assert.equal(body.status,'PAUSED');assert.equal(body.optimization_goal,'LINK_CLICKS');assert.equal(body.lifetime_budget,42000);assert.equal(body.daily_budget,undefined);}
+      if(last==='adsets'){assert.equal(body.status,'PAUSED');assert.equal(body.optimization_goal,'LINK_CLICKS');assert.equal(body[budgetField],initialBudget);assert.equal(body[daily?'lifetime_budget':'daily_budget'],undefined);}
       if(last==='ads')assert.equal(body.status,'PAUSED');
       if (objects.has(last)) {
         objects.set(last, {
           ...(await objects.get(last)),
           ...body,
         });
-        if (loseBudgetAcknowledgment && body.lifetime_budget) { loseBudgetAcknowledgment = false; throw Error("lost budget response"); }
+        if (loseBudgetAcknowledgment && body[budgetField]) { loseBudgetAcknowledgment = false; throw Error("lost budget response"); }
         return Response.json({
           success: true,
         });
@@ -273,7 +279,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     const stopped = await provider.pause({ ...paused, receipt: enabled }, grant, () => {});
     const edited: Campaign = { ...paused, revision: 2, state: "draft", receipt: stopped,
       preparedMaterial: structuredClone(campaign.material),
-      material: { ...campaign.material, budget: { currency: "USD", minor: 43000 } } };
+      material: { ...campaign.material, ...(daily ? {advertisingBudget: {...campaign.material.advertisingBudget!, daily: {currency: "USD", minor: updatedBudget}}} : {budget: {currency: "USD", minor: updatedBudget}}) } };
     const beforeUpdate = writes, objectCount = objects.size;
     await assert.rejects(provider.prepare(edited, grant, [asset], "must-not-create", () => {}, () => {}), /existing_campaign_requires_update/);
     const desired = digest(provider.plan(edited, grant, [asset]));
@@ -281,6 +287,21 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     assert.equal(await provider.reconcile(edited, grant, { kind: "prepare", payloadDigest: desired, receipt: null }), null);
     const changed = { ...edited, material: { ...edited.material, headline: "Unqualified creative replacement" } };
     await assert.rejects(provider.update(changed, grant, [asset], () => {}, () => {}), /existing_campaign_edit_unqualified/);
+    assert.equal(writes, beforeUpdate);
+    const modeChanged = structuredClone(edited);
+    if (daily) { modeChanged.material.advertisingBudget = undefined; modeChanged.material.budget = {currency: "USD", minor: 42000}; }
+    else { modeChanged.material.budget = null; modeChanged.material.advertisingBudget = {daily: {currency: "USD", minor: 3000}}; }
+    await assert.rejects(provider.update(modeChanged, grant, [asset], () => {}, () => {}), /existing_campaign_budget_mode_changed/);
+    if (daily) {
+      const ceilingChanged = structuredClone(edited);
+      ceilingChanged.material.advertisingBudget!.campaignDailyCeiling!.minor = 7000;
+      await assert.rejects(provider.update(ceilingChanged, grant, [asset], () => {}, () => {}), /existing_campaign_edit_unqualified/);
+      const excessive = structuredClone(edited);
+      excessive.material.advertisingBudget!.daily!.minor = 3500; // 6125 exposure exceeds the unchanged 6000 ceiling.
+      fixtureEligibility(excessive, grant);
+      await assert.rejects(provider.update(excessive, grant, [asset], () => {}, () => {}), /campaign_daily_exposure_exceeded/);
+      fixtureEligibility(campaign, grant);
+    }
     assert.equal(writes, beforeUpdate);
     await assert.rejects(provider.update(edited, grant, [asset], () => {}, () => {}), /account_capability_unverified/);
     assert.equal(writes, beforeUpdate);
@@ -290,10 +311,11 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
     const updated = await provider.update(edited, grant, [asset], value => { retained = { ...value }; }, () => {});
     assert.equal(writes, beforeUpdate + 1); assert.equal(objects.size, objectCount);
     for (const key of ["campaign", "adset", "ad", "creative", "image"]) assert.equal(updated.ids[key], stopped.ids[key]);
-    assert.equal(objects.get(updated.ids.adset!).lifetime_budget, "43000");
+    assert.equal(objects.get(updated.ids.adset!)[budgetField], String(updatedBudget));
+    assert.deepEqual(requests.filter(r=>r.method==='POST').at(-1)?.body, {[budgetField]:String(updatedBudget)});
     assert.equal(objects.get(updated.ids.campaign!).status, "PAUSED");
     const second: Campaign = { ...edited, revision: 3, receipt: updated, preparedMaterial: structuredClone(edited.material),
-      material: { ...edited.material, budget: { currency: "USD", minor: 44000 } } };
+      material: { ...edited.material, ...(daily ? {advertisingBudget: {...edited.material.advertisingBudget!, daily: {currency: "USD", minor: recoveredBudget}}} : {budget: {currency: "USD", minor: recoveredBudget}}) } };
     fixtureEligibility(second, grant);
     loseBudgetAcknowledgment = true;
     await assert.rejects(provider.update(second, grant, [asset], value => { retained = { ...value }; }, () => {}));
@@ -303,7 +325,7 @@ test("native Meta HTTP write/readback, external drift guard and lost acknowledgm
       receipt: { ...updated, ids: retained, payloadDigest: digest(provider.plan(second, grant, [asset])) } });
     assert.ok(recovered); assert.equal(writes, afterLost); assert.equal(objects.size, objectCount);
     assert.equal(recovered.ids.adset, stopped.ids.adset);
-    assert.equal(objects.get(recovered.ids.adset!).lifetime_budget, "44000");
+    assert.equal(objects.get(recovered.ids.adset!)[budgetField], String(recoveredBudget));
   } finally {
     await store.close();
     if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, {
