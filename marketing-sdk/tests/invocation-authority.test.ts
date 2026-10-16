@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {CampaignStudio,CampaignExecutionConnections,assertSessionInspection,sessionExpiryBound,
+import {MarketingServer,CampaignStudio,CampaignExecutionConnections,assertSessionInspection,sessionExpiryBound,
   inspectLiveSessions,digest,requireThat,sessionBinding,type SessionInspection,type SessionAuthority,type Store} from '../server/index.js';
 import {emptyBrief,type Grant} from '../core/index.js';
 import {testStore} from './datastore.js';
@@ -94,5 +94,47 @@ test('invocation-bound execution connection still requires finite current campai
     assert.deepEqual(await service.readRequest(actor.principal,'p',input.requestKey),result);
     actor.end();await assert.rejects(service.readRequest(actor.principal,'p',input.requestKey),/native_action_finished/);
     assert.equal((await f.store.list('p','operation')).length,0);
+  }finally{await f.close();}
+});
+
+test('agent promotion requires current host authority, copies exact human tracking and rolls back revocation without granting consent or coverage',async()=>{
+  const f=await nativePreflightFixture(true);try{
+    let draft=await f.call('copyToDraft',{id:f.d.id,kind:'draft',expectedRevision:f.d.revision,requestKey:'agent-copy'});
+    const snapshot=await f.call('captureDestination',{url:draft.material.destination!});
+    draft=await f.call('saveStudioMaterial',{draftId:draft.id,expectedRevision:draft.revision,requestKey:'copy-material',step:'tracking',material:{...draft.material,settings:f.d.material.settings,destinationDigest:snapshot.digest}});
+    const owner={kind:'draft' as const,id:draft.id};
+    const bind={owner,expectedRevision:draft.revision,expectedBindingRevision:0,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry' as const,refundTreatment:null,requestKey:'copy-binding'};
+    const binding=await f.call('bindTracking',bind);
+    const actor=await invocation(f.store);
+    const options={...f.server.options,studio:{sessions:actor.authority}};
+    const unbound=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,options);
+    const input={...f.input,draftId:draft.id,expectedRevision:draft.revision,requestKey:'agent-promotion'};
+    await assert.rejects(unbound.call(actor.principal,'p','promoteStudio',input),/forbidden/);
+    await assert.rejects(unbound.call(actor.principal,'p','bindTracking',{...bind,expectedBindingRevision:1,requestKey:'agent-consent'}),/forbidden/);
+    await assert.rejects(unbound.call(actor.principal,'p','startTrackingTest',{owner,expectedBindingRevision:binding.revision,requestKey:'agent-test'}),/forbidden/);
+    let allowed=true,revokeAfterRetention=true;
+    const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,
+      {...options,studio:{...options.studio,withPromotion:async(p,project,id,local)=>{
+        requireThat(allowed&&p.userId===actor.principal.userId&&project==='p'&&id===draft.id,'host_promotion_revoked',403);
+        return local(async campaign=>{
+          await f.store.put(project,'fixtureNativeCampaignIdentity',campaign.id,{id:campaign.id});
+          if(revokeAfterRetention)allowed=false;
+        });
+      }}});
+    const before=await f.store.list('p','campaign'),bindings=await f.store.list('p','trackingBinding');
+    await assert.rejects(server.call(actor.principal,'p','promoteStudio',input),/host_promotion_revoked/);
+    assert.deepEqual(await f.store.list('p','campaign'),before);
+    assert.deepEqual(await f.store.list('p','trackingBinding'),bindings);
+    assert.deepEqual(await f.store.list('p','fixtureNativeCampaignIdentity'),[]);
+    allowed=true;revokeAfterRetention=false;
+    const campaign=await server.call(actor.principal,'p','promoteStudio',input);
+    assert.equal(campaign.state,'draft');assert.equal(campaign.receipt,null);
+    assert.equal(campaign.draftOrigin?.actorId,actor.principal.userId);
+    const copied=(await server.call(actor.principal,'p','tracking',{owner:{kind:'campaign',id:campaign.id}})).binding!;
+    assert.deepEqual(copied.source,binding.source);assert.equal(copied.outcome,binding.outcome);
+    assert.deepEqual(copied.promotedFrom,{owner,bindingId:binding.id,bindingRevision:binding.revision,ownerRevision:draft.revision});
+    allowed=false;
+    assert.deepEqual(await server.call(actor.principal,'p','promoteStudio',input),campaign,'committed result is read without repeating promotion');
+    for(const kind of ['operation','validatedCoverage','event','advertisingBudgetReservation'])assert.equal((await f.store.list('p',kind)).length,0);
   }finally{await f.close();}
 });

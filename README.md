@@ -6,8 +6,10 @@ commands used by React. `agentTools` dispatches their exact names through the
 supplied client; the server validates current host invocation/session authority,
 revisions and immutable request receipts. Hosts may bind an existing native
 invocation and adapt their original request key. These commands grant no human
-approval, credential access, paid generation or provider execution. Promotion
-requires the host's canonical identity binding and current tracking/account proof.
+approval, credential access, paid generation or provider execution. Native-agent
+promotion requires the host's current canonical identity binding. It copies exact
+retained tracking configuration without granting consent or certifying tests,
+coverage or publication readiness; tracking setup remains human-only.
 
 **Product direction and acceptance:** [From idea to accountable outcome — maintained
 product specification](marketing-sdk/PRODUCT.md). Start with the [first-time

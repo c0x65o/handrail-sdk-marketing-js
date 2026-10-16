@@ -115,7 +115,8 @@ export class MarketingServer {
     // host callback must use that transaction for local identity writes, never
     // commit an independent ledger or perform provider I/O here.
     const tracked = (retainHost: (campaign: Campaign) => Promise<void>) => this.tracking.withPromotion(p, project, draftId,
-      retainTracking => local(async campaign => { await retainHost(campaign); await retainTracking(campaign); }));
+      retainTracking => local(async campaign => { await retainHost(campaign); await retainTracking(campaign); }),
+      this.options.studio?.withPromotion ? ()=>this.options.studio!.withPromotion!(p,project,draftId,async()=>{}) : undefined);
     return this.options.studio?.withPromotion
       ? this.options.studio.withPromotion(p, project, draftId, tracked)
       : tracked(async () => {});
@@ -1359,15 +1360,15 @@ export class MarketingServer {
     let o = await this.store.get<Operation>(project, "operation", operationId);
     if (o.state !== "queued") return o;
     if (continuationActor) requireThat(o.kind === "prepare" && !o.receipt, "preparation_not_queued");
+    const c = await this.store.get<Campaign>(project, "campaign", o.campaignId);
+    // Preserve queued identities, leases and holds when tracking delivery is unqualified.
+    requireThat(o.kind === "pause" || !c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
     const originalActor = await this.store.get<Principal>(project, "executionActor", o.id);
     const currentActor = async () => {
       const original = await this.store.get<Principal>(project, "executionActor", o.id);
       requireThat(digest(original) === digest(originalActor), "execution_actor_changed");
       return continuationActor ?? original;
     };
-    const c = await this.store.get<Campaign>(project, "campaign", o.campaignId);
-    // Preserve queued identities, leases and holds when tracking delivery is unqualified.
-    requireThat(o.kind === "pause" || !c.material.settings?.conversion, "provider_event_delivery_unqualified_use_tracking_diagnostics");
     let g: Grant;
     try {
       g = await this.grant(project, c.grantId, o.kind, c.id);

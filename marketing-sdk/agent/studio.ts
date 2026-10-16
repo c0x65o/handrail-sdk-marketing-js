@@ -28,7 +28,7 @@ const draftProperties={...partial(material.properties) as Record<string,unknown>
  * paid generation, provider dispatch, tracking evidence fabrication or deletion. */
 export const marketingStudioToolSchemas = [
   {command:'studio',description:'Read the current SDK draft, options, assets and checks.',inputSchema:object({draftId:id})},
-  {command:'listCampaigns',description:'Read the SDK campaign/draft library. Follow nextCursor.',inputSchema:object({query:str(200),kind:source.kind,lifecycle:{enum:['active','archived','trash']},cursor:id,limit:{type:'integer',minimum:1,maximum:100}},[])},
+  {command:'listCampaigns',description:'Read the SDK campaign/draft library. Follow nextCursor.',inputSchema:object({query:str(200),kind:source.kind,lifecycle:{enum:['active','archived','trash']},cursor:id,limit:{type:'integer',minimum:1,maximum:50}},[])},
   {command:'saveBrief',description:'Create or revise a local SDK campaign brief. For a revision supply id and expectedRevision. Preserve acquisition/recruitment intent and factual sources. This creates no ad or spending authority.',inputSchema:object({id,expectedRevision:revision,requestKey:id,brief},['requestKey','brief'])},
   {command:'saveCampaignOption',description:'Save a campaign option using actual brief facts; distinguish audience hypotheses and unknowns. This is an authored proposal, not a provider observation.',inputSchema:object({...change,optionId:id,value:option},[...Object.keys(change),'value'])},
   {command:'saveStudioMaterial',description:'Revise local draft material using SDK provider settings, budget, copy and tracking contracts. Missing fields remain incomplete. Use media selection for asset changes and the brief for acquisition/recruitment intent.',inputSchema:object({...change,material:object(draftProperties,['name']),step:{enum:['brief','options','media','checks','tracking']}})},
@@ -37,7 +37,7 @@ export const marketingStudioToolSchemas = [
   {command:'copyToDraft',description:'Copy the exact retained draft/campaign revision into a local draft, preserving source references and media rights. Never recreates provider ads.',inputSchema:object(source)},
   {command:'setCampaignLifecycle',description:'Archive, trash or restore the local library entry. Provider delivery and historical records are unchanged; this is not provider deletion or pause/resume.',inputSchema:object({...source,lifecycle:{enum:['active','archived','trash']}})},
   {command:'checkStudio',description:'Record SDK technical/editorial/provider readiness against the current draft and optional account. Missing evidence remains unknown; a check grants no approval.',inputSchema:object({draftId:id,expectedRevision:revision,grantId:id},['draftId','expectedRevision'])},
-  {command:'promoteStudio',description:'Promote the exact checked draft and account revision into a canonical local campaign. Retains original media/tracking/source identities; creates no provider objects or launch approval.',inputSchema:object({...change,grantId:id,expectedGrantRevision:revision})},
+  {command:'promoteStudio',description:'Promote the exact draft and account revision into a canonical local campaign. Retains original media/tracking/source identities; creates no provider objects or launch approval.',inputSchema:object({...change,grantId:id,expectedGrantRevision:revision})},
 ] satisfies {command:keyof StudioCommands;description:string;inputSchema:ReturnType<typeof object>}[];
 
 export type MarketingStudioAgentCommand = typeof marketingStudioToolSchemas[number]['command'];

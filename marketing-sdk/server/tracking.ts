@@ -270,13 +270,17 @@ export class MarketingTracking {
   }
   /** Exact configuration follows promotion in the same transaction as the new
    * campaign. Tests and production coverage retain their original owners. */
-  async withPromotion<T>(p: Principal, project: string, draftId: string, local: (retain: (campaign: Campaign) => Promise<void>) => Promise<T>): Promise<T> {
+  async withPromotion<T>(p: Principal, project: string, draftId: string, local: (retain: (campaign: Campaign) => Promise<void>) => Promise<T>, authorizeHostPromotion?: () => Promise<void>): Promise<T> {
     const view = await this.tracking(p, project, { owner: { kind: 'draft', id: draftId } });
     return this.withCurrentView(p, project, view, async () => {
       const s = await this.inspection(p, project);
-      requireThat(s.kind === 'human' && ['admin','editor'].includes(s.role), 'forbidden', 403);
+      requireThat(['admin','editor'].includes(s.role) && (s.kind === 'human' || s.kind === 'agent' && authorizeHostPromotion), 'forbidden', 403);
+      // Promotion copies exact retained configuration; it neither edits consent
+      // nor certifies tests/coverage. An agent needs the host's current canonical
+      // promotion authority, not a human session or a public command flag.
+      if(s.kind==='agent')await authorizeHostPromotion!();
       if (view.binding) await this.exact(project, view.binding);
-      return local(async campaign => {
+      const result=await local(async campaign => {
         const old = view.binding;
         if (!old) return;
         requireThat(view.sources.some(source => digest(source) === digest(old.source)), 'tracking_source_changed');
@@ -291,6 +295,8 @@ export class MarketingTracking {
         await this.store.put(project, 'trackingBinding', binding.id, binding);
         await this.store.put(project, 'trackingBindingHistory', `${binding.id}:1`, binding);
       });
+      if(s.kind==='agent')await authorizeHostPromotion!();
+      return result;
     });
   }
   async call<K extends keyof TrackingCommands>(p: Principal, project: string, command: K, input: TrackingCommands[K]['input']): Promise<TrackingCommands[K]['output']> {
