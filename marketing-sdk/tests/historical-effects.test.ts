@@ -11,7 +11,7 @@ import {digest} from '../server/store.js';
 import type {HistoricalCampaignSnapshot,HistoricalRecord} from '../core/adoption.js';
 import type {ProviderPort,ExistingMetaHierarchyInspection} from '../server/ports.js';
 
-async function fixture(){
+async function fixture(pauseFailure=false){
   const dir=mkdtempSync(join(tmpdir(),'marketing-effects-')),path=join(dir,'db'),store=await testStore(path);
   await store.db.prepare('INSERT INTO projects VALUES(?,?)').run('p','Effects');
   const user=await store.createUser('owner','fixture');await store.db.prepare('INSERT INTO memberships VALUES(?,?,?)').run(user,'p','admin');
@@ -19,9 +19,15 @@ async function fixture(){
   const row=(kind:HistoricalRecord['kind'],sourceId:string,payload:HistoricalRecord['payload']):HistoricalRecord=>({kind,sourceId,payload,sourceRevision:'1',recordedAt:null,collectedAt:null,provenance:'legacy_observation',evidenceId:null,missingReasons:['original_receipts_missing']});
   const snapshot:HistoricalCampaignSnapshot={schemaVersion:1,projectId:'p',nativeCampaignId:'native',provider:'meta',accountId:'123',providerCampaignIds:['100'],identityMissingReasons:[],purpose:'unknown',purposeReason:'not_recorded',
     source:{system:'fixture',revision:'1',capturedAt:'2026-10-15T00:00:00Z',receiptRefs:['original']},records:[row('campaign','native',{providerId:'100'}),row('operation','op',{status:'partial',originalRequestCoverage:'unknown'}),row('provider_object','campaign',{id:'100'}),row('provider_object','adset',{id:'101'})],expectedCounts:{campaign:1,operation:1,provider_object:2},totals:[],unsettledOperationIds:['op']};
+  if(pauseFailure){
+    snapshot.records.push(row('provider_object','image',{provider:'meta',object_type:'image',provider_object_id:'image-hash'}),
+      row('provider_object','old-creative',{provider:'meta',object_type:'creative',provider_object_id:'old-creative'}));
+    snapshot.expectedCounts.provider_object=4;
+  }
   const imported=await new HistoricalCampaignImports(store,{authorize:async()=>{},capture:async()=>snapshot,assertCurrent:async()=>{},withCurrentSnapshot:async(_p,_s,commit)=>commit()}).stage(principal,'p','native','import');
   const candidate:HistoricalEffectCandidate={projectId:'p',nativeCampaignId:'native',historyImportId:imported.id,operationId:'op',sourceRevision:'source-1',basis:'mapped_objects_after_material_readback_failure',originalStatus:'partial',originalRequestCoverage:'unknown',evidenceRecordIds:imported.recordRefs.filter(r=>['operation','provider_object'].includes(r.kind)).map(r=>r.digest),affectedProviderIds:['100','101'],providerIds:{campaign:'100',adset:'101',ad:'103',creative:'102'},
     grant:{id:'g',projectId:'p',revision:1,provider:'meta',accountId:'act_123',pageId:'42',currency:'USD',timezone:'UTC',label:'Fixture',permissions:['report'],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,secretRef:'opaque'}};
+  if(pauseFailure){candidate.basis='mapped_objects_after_pause_readback_failure';candidate.affectedProviderIds=['103','old-creative','image-hash'];}
   const state={account:{id:'act_123',currency:'USD',timezone:'UTC'},campaign:{id:'100',accountId:'123',status:'PAUSED',effectiveStatus:'PAUSED'},
     adsets:[{id:'101',accountId:'123',campaignId:'100',status:'PAUSED',effectiveStatus:'CAMPAIGN_PAUSED'}],
     ads:[{id:'103',accountId:'123',campaignId:'100',adsetId:'101',creativeId:'102',status:'PAUSED',effectiveStatus:'ADSET_PAUSED'}]};
@@ -86,5 +92,27 @@ test('concurrent requests retain one immutable resolution; tampering is detected
     assert.equal((await f.store.list('p','historicalEffectResolution')).length,1);
     await f.store.put('p','historicalEffectResolution',a.id,{...a,sourceRevision:'tampered'});
     await assert.rejects(f.service.read(f.principal,'p',f.imported.id,'op'),{code:'historical_effect_receipt_invalid'});
+  }finally{await f.close();}
+});
+
+test('paused readback reconciliation preserves mapped non-delivery assets and historical receipt gaps',async()=>{
+  const f=await fixture(true);try{
+    const receipt=await f.resolve();assert.equal(receipt.basis,'mapped_objects_after_pause_readback_failure');
+    assert.deepEqual(receipt.affectedProviderIds,['103','old-creative','image-hash']);
+    assert.equal(receipt.originalRequestCoverage,'unknown');assert.equal(receipt.providerEvidence.allPaused,true);
+    assert.equal(receipt.providerEvidence.snapshot.ads[0]!.creativeId,'102');
+    assert.deepEqual((await readHistoricalCampaignSnapshot(f.store,'p',f.imported.id)).snapshot,f.snapshot);
+    assert.deepEqual(await f.resolve(),receipt);assert.equal(f.reads(),1);
+    for(const kind of ['campaign','grant','campaignExecutionOwner','advertisingBudgetReservation','operation'])assert.deepEqual(await f.store.list('p',kind),[]);
+  }finally{await f.close();}
+});
+for(const mode of ['foreignAsset','missingAssetReference','noDeliveryObject','unknownBasis'])test(`paused readback rejects ${mode}`,async()=>{
+  const f=await fixture(true);try{
+    if(mode==='foreignAsset')f.candidate.affectedProviderIds.push('unmapped-image');
+    if(mode==='missingAssetReference')f.candidate.evidenceRecordIds=f.candidate.evidenceRecordIds.filter(id=>id!==f.imported.recordRefs.find(r=>r.sourceId==='image')!.digest);
+    if(mode==='noDeliveryObject')f.candidate.affectedProviderIds=['image-hash'];
+    if(mode==='unknownBasis')(f.candidate as any).basis='currently_paused';
+    await assert.rejects(f.resolve(),{code:'historical_effect_evidence_missing'});assert.equal(f.reads(),0);
+    assert.deepEqual(await f.store.list('p','historicalEffectResolution'),[]);
   }finally{await f.close();}
 });

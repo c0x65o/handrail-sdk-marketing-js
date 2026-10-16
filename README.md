@@ -275,8 +275,8 @@ Its digest covers explicit identity/state facts. It does not settle historical
 effects, verify material or upload bytes, transfer ownership or grant spending.
 Hosts must bind the supplied IDs to original history and current native mappings.
 
-`HistoricalEffectResolutions` records reconciliation of a known material readback
-failure after its affected objects were durably mapped. The trusted host source
+`HistoricalEffectResolutions` records reconciliation of known material or paused-state
+readback failures after their affected objects were durably mapped. The trusted host source
 proves the failure/mapping relationship and guards original records through commit;
 the SDK independently reads the complete paused Meta hierarchy through its provider
 port. The immutable resolution links the original import/operation/record IDs and
@@ -285,6 +285,11 @@ remain unchanged. Unknown transport outcomes require their specific recovery and
 cannot be relabelled through this source contract. Request-key replay/read APIs
 preserve a single resolution per import/operation, with source/session revocation
 checks and no provider writes, execution transfer, approvals or spending grants.
+For paused-state failures, retained image/creative IDs may accompany the affected
+serving object IDs. They must reference original Meta non-delivery mappings; they
+are preserved assets, not a claim that an image or creative has a paused delivery
+state. Superseded creatives remain in history, while complete current inventory
+identifies the creative actually attached to each ad.
 Adoption must revalidate the native source and current provider material/state.
 
 The server export `HistoricalCampaignImports` retains a host's consistent native

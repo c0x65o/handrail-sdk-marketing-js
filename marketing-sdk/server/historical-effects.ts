@@ -8,13 +8,13 @@ import {text} from './validation.js';
 export interface HistoricalEffectInput {historyImportId:string;operationId:string;requestKey:string}
 export interface HistoricalEffectCandidate {
   projectId:string;nativeCampaignId:string;historyImportId:string;operationId:string;sourceRevision:string;
-  basis:'mapped_objects_after_material_readback_failure';originalStatus:'partial';originalRequestCoverage:'unknown';
+  basis:'mapped_objects_after_material_readback_failure'|'mapped_objects_after_pause_readback_failure';originalStatus:'partial';originalRequestCoverage:'unknown';
   evidenceRecordIds:string[];affectedProviderIds:string[];
   providerIds:{campaign:string;adset:string;ad:string;creative:string};grant:Grant;
 }
 export interface HistoricalEffectSource {
   authorize(principal:Principal,project:string,campaign:string):Promise<void>;
-  /** Trusted host proof of a deterministic material-validation failure after its
+  /** Trusted host proof of a deterministic material/paused-readback failure after its
    * affected objects were durably mapped. Unknown transport outcomes do not fit. */
   capture(principal:Principal,project:string,historyImportId:string,operationId:string):Promise<HistoricalEffectCandidate>;
   assertCurrent(principal:Principal,candidate:HistoricalEffectCandidate):Promise<void>;
@@ -85,13 +85,17 @@ export class HistoricalEffectResolutions {
       candidate.grant.projectId===project&&typeof history.snapshot.accountId==='string'&&candidate.grant.accountId===`act_${history.snapshot.accountId.replace(/^act_/,'')}`&&
       history.snapshot.providerCampaignIds.length===1&&history.snapshot.providerCampaignIds[0]===candidate.providerIds.campaign&&
       history.receipt.unsettledOperationIds.includes(frozen.operationId),'historical_effect_scope_invalid');
-    requireThat(candidate.basis==='mapped_objects_after_material_readback_failure'&&candidate.originalStatus==='partial'&&candidate.originalRequestCoverage==='unknown'&&
+    requireThat(['mapped_objects_after_material_readback_failure','mapped_objects_after_pause_readback_failure'].includes(candidate.basis)&&candidate.originalStatus==='partial'&&candidate.originalRequestCoverage==='unknown'&&
       typeof candidate.sourceRevision==='string'&&candidate.sourceRevision.length>0&&Array.isArray(candidate.evidenceRecordIds)&&
       candidate.evidenceRecordIds.length>0&&new Set(candidate.evidenceRecordIds).size===candidate.evidenceRecordIds.length&&
       candidate.evidenceRecordIds.every(id=>history.receipt.recordRefs.some(r=>r.digest===id&&['operation','provider_object'].includes(r.kind)))&&
       history.receipt.recordRefs.some(r=>r.sourceId===frozen.operationId&&r.kind==='operation'&&candidate.evidenceRecordIds.includes(r.digest))&&
       Array.isArray(candidate.affectedProviderIds)&&candidate.affectedProviderIds.length>0&&new Set(candidate.affectedProviderIds).size===candidate.affectedProviderIds.length&&
-      candidate.affectedProviderIds.every(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id)),
+      candidate.affectedProviderIds.some(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id))&&
+      candidate.affectedProviderIds.every(id=>[candidate.providerIds.campaign,candidate.providerIds.adset,candidate.providerIds.ad].includes(id)||
+        (candidate.basis==='mapped_objects_after_pause_readback_failure'&&history.snapshot.records.some(r=>
+          r.kind==='provider_object'&&r.payload.provider==='meta'&&['image','creative'].includes(String(r.payload.object_type))&&r.payload.provider_object_id===id&&
+          candidate.evidenceRecordIds.includes(digest({project,nativeCampaignId:history.snapshot.nativeCampaignId,system:history.snapshot.source.system,record:r}))))),
       'historical_effect_evidence_missing');
     const guard=async()=>{await inspectLiveSessions(this.sessions,[session]);await this.access(p,project,frozen.historyImportId);
       requireThat(digest(candidate)===hash,'historical_effect_source_changed');await this.source.assertCurrent(p,candidate);};
