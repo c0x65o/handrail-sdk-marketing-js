@@ -691,11 +691,11 @@ export class NativeProvider implements ProviderPort {
     requireThat(typeof binding === 'string' && binding.length > 0 && binding.length <= 500, 'credential_binding_invalid');
     return binding;
   }
-  private async prerequisite(c: Campaign, g: Grant) {
+  private async prerequisite(c: Campaign, g: Grant, action: "prepare" | "activate" = "prepare") {
     if (!this.vault.prerequisiteBinding && !g.id.startsWith("connection:")) { validateAccountCapability(c, g, true); return; }
     validateAccountCapability(c, g);
     const assets = await Promise.all(c.material.assetIds.map(id => this.store.get<Asset>(c.projectId, "asset", id)));
-    await currentPrerequisite(this.store, c, g, this.plan(c, g, assets), Date.now(), await this.credentialBinding(g));
+    await currentPrerequisite(this.store, c, g, this.plan(c, g, assets), Date.now(), await this.credentialBinding(g), action);
   }
   async verify(
     g: Grant,
@@ -704,7 +704,7 @@ export class NativeProvider implements ProviderPort {
     intent?: Permission,
   ): ReturnType<ProviderPort["verify"]> {
     requireThat(intent === "pause" || this.name !== "linkedin" || g.timezone === "UTC", "linkedin_utc_required", 422);
-    if (campaign && intent !== "pause") await this.prerequisite(campaign, g);
+    if (campaign && intent !== "pause") await this.prerequisite(campaign, g, intent === "activate" ? "activate" : "prepare");
     return await this.use(g, async (client) => {
       if (campaign?.material.settings && intent !== "pause") await this.verifySettings(client, campaign, g);
       if (this.name === "meta" && intent === "pause") {
@@ -1574,9 +1574,9 @@ export class NativeProvider implements ProviderPort {
     beforeWrite = async () => {
       await hostBeforeWrite();
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
-      if (activate) await this.prerequisite(c, g);
+      if (activate) await this.prerequisite(c, g, "activate");
     };
-    if (activate) await this.prerequisite(c, g);
+    if (activate) await this.prerequisite(c, g, "activate");
     return await this.use(g, async (client) => {
       if (this.name === "linkedin") client.beforeWrite = async () => {
         const guard = async () => { await beforeWrite(); };

@@ -1756,3 +1756,33 @@ test('recurring daily-only campaign prepares, activates under host authority, re
     assert.equal((await t.store.list('qa-alpha','operation')).length,4);
   }finally{await t.close();}
 });
+
+test('unknown host activation can renew only campaign-scoped reporting authority without replaying the effect',async()=>{
+ const t=await setupTest();try{
+  const {c,input}=await budgeted(t,false);
+  const authority={assertCurrent:async()=>{},withCurrent:async(_p:unknown,_c:unknown,_a:unknown,local:()=>Promise<unknown>)=>local(),
+   activationApproval:async()=>({authorityId:'fixture-activation',revision:'1',receiptReferences:['fixture-owner-action']})};
+  const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+   tracking:formulaTracking(t.store),executionAuthority:{...authority,withCurrent:async(_p,_c,_a,local)=>local()},
+  });
+  const queued=await service.execute(t.agent,c.projectId,input);t.provider.loseNextResponse=true;
+  const unknown=await service.dispatch(c.projectId,queued.id);assert.equal(unknown.state,'unknown');
+  const original=await t.store.get<Grant>(c.projectId,'grant',c.grantId);
+  const next:Grant={...original,revision:original.revision+1,campaignId:c.id,permissions:['report']};
+  let reads=0;const reconcile=t.provider.reconcile.bind(t.provider);
+  t.provider.reconcile=async(...args)=>{reads++;return reconcile(...args);};
+  for(const invalid of [{...next,permissions:['activate','report'] as Grant['permissions']},{...next,campaignId:undefined},
+   {...next,campaignId:'another'},{...next,accountId:'another'},{...next,expiresAt:'2000-01-01T00:00:00Z'}]){
+   await t.store.put(c.projectId,'grant',original.id,invalid);
+   await assert.rejects(service.reconcile(t.agent,c.projectId,{operationId:queued.id}));assert.equal(reads,0);
+   assert.deepEqual(await t.store.get(c.projectId,'operation',queued.id),unknown);
+  }
+  await t.store.put(c.projectId,'grant',original.id,next);
+  await assert.rejects(t.service.reconcile(t.agent,c.projectId,{operationId:queued.id}),/host_session_authority_required/);
+  const result=await service.reconcile(t.agent,c.projectId,{operationId:queued.id});
+  assert.equal(result.state,'succeeded');assert.equal(result.id,queued.id);assert.equal(result.grantRevision,original.revision);assert.equal(reads,1);
+  assert.equal((await t.store.list<AdvertisingBudgetReservation>(c.projectId,'advertisingBudgetReservation'))[0]!.state,'active');
+  assert.equal((await t.store.list(c.projectId,'operation')).filter(o=>(o as Operation).kind==='activate').length,1);
+  await assert.rejects(service.execute(t.agent,c.projectId,{...input,requestKey:'cannot-replay-with-read-grant'}),/grant|changed/);
+ }finally{await t.close();}
+});

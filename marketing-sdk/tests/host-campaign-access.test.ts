@@ -141,3 +141,69 @@ for(const wrong of ['account','currency','session','receipts'] as const)test(`ho
     assert.equal(f.guards(),0);assert.equal((await f.store.list('p','operation')).length,0);
   }finally{await f.close();}
 });
+
+for(const change of ['none','custody-rotated'] as const)test(`activation-only host grant ${change} uses a distinct read-only check and cannot prepare`,async()=>{
+  const f=await hostFixture();try{
+    assert.equal((await f.call('checkCampaign',f.check)).state,'ready');await f.store.db.acquireExecutor();
+    const prep=await f.call('prepare',{campaignId:f.c.id,requestKey:'initial-preparation'});
+    assert.equal((await f.server.dispatch('p',prep.id)).state,'succeeded');
+    const before=await f.store.get<Campaign>('p','campaign',f.c.id),originalIds=before.receipt!.ids;
+    const preparationProof=await f.call('campaignCheck',{campaignId:f.c.id});assert.equal(preparationProof!.action,'prepare');
+    f.grant.revision++;f.grant.permissions=['activate','report'];
+    await f.store.put('p','grant',f.grant.id,f.grant);
+    const reads=f.http.trace.length;
+    await assert.rejects(f.call('checkCampaign',{...f.check,expectedGrantRevision:f.grant.revision,requestKey:'wrong-action'}),/permission|grant/);
+    await assert.rejects(f.call('prepare',{campaignId:f.c.id,requestKey:'never-prepare-again'}),/permission|grant/);
+    assert.equal(f.http.trace.length,reads);
+    const checkInput={...f.check,action:'activate' as const,expectedGrantRevision:f.grant.revision,requestKey:'activation-only'};
+    const checked=await f.call('checkCampaign',checkInput);assert.equal(checked.state,'ready',JSON.stringify(checked));assert.equal(checked.action,'activate');
+    assert.ok(f.http.trace.slice(reads).every(r=>r.method==='GET'));
+    const record=await f.store.get<import('../server/preflight.js').PrerequisiteRecord>('p','campaignCheck',checked.id);
+    assert.equal(record.action,'activate');assert.equal(record.scope!.action,'activate');
+    assert.deepEqual(await f.call('checkCampaign',checkInput),checked);
+    await assert.rejects(f.call('checkCampaign',{...checkInput,action:'prepare'}),/request_key_payload_conflict/);
+    const packet=await f.call('packet',{campaignId:f.c.id});
+    await f.call('decide',{packetId:packet.id,digest:packet.digest,decision:'approved'});
+    const operation=await f.call('execute',{packetId:packet.id,digest:packet.digest,requestKey:'activate-only'});
+    const beforeWrites=f.http.trace.filter(r=>r.method==='POST').length;
+    if(change==='custody-rotated')f.rotate();
+    const result=await f.server.dispatch('p',operation.id);
+    assert.equal(result.state,change==='none'?'succeeded':'blocked',JSON.stringify(result));
+    const current=await f.store.get<Campaign>('p','campaign',f.c.id);
+    assert.deepEqual(current.receipt!.ids,originalIds);assert.equal(current.state,change==='none'?'enabled':'paused');
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length-beforeWrites,change==='none'?3:0);
+    assert.deepEqual((await f.store.get<Grant>('p','grant',f.grant.id)).permissions,['activate','report']);
+    assert.deepEqual(await f.store.list('p','vault'),[]);assert.deepEqual(await f.store.list('p','connection'),[]);
+  }finally{await f.close();}
+});
+
+test('lost native activation acknowledgment reconciles through renewed report-only host custody without another POST',async()=>{
+  const f=await hostFixture();try{
+    assert.equal((await f.call('checkCampaign',f.check)).state,'ready');await f.store.db.acquireExecutor();
+    const prep=await f.call('prepare',{campaignId:f.c.id,requestKey:'prepare-before-loss'});
+    assert.equal((await f.server.dispatch('p',prep.id)).state,'succeeded');
+    assert.equal((await f.call('checkCampaign',{...f.check,action:'activate',requestKey:'activation-before-loss'})).state,'ready');
+    const packet=await f.call('packet',{campaignId:f.c.id});
+    await f.call('decide',{packetId:packet.id,digest:packet.digest,decision:'approved'});
+    const operation=await f.call('execute',{packetId:packet.id,digest:packet.digest,requestKey:'activation-lost'});
+    f.http.loseActivation();
+    const unknown=await f.server.dispatch('p',operation.id);assert.equal(unknown.state,'unknown');
+    const writes=f.http.trace.filter(r=>r.method==='POST').length;
+    const originalRevision=f.grant.revision;
+    const originalIds=(await f.store.get<Campaign>('p','campaign',f.c.id)).receipt!.ids;
+    f.grant.revision++;f.grant.campaignId=f.c.id;f.grant.permissions=['report'];f.rotate();
+    await f.store.put('p','grant',f.grant.id,f.grant);
+    const assertCurrent=async()=>{await f.vault.prerequisiteBinding!(f.grant);};
+    const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,
+      {campaignAccess:f.access,studio:{sessions:f.connections.sessionAuthority},tracking:f.source.options,
+        executionAuthority:{assertCurrent,withCurrent:async(_p,_c,_a,local)=>{await assertCurrent();const result=await local();await assertCurrent();return result;}}});
+    const result=await server.reconcile(f.principal,'p',{operationId:operation.id});
+    assert.equal(result.id,operation.id);assert.equal(result.state,'succeeded');assert.equal(result.grantRevision,originalRevision);
+    for(const key of ['campaign','adset','creative','ad','image','imageUploadDigest'])assert.equal(result.receipt?.ids[key],originalIds[key]);
+    assert.ok(result.receipt?.ids.readbackDigest,'current readback evidence is distinct from preserved provider identities');
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length,writes);
+    assert.equal((await f.store.list('p','operation')).length,2);
+    assert.deepEqual(await f.store.list('p','connection'),[]);assert.deepEqual(await f.store.list('p','vault'),[]);
+    assert.equal((await f.store.get<Grant>('p','grant',f.grant.id)).permissions.join(','),'report');
+  }finally{await f.close();}
+});

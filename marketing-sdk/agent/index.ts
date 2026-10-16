@@ -11,6 +11,9 @@ const tools = {
     expectedRevision: { type: "integer", minimum: 1 },
   },
   prepare: { campaignId: string, requestKey: string },
+  checkCampaign: {campaignId:string,action:{type:"string",enum:["prepare","activate"]},
+    expectedRevision:{type:"integer",minimum:1},expectedGrantRevision:{type:"integer",minimum:1},requestKey:string},
+  campaignCheck: {campaignId:string,requestKey:string},
   packet: { campaignId: string },
   execute: { packetId: string, digest: string, requestKey: string },
   reconcile: { operationId: string },
@@ -51,7 +54,7 @@ export const marketingToolSchemas = [...Object.entries(tools).map(
       properties,
       required:
         name === "saveCampaign"
-          ? ["grantId", "material"]
+          ? ["grantId", "material"] : name === "campaignCheck" ? ["campaignId"]
           : Object.keys(properties),
       additionalProperties: false,
     },

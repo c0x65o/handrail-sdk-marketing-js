@@ -24,24 +24,24 @@ const corrections: Record<string, string> = {
 };
 const checkError = (error: unknown) => corrections[error instanceof Error ? error.message : ""] ??
   "The check response could not be confirmed. Read its saved status before starting another check.";
-export function CampaignPrerequisites({ client, campaign, grantRevision, canEdit, onState }: {
-  client: MarketingClient; campaign: Campaign; grantRevision: number; canEdit: boolean;
+export function CampaignPrerequisites({ client, campaign, grantRevision, canEdit, action="prepare", onState }: {
+  client: MarketingClient; campaign: Campaign; grantRevision: number; canEdit: boolean; action?: "prepare" | "activate";
   onState: (ready: boolean) => void;
 }) {
   const [check, setCheck] = useState<CampaignCheck | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const flight = useRef<{ epoch: number; active: boolean; running?: boolean; controller?: AbortController; key?: string }>({ epoch: 0, active: true });
   const notify = useRef(onState); notify.current = onState;
-  const apply = (v: CampaignCheck | null) => { setCheck(v); notify.current(v?.state === "ready" && Date.parse(v.expiresAt ?? "") > Date.now()); };
+  const apply = (value: CampaignCheck | null) => { const v=value&&value.action!==action?{...value,state:"stale" as const,reasons:["Check this campaign for the current action."]}:value; setCheck(v); notify.current(v?.state === "ready" && Date.parse(v.expiresAt ?? "") > Date.now()); };
   useEffect(() => {
     const f = flight.current; f.active = true; const epoch = ++f.epoch; f.controller = new AbortController(); notify.current(false);
     void client.call("campaignCheck", { campaignId: campaign.id }, { signal: f.controller.signal }).then(v => {
       if (f.active && f.epoch === epoch) apply(v);
     }).catch(e => { if (f.active && f.epoch === epoch && !f.controller?.signal.aborted) setError(checkError(e)); });
     return () => { f.active = false; ++f.epoch; f.controller?.abort(); notify.current(false); };
-  }, [client, campaign.id, campaign.revision, grantRevision]);
+  }, [client, campaign.id, campaign.revision, grantRevision, action]);
   useEffect(() => {
     if (check?.state !== "ready") return;
-    const timer = setTimeout(() => apply({ ...check, state: "stale", reasons: ["This check expired. Check updated campaign before preparing."] }), Math.max(0, Date.parse(check.expiresAt!) - Date.now()));
+    const timer = setTimeout(() => apply({ ...check, state: "stale", reasons: ["This check expired. Check the updated campaign before continuing."] }), Math.max(0, Date.parse(check.expiresAt!) - Date.now()));
     return () => clearTimeout(timer);
   }, [check]);
   async function run(recover = false) {
@@ -51,16 +51,16 @@ export function CampaignPrerequisites({ client, campaign, grantRevision, canEdit
     if (!recover) f.key = crypto.randomUUID();
     try {
       const v = recover ? await client.call("campaignCheck", { campaignId: campaign.id, ...(f.key ? { requestKey: f.key } : {}) }, { signal: f.controller.signal })
-        : await client.call("checkCampaign", { campaignId: campaign.id, expectedRevision: campaign.revision, expectedGrantRevision: grantRevision, requestKey: f.key! }, { signal: f.controller.signal });
+        : await client.call("checkCampaign", { campaignId: campaign.id, action, expectedRevision: campaign.revision, expectedGrantRevision: grantRevision, requestKey: f.key! }, { signal: f.controller.signal });
       if (f.active && f.epoch === epoch) apply(v);
     } catch (e) { if (f.active && f.epoch === epoch) setError(checkError(e)); }
     finally { if (f.epoch === epoch) f.running = false; if (f.active && f.epoch === epoch) setBusy(false); }
   }
   function cancel() { const f = flight.current; ++f.epoch; f.running = false; f.controller?.abort(); setBusy(false); notify.current(false); setError("Check left in history. Read its saved status or explicitly start a new check."); }
-  const labels = { checking: "Checking prerequisites", ready: "Ready for preparation", blocked: "Prerequisites blocked", incomplete: "Check incomplete", stale: "Campaign check stale" };
+  const labels = { checking: "Checking prerequisites", ready: action==="activate"?"Ready for authorized launch":"Ready for preparation", blocked: "Prerequisites blocked", incomplete: "Check incomplete", stale: "Campaign check stale" };
   return <section aria-label="Campaign prerequisites" className="card">
     <h3>{busy ? labels.checking : check ? labels[check.state] : "Check campaign prerequisites"}</h3>
-    <p>Checks current prerequisites for attempting separately authorized paused preparation. This does not approve the advertisement, policy review, delivery, spend or attribution. Media upload and created objects still need provider acceptance and readback.</p>
+    <p>Checks current prerequisites for {action==="activate"?"a separately authorized launch":"separately authorized paused preparation"}. This does not approve the advertisement, policy review, delivery, spend or attribution. Media upload and created objects still need provider acceptance and readback.</p>
     {check?.evidence === "fixture" && <p>Synthetic HTTP fixture check. Actual account eligibility is not established.</p>}
     {check?.checkedAt && <p>Last checked: <time dateTime={check.checkedAt}>{new Date(check.checkedAt).toLocaleString()}</time></p>}
     {check?.state === "ready" && <ul>{check.facts.map(fact => <li key={fact}>{fact}</li>)}</ul>}

@@ -358,7 +358,8 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     }
   }
   const [prerequisiteState, setPrerequisiteState] = useState({ scope: "", ready: false });
-  const prerequisiteScope = `${campaign?.id}:${campaign?.revision}:${data?.grants.find(g => g.id === campaign?.grantId)?.revision}`;
+  const prerequisiteAction = campaign?.state==="paused"?"activate":"prepare";
+  const prerequisiteScope = `${prerequisiteAction}:${campaign?.id}:${campaign?.revision}:${data?.grants.find(g => g.id === campaign?.grantId)?.revision}`;
   const selectedGrant = data?.grants.find(g => g.id === campaign?.grantId);
   const needsPrerequisite = !!selectedGrant?.id.startsWith("connection:") && data?.nativePrerequisiteProviders?.includes(selectedGrant.provider);
   const readiness = campaign && selectedGrant ? [
@@ -366,8 +367,8 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
     ...(campaign.material.settings?.conversion ? ["provider_event_delivery_unqualified_use_tracking_diagnostics"] : []),
     ...(selectedGrant.provider !== "google" && !campaign.material.settings ? ["explicit_provider_settings_required"] : []),
     ...(selectedGrant.provider !== "google" && campaign.material.assetIds.length !== 1 ? ["single_image_required"] : []),
-    ...(!data?.setups.some(s => s.grantId === campaign.grantId && s.state === "ready") ? ["verified_setup_required"] : []),
-    ...(needsPrerequisite && !(prerequisiteState.scope === prerequisiteScope && prerequisiteState.ready) ? ["Check this campaign before preparing paused objects."] : []),
+    ...(!needsPrerequisite&&!data?.setups.some(s => s.grantId === campaign.grantId && s.state === "ready") ? ["verified_setup_required"] : []),
+    ...(needsPrerequisite && !(prerequisiteState.scope === prerequisiteScope && prerequisiteState.ready) ? [prerequisiteAction==="activate"?"Check this campaign before launching.":"Check this campaign before preparing paused objects."] : []),
   ] : ["account_required"];
   const providerZoneValid = campaign?.material.audience.provider !== "linkedin" || campaign.material.timezone === "UTC";
   const completedWindow = campaign && providerZoneValid ? completedCampaignWindow(campaign.material.startAt,
@@ -818,7 +819,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   )}
                   client={client}
                 />
-                {needsPrerequisite && <CampaignPrerequisites key={prerequisiteScope} client={client} campaign={campaign} grantRevision={selectedGrant!.revision} canEdit={!!canEdit}
+                {needsPrerequisite && <CampaignPrerequisites key={prerequisiteScope} client={client} campaign={campaign} action={prerequisiteAction} grantRevision={selectedGrant!.revision} canEdit={!!canEdit}
                   onState={ready => setPrerequisiteState({ scope: prerequisiteScope, ready })}/>}
                 {readiness.length > 0 && <div role="status"><strong>Launch readiness blockers</strong><ul>{readiness.map(x => <li key={x}>{x.replaceAll("_", " ")}</li>)}</ul></div>}
                 <div className="actions">
@@ -903,7 +904,7 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                                 busy ||
                                 decision.decision !== "approved" ||
                                 !!decision.revokedAt ||
-                                campaign.state !== "paused" || data.operations.some(o => o.campaignId === campaign.id && ["queued", "running", "unknown"].includes(o.state))
+                                campaign.state !== "paused" || readiness.length > 0 || data.operations.some(o => o.campaignId === campaign.id && ["queued", "running", "unknown"].includes(o.state))
                               }
                               onClick={() =>
                                 void act(() =>

@@ -206,7 +206,7 @@ live execution qualification remains required.
 
 Hosts with existing advertising connections may supply `MarketingServer`'s
 `campaignAccess: CampaignAccess` alongside their `NativeProvider` credential port.
-This qualifies country selection and exact campaign preparation without an SDK
+This qualifies country selection and exact campaign preparation or activation without an SDK
 OAuth journey or SDK vault row. `CampaignAccess.campaignAuthority` returns current
 account/identity facts, original authority receipt references, live session
 inspections and an access digest. `withCampaignAuthority` holds the existing host
@@ -219,6 +219,21 @@ Queuing preparation is local; dispatch consumes current exact prerequisite proof
 before provider I/O and rechecks it before effects. Missing, stale or revoked
 proof blocks dispatch even if an old setup record says ready. Hosts must never
 fabricate setup records to connect their existing credential custody.
+
+`checkCampaign` accepts `action: "prepare" | "activate"` (omission means preparation).
+The returned `CampaignCheck.action`, private evidence binding and provider write
+checks all retain that action. A ready preparation check cannot authorize launch;
+activation needs its own current read-only check. The grant and discovered account
+must allow the selected action. An activation-only host grant needs no preparation
+permission. The agent schemas expose both checking and saved-check recovery; the
+React workspace requests the action appropriate to the current campaign state.
+Checks establish prerequisites, not approval or budget/spending authority.
+
+After an uncertain host activation, read-only reconciliation may use a renewed,
+higher-revision grant for the same exact campaign/account with only `report`
+permission. It preserves the original operation, effect grant revision, material,
+provider IDs and budget exposure. This does not replay activation or restore old
+spending permission; a later launch still needs current independent authorization.
 
 The matching `VaultPort.prerequisiteBinding(grant)` returns a private nonsecret
 credential/configuration revision binding from current host custody. It must
@@ -234,7 +249,7 @@ previous deadline cannot extend or revive an expired/replaced envelope.
 Host custody requires exact prerequisite evidence regardless of grant ID. The
 provider holds one credential binding through its requests, preserves returned
 object IDs before stopping after an uncertain write, and never replays an unknown
-operation. Prerequisite contract v5 includes this custody binding. Earlier checks
+operation. Prerequisite contract v6 binds both this custody and the exact action. Earlier checks
 remain historical records and need fresh qualification before use. The SDK's own
 Connections service implements the same authority interface for its existing
 OAuth records. A package upgrade does not supply a native host adapter or new

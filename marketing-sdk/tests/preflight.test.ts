@@ -37,7 +37,7 @@ for(const daily of [false,true])test(`public Connections and Studio produce sepa
     assert.equal(paused.receipt?.evidence,"provider");assert.ok(paused.receipt?.ids.readbackDigest);
     const refresh=await f.call("checkCampaign",{...f.check,requestKey:"refresh"});assert.equal(refresh.state,"ready");
     assert.equal((await f.store.list("p","operation")).length,1);assert.equal(f.http.trace.filter(r=>r.method==="POST").length,5);
-    await assert.rejects(f.call("prepare",{campaignId:f.c.id,requestKey:"new-hierarchy"}),daily?/meta_daily_budget_update_unqualified/:/existing_operation_requires_reconciliation/);
+    await assert.rejects(f.call("prepare",{campaignId:f.c.id,requestKey:"new-hierarchy"}),/existing_operation_requires_reconciliation/);
   } finally { await f.close(); }
 });
 
@@ -182,7 +182,7 @@ test("missing and conflicting scopes and empty billing signals cannot produce gr
 
 test("replayed or forged prerequisite action/campaign/project cannot become current green evidence",async()=>{
  const f=await nativePreflightFixture();try{
-  await assert.rejects(f.call("checkCampaign",{...f.check,action:"activate"} as any),/unexpected_field/);
+  await assert.rejects(f.call("checkCampaign",{...f.check,action:"publish"} as any),/invalid_campaign_check_action/);
   const ready=await f.call("checkCampaign",f.check);assert.equal(ready.state,"ready");
   const original=await f.store.get<any>("p","campaignCheck",ready.id);
   for(const [field,value] of [["action","activate"],["campaignId","other-campaign"],["projectId","other"]]){

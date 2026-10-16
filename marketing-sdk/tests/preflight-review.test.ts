@@ -93,6 +93,7 @@ test("lost-response reconciliation permits unrelated SQL work and rejects extern
     await f.store.db.acquireExecutor();
     const prep = await f.call("prepare", { campaignId: f.c.id, requestKey: "prepare" });
     assert.equal((await f.server.dispatch("p", prep.id)).state, "succeeded");
+    const activationProof=await f.call("checkCampaign", {...f.check,action:"activate",requestKey:"activation-check"});assert.equal(activationProof.state,"ready");
     const packet = await f.call("packet", { campaignId: f.c.id });
     await f.call("decide", { packetId: packet.id, digest: packet.digest, decision: "approved" });
     const activation = await f.call("execute", { packetId: packet.id, digest: packet.digest, requestKey: "activate" });
@@ -143,12 +144,13 @@ test("human delay after paused preparation needs fresh proof but preserves the e
     assert.equal((await f.server.dispatch("p", prep.id)).state, "succeeded");
     const paused = await f.store.get<Campaign>("p", "campaign", f.c.id);
     assert.equal(paused.revision, f.c.revision);
+    const activationProof=await f.call("checkCampaign", {...f.check,action:"activate",requestKey:"activation-check"});assert.equal(activationProof.state,"ready");
     const packet = await f.call("packet", { campaignId: f.c.id });
     await f.call("decide", { packetId: packet.id, digest: packet.digest, decision: "approved" });
-    t.mock.timers.enable({ apis: ["Date"], now: Date.parse(proof.expiresAt!) + 1 });
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse(activationProof.expiresAt!) + 1 });
     const blocked = await f.call("execute", { packetId: packet.id, digest: packet.digest, requestKey: "expired" });
     assert.equal((await f.server.dispatch("p", blocked.id)).state, "blocked");
-    assert.equal((await f.call("checkCampaign", { ...f.check, requestKey: "refresh" })).state, "ready");
+    assert.equal((await f.call("checkCampaign", { ...f.check, action:"activate", requestKey: "refresh" })).state, "ready");
     assert.equal(digest(await f.store.get("p", "campaign", f.c.id)), digest(paused));
     const recovery = await f.call("execute", { packetId: packet.id, digest: packet.digest, requestKey: "fresh" });
     assert.equal((await f.server.dispatch("p", recovery.id)).state, "succeeded");
@@ -163,6 +165,7 @@ test("concurrent native readbacks return the same original completed operation w
     assert.equal((await f.call("checkCampaign", f.check)).state, "ready"); await f.store.db.acquireExecutor();
     const prep = await f.call("prepare", { campaignId: f.c.id, requestKey: "prepare" });
     assert.equal((await f.server.dispatch("p", prep.id)).state, "succeeded");
+    const activationProof=await f.call("checkCampaign", {...f.check,action:"activate",requestKey:"activation-check"});assert.equal(activationProof.state,"ready");
     const packet = await f.call("packet", { campaignId: f.c.id });
     await f.call("decide", { packetId: packet.id, digest: packet.digest, decision: "approved" });
     const op = await f.call("execute", { packetId: packet.id, digest: packet.digest, requestKey: "activate" });
@@ -211,6 +214,7 @@ for (const cause of ["expiry", "revocation", "final-readback-revocation"] as con
     const prep = await f.call("prepare", { campaignId: f.c.id, requestKey: "prepare" });
     assert.equal((await f.server.dispatch("p", prep.id)).state, "succeeded");
     const paused = await f.store.get<Campaign>("p", "campaign", f.c.id);
+    const activationProof=await f.call("checkCampaign", {...f.check,action:"activate",requestKey:"activation-check"});assert.equal(activationProof.state,"ready");
     const packet = await f.call("packet", { campaignId: f.c.id });
     await f.call("decide", { packetId: packet.id, digest: packet.digest, decision: "approved" });
     const activation = await f.call("execute", { packetId: packet.id, digest: packet.digest, requestKey: "activate" });
@@ -219,7 +223,7 @@ for (const cause of ["expiry", "revocation", "final-readback-revocation"] as con
     f.http.boundary = async (_url, init) => {
       if (init?.method !== "POST") return;
       if (++writes !== (cause === "final-readback-revocation" ? 3 : 1)) return;
-      if (cause === "expiry") t.mock.timers.enable({ apis: ["Date"], now: Date.parse(proof.expiresAt!) + 1 });
+      if (cause === "expiry") t.mock.timers.enable({ apis: ["Date"], now: Date.parse(activationProof.expiresAt!) + 1 });
       else await f.host!.revoke(f.principal.externalSessionRef!);
     };
     const result = await f.server.dispatch("p", activation.id);
@@ -272,4 +276,31 @@ test("process death during a native check retains the original incomplete attemp
     assert.equal((await f.store.list("p", "operation")).length, 0);
     assert.ok(f.http.trace.every(r => r.method === "GET"));
   } finally { child.kill("SIGKILL"); t.mock.timers.reset(); await f.close(); }
+});
+
+test('preparation proof cannot authorize activation even when both permissions share the same grant', async () => {
+  const f=await nativePreflightFixture(true);
+  try {
+    const proof=await f.call('checkCampaign',f.check);
+    assert.equal(proof.action,'prepare');assert.equal(proof.state,'ready');
+    await f.store.db.acquireExecutor();
+    const prepared=await f.call('prepare',{campaignId:f.c.id,requestKey:'prepare'});
+    assert.equal((await f.server.dispatch('p',prepared.id)).state,'succeeded');
+    const paused=await f.store.get<Campaign>('p','campaign',f.c.id);
+    const packet=await f.call('packet',{campaignId:f.c.id});
+    await f.call('decide',{packetId:packet.id,digest:packet.digest,decision:'approved'});
+    const writes=f.http.trace.filter(r=>r.method==='POST').length;
+    const rejected=await f.call('execute',{packetId:packet.id,digest:packet.digest,requestKey:'wrong-action'});
+    assert.equal((await f.server.dispatch('p',rejected.id)).state,'blocked');
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length,writes);
+    assert.equal((await f.call('campaignCheck',{campaignId:f.c.id}))?.action,'prepare');
+    const checked=await f.call('checkCampaign',{...f.check,action:'activate',requestKey:'activation-check'});
+    assert.equal(checked.action,'activate');assert.equal(checked.state,'ready');
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length,writes,'the new check is read-only');
+    const launched=await f.call('execute',{packetId:packet.id,digest:packet.digest,requestKey:'right-action'});
+    assert.equal((await f.server.dispatch('p',launched.id)).state,'succeeded');
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length,writes+3);
+    assert.equal((await f.store.get<Campaign>('p','campaign',f.c.id)).revision,paused.revision);
+    assert.equal((await f.store.list('p','decision')).length,1,'the original exact approval remains valid');
+  } finally {await f.close();}
 });
