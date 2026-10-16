@@ -136,11 +136,23 @@ function materialFromObservation(source: Omit<ExistingMetaMaterialSource,'retain
     return group.interests.map((x:any)=>{requireThat(x&&Object.keys(x).every(k=>["id","name"].includes(k)),"existing_material_targeting_unsupported");return option("interests",x.id,x.name);});
   });
   const excluded=(t.excluded_custom_audiences??[]).map((x:any)=>option("customAudiences",x.id,x.name));
-  const expansionEntries=Array.isArray(adset.targeting_optimization_types)?adset.targeting_optimization_types:
-    Object.entries(adset.targeting_optimization_types??{}).map(([key,value])=>({key,value}));
-  const bits=Object.fromEntries(expansionEntries.map((x:any)=>[x.key,x.value]));
-  requireThat([bits.detailed_targeting,bits.lookalike].every(x=>x===0||x===1) && metaExpansionMatches(adset.targeting_optimization_types,bits as any),"existing_material_expansion_unknown");
-  if(!lead)requireThat(metaExpansionOff(adset.targeting_optimization_types),"existing_material_expansion_unknown");
+  const expansion=adset.targeting_optimization_types;
+  const expansionEntries:any[]=Array.isArray(expansion)?expansion:expansion&&typeof expansion==='object'
+    ?Object.entries(expansion).map(([key,value])=>({key,value})):[];
+  // The provider readback verifier accepts exact numeric or string binary bits.
+  // Use that same representation here; never coerce absence, booleans or prose.
+  const bit=(value:unknown)=>value===0||value==='0'?0:value===1||value==='1'?1:null;
+  const bits=Object.fromEntries(expansionEntries.map(x=>[x?.key,bit(x?.value)]));
+  if(![bits.detailed_targeting,bits.lookalike].every(x=>x===0||x===1)||
+    !metaExpansionMatches(expansion,bits as any)||!lead&&!metaExpansionOff(expansion)) {
+    const type=(value:unknown)=>value===undefined?'missing':value===null?'null':Array.isArray(value)?'array':typeof value;
+    throw Object.assign(new DomainError('existing_material_expansion_unknown'),{materialDiagnostic:{phase:'provider_expansion',
+      collectionType:type(expansion),entryCount:expansionEntries.length,requiresExpansionOff:!lead,
+      fields:['detailed_targeting','lookalike'].map(field=>{
+        const entries=expansionEntries.filter(x=>x?.key===field);
+        return {field,occurrences:entries.length,values:entries.slice(0,3).map(x=>({type:type(x.value),binaryBit:bit(x.value)}))};
+      }),unknownFieldCount:expansionEntries.filter(x=>!['detailed_targeting','lookalike'].includes(x?.key)).length}});
+  }
   requireThat(creative.asset_feed_spec==null,"existing_material_asset_feed_unsupported");
   const story=creative.object_story_spec, link=story?.link_data;
   requireThat(story?.page_id===grant.pageId && link?.image_hash===ids.image && link?.name===source.headline && link?.message===source.body &&

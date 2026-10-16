@@ -309,3 +309,29 @@ test("Meta existing Reels placement capture preserves exact positions and reject
     await assert.rejects(f.capture());
   }
 });
+
+
+for(const encoding of ['array','object'] as const)test(`Meta adoption preserves exact string expansion bits in ${encoding} provider readback`,async()=>{
+  const f=fixture();f.observed.adset.targeting_optimization_types=encoding==='array'
+    ?[{key:'detailed_targeting',value:'1'},{key:'lookalike',value:'0'}]:{detailed_targeting:'1',lookalike:'0'};
+  f.source.retainedProviderTerms=structuredClone(existingMetaTerms(f.observed));
+  const retained=structuredClone(f.source.retainedProviderTerms),r=await f.capture();
+  assert.deepEqual(r.material.settings?.provider==='meta'&&r.material.settings.targeting.expansion,{detailedTargeting:1,lookalike:0});
+  assert.deepEqual(f.source.retainedProviderTerms,retained);
+});
+for(const [label,value] of Object.entries({missing:undefined,empty:[],nullEntry:[null],privateValue:[{key:'detailed_targeting',value:'synthetic-private-token'},{key:'lookalike',value:0}],
+  booleanBits:{detailed_targeting:true,lookalike:false},whitespaceBits:{detailed_targeting:' 1',lookalike:'0'},missingBit:{detailed_targeting:1},
+  duplicate:[{key:'detailed_targeting',value:1},{key:'detailed_targeting',value:1}],extraField:{detailed_targeting:1,lookalike:0,'synthetic-private-token':{secret:'private'}}}))
+  test(`Meta adoption keeps ${label} expansion unknown with bounded diagnostics`,async()=>{
+    const f=fixture();f.observed.adset.targeting_optimization_types=value;
+    const {retainedProviderTerms,...source}=f.source;
+    await assert.rejects(f.provider.reconcileExistingMetaMaterial(f.grant,f.ids,{...source,retainedObservations:[{key:'campaign.objective',value:'OUTCOME_LEADS',provenance:'legacy_intent',historyRecordId:'a'.repeat(64)}]},async()=>{}),error=>{
+      const e=error as Error&{materialDiagnostic:any};assert.equal(e.message,'existing_material_expansion_unknown');
+      const d=e.materialDiagnostic;assert.equal(d.phase,'provider_expansion');assert.equal(d.fields.length,2);
+      assert.deepEqual(d.fields.map((x:any)=>x.field),['detailed_targeting','lookalike']);
+      assert.ok(d.fields.every((x:any)=>x.values.length<=3));assert.doesNotMatch(JSON.stringify(d),/synthetic-private-token|secret|private/);
+      if(label==='missingBit')assert.equal(d.fields[1].occurrences,0);
+      if(label==='privateValue')assert.equal(d.fields[0].values[0].binaryBit,null);
+      return true;
+    });
+  });
