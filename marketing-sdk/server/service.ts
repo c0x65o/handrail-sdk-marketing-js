@@ -1,3 +1,4 @@
+import {ActivationStops,type ActivationStopIntent,type ActivationStopReceipt} from './activation-stops.js';
 import {assertHostActivationApproval} from './activation-approval.js';
 import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
@@ -66,6 +67,10 @@ interface AudienceDisplay { id: string; scope: string; query: string; code: stri
 interface AudienceCursor { scope: string; query: string; expiresAt: number; after: string; pages: number; seen: string[]; identities: Record<string, string>; }
 interface AudienceCache { scope: string; query: string; expiresAt: number; view: AudienceSearch; }
 interface CampaignSave { c: Campaign; grant: string; previous: string | null; assets: string; }
+// A held executor lease is not proof that another call on this same Store has
+// finished. Recovery must not relabel an in-flight provider request as stopped.
+const activeExecutions=new WeakMap<Store,Set<string>>();
+const executionKey=(project:string,id:string)=>JSON.stringify([project,id]);
 const EDIT = ["admin", "editor"] as const;
 const HUMAN = ["admin", "approver"] as const;
 const valid = (expiry: string, revoked: string | null, now: number) =>
@@ -108,6 +113,7 @@ export class MarketingServer {
       !(provider instanceof NativeProvider) || typeof provider.vault.prerequisiteBinding === 'function'), 'host_credential_binding_required');
     requireThat(mode === "fixture" || Object.values(providers).every(provider => provider.evidence === "provider"), "fixture_provider_requires_fixture_mode");
   }
+  private get activationStops() { return new ActivationStops(this.store); }
   private trackingService?: MarketingTracking;
   get tracking(): MarketingTracking { return this.trackingService ??= new MarketingTracking(this.store, this.studio.sessions, this.options.tracking ?? {}, (project, input) => this.recordEvent(project, input), this.mode, this.now); }
   private studioService?: CampaignStudio;
@@ -703,7 +709,9 @@ export class MarketingServer {
     kind: Operation["kind"],
     key: string,
     packetId: string | null = null,
+    stopsActivationId: string | null = null,
   ) {
+    requireThat(!stopsActivationId || kind === "pause", "activation_stop_scope");
     await this.auth(p, project, kind !== "activate");
     const c = await this.store.get<Campaign>(project, "campaign", campaignId);
     if (kind === "pause") requireThat(c.receipt, "provider_objects_required");
@@ -726,6 +734,7 @@ export class MarketingServer {
       grantRevision: g.revision,
       plan,
       packetId,
+      ...(stopsActivationId ? {stopsActivationId} : {}),
     };
     return await this.request<Operation>(
       project,
@@ -733,10 +742,11 @@ export class MarketingServer {
       payload,
       "operation",
       async () => {
+        const original = stopsActivationId ? await this.activationStops.original(c,g,stopsActivationId) : null;
         requireThat(
           !(await this.store.list<Operation>(project, "operation")).some(
             (o) =>
-              o.campaignId === c.id &&
+              o.campaignId === c.id && o.id !== stopsActivationId && !original?.precedingStops.some(prior=>prior.id===o.id) &&
               (["queued", "running", "unknown"].includes(o.state) ||
                 (kind === "prepare" && o.kind === kind && o.campaignRevision === c.revision && o.state === "succeeded") ||
                 (kind === "activate" && o.kind === kind && o.packetId === packetId && o.state === "succeeded")),
@@ -752,6 +762,7 @@ export class MarketingServer {
           grantRevision: g.revision,
           accountId: g.accountId,
           kind,
+          ...(stopsActivationId ? {stopsActivationId,precedingStopIds:original!.precedingStops.map(o=>o.id)} : {}),
           packetId,
           payloadDigest: kind === "pause" ? c.receipt!.payloadDigest : digest(plan),
           state: "queued",
@@ -761,6 +772,7 @@ export class MarketingServer {
         };
         if (kind === "activate") await this.advertisingBudgets.reserve(c, operation);
         await this.store.put(project, "executionActor", operation.id, p);
+        if(original)await this.activationStops.retain(c,operation,original);
         return operation;
       },
     );
@@ -1317,6 +1329,30 @@ export class MarketingServer {
       );
     });
   }
+  /** Explicit current host pause authority, never replay of the uncertain launch. */
+  async stopUncertainActivation(p:Principal,project:string,input:{campaignId:string;operationId:string;requestKey:string}):Promise<Operation> {
+    requireThat(this.options.executionAuthority,"host_execution_authority_required",403);
+    await this.store.db.assertExecutionOwner();
+    text(input.operationId);text(input.requestKey,160);
+    return this.executionTransaction(p,project,input.campaignId,"pause",async()=>{
+      const prior=await this.readExecutionRequest(p,project,input.campaignId,"pause",input.requestKey);
+      if(prior){requireThat(prior.stopsActivationId===input.operationId,"request_key_payload_conflict");return prior;}
+      return this.reserve(p,project,input.campaignId,"pause",input.requestKey,null,input.operationId);
+    });
+  }
+  /** Typed, read-only history; stopped is not a successful launch or delivery claim. */
+  async readActivationStop(p:Principal,project:string,campaignId:string,pauseOperationId:string):Promise<{
+    intent:ActivationStopIntent;receipt:ActivationStopReceipt|null;
+  }> {
+    return this.executionTransaction(p,project,campaignId,"read",async()=>{
+      await this.auth(p,project,false);
+      const intent=await this.store.get<ActivationStopIntent>(project,'activationStopIntent',pauseOperationId);
+      requireThat(intent.projectId===project&&intent.campaignId===campaignId,"activation_stop_scope");
+      const receipt=await this.store.get<ActivationStopReceipt>(project,'activationStopReceipt',pauseOperationId)
+        .catch(error=>{if(error instanceof DomainError&&error.code==='not_found')return null;throw error;});
+      return {intent,receipt};
+    });
+  }
   /** Bind unchanged tracking to a daily-budget revision under the same current
    * execution authority used for its paused provider update. Not an HTTP/agent
    * setup command; human-only tracking configuration remains unchanged. */
@@ -1359,6 +1395,15 @@ export class MarketingServer {
     return this.dispatchOperation(project, input.operationId, actor);
   }
   private async dispatchOperation(project: string, operationId: string, continuationActor?: Principal) {
+    await this.store.db.assertExecutionOwner();
+    const active=activeExecutions.get(this.store)??new Set<string>();activeExecutions.set(this.store,active);
+    const key=executionKey(project,operationId);
+    if(active.has(key))return this.store.get<Operation>(project,'operation',operationId);
+    active.add(key);
+    try{return await this.dispatchProviderOperation(project,operationId,continuationActor);}
+    finally{active.delete(key);}
+  }
+  private async dispatchProviderOperation(project: string, operationId: string, continuationActor?: Principal) {
     await this.store.db.assertExecutionOwner();
     let o = await this.store.get<Operation>(project, "operation", operationId);
     if (o.state !== "queued") return o;
@@ -1464,10 +1509,15 @@ export class MarketingServer {
             "SELECT operation_id FROM leases WHERE project_id=? AND account_id=?",
           )
           .get(project, g.accountId);
-        requireThat(!lease, "account_execution_pending");
-        await this.store.db
-          .prepare("INSERT INTO leases VALUES(?,?,?)")
-          .run(project, g.accountId, o.id);
+        if(o.stopsActivationId){
+          const {intent}=await this.activationStops.assertIntent(c,o);
+          requireThat(lease?.operation_id===intent.leaseOwnerId,"uncertain_activation_lease_changed");
+          await this.store.db.prepare("UPDATE leases SET operation_id=? WHERE project_id=? AND account_id=? AND operation_id=?")
+            .run(o.id,project,g.accountId,intent.leaseOwnerId);
+        }else{
+          requireThat(!lease, "account_execution_pending");
+          await this.store.db.prepare("INSERT INTO leases VALUES(?,?,?)").run(project,g.accountId,o.id);
+        }
         o = {
           ...o,
           state: "running",
@@ -1542,6 +1592,7 @@ export class MarketingServer {
         const lease = await this.store.db.prepare("SELECT operation_id FROM leases WHERE project_id=? AND account_id=?").get(project, g.accountId);
         requireThat(lease?.operation_id === o.id, "operation_lease_lost");
         if (o.kind === "activate") await this.advertisingBudgets.assert(c, o);
+        if (o.stopsActivationId) await this.activationStops.assertIntent(c,o);
         return action();
       });
       const secured = async () => {
@@ -1607,6 +1658,7 @@ export class MarketingServer {
         // A host commit acknowledgement may fail after the SDK committed its
         // verified receipt. Preserve that receipt; the caller must read it.
         if (current.state === "succeeded") throw error;
+        if (current.state !== "running") return current; // Never resurrect a recovered/stopped effect.
         o = { ...current, state: "unknown", reason: "external_outcome_unknown_reconcile_before_retry" };
         await this.store.put(project, "operation", o.id, o);
         return o;
@@ -1625,7 +1677,9 @@ export class MarketingServer {
       requireThat(lease?.operation_id === o.id, "operation_lease_lost");
       const current = await this.store.get<Campaign>(c.projectId, "campaign", c.id);
       requireThat(current.revision === o.campaignRevision, "stale_material");
+      await this.activationStops.assertOriginalReadable(c.projectId,o);
       await this.advertisingBudgets.settle(c, o, receipt.intent, receipt);
+      if(o.stopsActivationId)await this.activationStops.finish(c,o,receipt);
       const next = {
         ...o,
         state: "succeeded" as const,
@@ -1663,7 +1717,7 @@ export class MarketingServer {
           project,
           kind,
         )) {
-          if (o.state === "running")
+          if (o.state === "running" && !(kind === "operation" && activeExecutions.get(this.store)?.has(executionKey(project,o.id))))
             await this.store.put(project, kind, o.id, {
               ...o,
               state: "unknown",
@@ -1688,6 +1742,7 @@ export class MarketingServer {
   /** Recovery by the exclusive executor, restricted to this authorized effect. */
   async recoverExecution(p: Principal, project: string, operationId: string): Promise<Operation> {
     await this.store.db.assertExecutionOwner();
+    requireThat(!activeExecutions.get(this.store)?.has(executionKey(project,operationId)),"execution_still_running");
     await this.auth(p, project, true);
     const operation = await this.store.get<Operation>(project, "operation", operationId);
     return this.executionTransaction(p, project, operation.campaignId, "reconcile", async () => {
@@ -1717,6 +1772,7 @@ export class MarketingServer {
         input.operationId,
       );
       requireThat(o.state === "unknown", "operation_not_unknown");
+      await this.activationStops.assertOriginalReadable(project,o);
       const c = await this.store.get<Campaign>(
         project,
         "campaign",
@@ -1744,6 +1800,7 @@ export class MarketingServer {
       requireThat(digest(await this.grant(project, g.id, "report", c.id)) === digest(g) &&
         digest(await this.assets(c, false)) === digest(assets), "reconciliation_material_changed");
       const current = await this.store.get<Operation>(project, "operation", o.id);
+      await this.activationStops.assertOriginalReadable(project,current);
       const campaign = await this.store.get<Campaign>(project, "campaign", c.id);
       // Concurrent successful readback returns the same original operation.
       if (current.state === "succeeded") {

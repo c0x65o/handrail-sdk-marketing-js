@@ -203,7 +203,7 @@ export class AdvertisingBudgets {
               recurringExposure:{...r.recurringExposure,pausedAt:new Date(this.now()).toISOString(),pauseOperationId:operation.id,pauseReceiptDigest:digest(verifiedReceipt)}});
             continue;
           }
-          await this.store.put(p.projectId, "advertisingBudgetReservation", r.id, { ...r, state: outcome === "enabled" || (outcome === "paused" && this.evidence === "provider" && c.material.settings) ? "active" : "released" });
+          await this.store.put(p.projectId, "advertisingBudgetReservation", r.id, { ...r, state: outcome === "enabled" || (outcome === "paused" && (operation.stopsActivationId || this.evidence === "provider" && c.material.settings)) ? "active" : "released" });
         }
       }
     });

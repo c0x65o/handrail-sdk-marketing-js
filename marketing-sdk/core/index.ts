@@ -210,7 +210,13 @@ export interface Operation {
   campaignRevision: number;
   grantRevision: number;
   accountId: string;
-  state: "queued" | "running" | "succeeded" | "unknown" | "blocked";
+  state: "queued" | "running" | "succeeded" | "unknown" | "blocked" | "stopped";
+  /** Exact uncertain activation this separately authorized pause stops. */
+  stopsActivationId?: string;
+  /** Earlier uncertain stop attempts retained when an explicit new pause retries. */
+  precedingStopIds?: string[];
+  /** Verified later stop; the original launch outcome remains unknown. */
+  stoppedByOperationId?: string;
   reason: string | null;
   receipt: Receipt | null;
   createdAt: string;

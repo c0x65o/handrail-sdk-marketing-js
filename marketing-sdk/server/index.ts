@@ -60,3 +60,5 @@ export {readHostActivationApproval, type RetainedHostActivationApproval} from ".
 
 export {advertisingBudgetPeriod, recurringExposureBound, type RecurringBudgetExposure} from "./recurring-budgets.js";
 export * from './budget-observation.js';
+
+export type {ActivationStopIntent,ActivationStopReceipt} from './activation-stops.js';

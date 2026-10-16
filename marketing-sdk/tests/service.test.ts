@@ -1786,3 +1786,157 @@ test('unknown host activation can renew only campaign-scoped reporting authority
   await assert.rejects(service.execute(t.agent,c.projectId,{...input,requestKey:'cannot-replay-with-read-grant'}),/grant|changed/);
  }finally{await t.close();}
 });
+
+for(const variant of ['verified','lost-stop-response','revoked-stop-then-new-action'] as const)
+test(`explicit uncertain activation stop ${variant} retains original outcome, actors, lease and budget history`,async()=>{
+  const t=await setupTest();
+  try{
+    const {c,input}=await budgeted(t);
+    const launch=await t.service.execute(t.admin,'qa-alpha',input);
+    t.provider.loseNextResponse=true;
+    const uncertain=await t.service.dispatch('qa-alpha',launch.id);
+    assert.equal(uncertain.state,'unknown');
+    const originalActor=await t.store.get('qa-alpha','executionActor',launch.id);
+    const holds=await t.store.list<AdvertisingBudgetReservation>('qa-alpha','advertisingBudgetReservation');
+    assert.equal(holds.length,1);assert.equal(holds[0]!.state,'held');
+    let revoked=false,stopWrites=0;
+    const current=async()=>{if(revoked)throw Error('current_pause_authority_revoked');};
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:current,
+        withCurrent:async(_p,_c,_a,local)=>{await current();const result=await local();await current();return result;}},
+    });
+    const pause=t.provider.pause.bind(t.provider);
+    t.provider.pause=async(c,g,beforeWrite)=>{
+      if(variant==='revoked-stop-then-new-action'&&!stopWrites)revoked=true;
+      return pause(c,g,async()=>{await beforeWrite();stopWrites++;});
+    };
+    const args={campaignId:c.id,operationId:launch.id,requestKey:'explicit-stop'};
+    await assert.rejects(t.service.stopUncertainActivation(t.agent,'qa-alpha',args),/host_execution_authority_required/);
+    const stop=await service.stopUncertainActivation(t.agent,'qa-alpha',args);
+    assert.equal(stop.kind,'pause');assert.equal(stop.stopsActivationId,launch.id);
+    assert.deepEqual(await service.stopUncertainActivation(t.agent,'qa-alpha',args),stop);
+    assert.deepEqual(await t.store.get('qa-alpha','operation',launch.id),uncertain);
+    assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),holds);
+    assert.equal((await t.store.db.prepare('SELECT operation_id FROM leases WHERE project_id=? AND account_id=?').get('qa-alpha',launch.accountId))!.operation_id,launch.id);
+    await assert.rejects(service.reconcile(t.agent,'qa-alpha',{operationId:launch.id}),/activation_stop_pending/);
+    await assert.rejects(service.stopUncertainActivation(t.agent,'qa-alpha',{...args,requestKey:'competing-stop'}),/existing_operation_requires_reconciliation/);
+    if(variant==='lost-stop-response')t.provider.loseNextResponse=true;
+    let result=await service.dispatch('qa-alpha',stop.id);
+    let successfulStop=stop;
+    if(variant==='revoked-stop-then-new-action'){
+      assert.equal(result.state,'unknown');assert.equal(stopWrites,0);revoked=false;
+      assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),holds);
+      t.provider.pause=async(c,g,beforeWrite)=>pause(c,g,async()=>{await beforeWrite();stopWrites++;});
+      successfulStop=await service.stopUncertainActivation(t.agent,'qa-alpha',{...args,requestKey:'new-current-pause-action'});
+      assert.deepEqual(successfulStop.precedingStopIds,[stop.id]);
+      await assert.rejects(service.reconcile(t.agent,'qa-alpha',{operationId:stop.id}),/activation_stop_pending/);
+      result=await service.dispatch('qa-alpha',successfulStop.id);
+      assert.equal((await t.store.get<Operation>('qa-alpha','operation',stop.id)).state,'stopped');
+      const evidence=await service.readActivationStop(t.agent,'qa-alpha',c.id,successfulStop.id);
+      assert.equal(evidence.intent.precedingStops[0]!.state,'unknown');
+    }else if(variant==='lost-stop-response'){
+      assert.equal(result.state,'unknown');assert.equal(stopWrites,1);
+      assert.deepEqual(await service.stopUncertainActivation(t.agent,'qa-alpha',args),result);
+      assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),holds);
+      result=await service.reconcile(t.agent,'qa-alpha',{operationId:stop.id});
+    }
+    assert.equal(result.state,'succeeded',JSON.stringify(result));assert.equal(stopWrites,1);
+    const disposition=await t.store.get<Operation>('qa-alpha','operation',launch.id);
+    assert.equal(disposition.state,'stopped');assert.equal(disposition.stoppedByOperationId,successfulStop.id);
+    assert.equal(disposition.reason,'activation_stopped_original_outcome_unknown');
+    assert.deepEqual(disposition.receipt,uncertain.receipt);
+    assert.deepEqual(await t.store.get('qa-alpha','executionActor',launch.id),originalActor);
+    assert.deepEqual(await t.store.get('qa-alpha','executionActor',successfulStop.id),t.agent);
+    const history=await service.readActivationStop(t.agent,'qa-alpha',c.id,successfulStop.id);
+    assert.deepEqual(history.intent.activationOperation,uncertain);assert.equal(history.receipt!.originalOutcome,'unknown');
+    assert.equal(history.receipt!.pauseReceipt.intent,'paused');
+    assert.equal((await t.store.get<Campaign>('qa-alpha','campaign',c.id)).state,'paused');
+    assert.equal(await t.store.db.prepare('SELECT operation_id FROM leases WHERE project_id=? AND account_id=?').get('qa-alpha',launch.accountId),undefined);
+    const after=await t.store.list<AdvertisingBudgetReservation>('qa-alpha','advertisingBudgetReservation');
+    assert.equal(after.length,1);assert.equal(after[0]!.id,holds[0]!.id);assert.equal(after[0]!.operationId,launch.id);
+    assert.equal(after[0]!.state,'active');assert.equal(after[0]!.periodMinor,holds[0]!.periodMinor);
+    assert.deepEqual(await service.dispatch('qa-alpha',launch.id),disposition);assert.equal(stopWrites,1);
+    await assert.rejects(service.reconcile(t.agent,'qa-alpha',{operationId:launch.id}),/operation_not_unknown/);
+  }finally{await t.close();}
+});
+
+test('uncertain activation stop refuses foreign lease and altered intent without changing holds or original history',async()=>{
+  const t=await setupTest();try{
+    const {c,input}=await budgeted(t);
+    const launch=await t.service.execute(t.admin,'qa-alpha',input);t.provider.loseNextResponse=true;
+    const original=await t.service.dispatch('qa-alpha',launch.id);assert.equal(original.state,'unknown');
+    const holds=await t.store.list('qa-alpha','advertisingBudgetReservation');
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local()},
+    });
+    const args={campaignId:c.id,operationId:launch.id,requestKey:'stop'};
+    await t.store.db.prepare('UPDATE leases SET operation_id=? WHERE project_id=? AND account_id=?').run('unrelated','qa-alpha',launch.accountId);
+    await assert.rejects(service.stopUncertainActivation(t.agent,'qa-alpha',args),/uncertain_activation_lease_changed/);
+    assert.deepEqual(await t.store.list('qa-alpha','activationStopIntent'),[]);
+    await t.store.db.prepare('UPDATE leases SET operation_id=? WHERE project_id=? AND account_id=?').run(launch.id,'qa-alpha',launch.accountId);
+    const stop=await service.stopUncertainActivation(t.agent,'qa-alpha',args);
+    const intent=await t.store.get<import('../server/activation-stops.js').ActivationStopIntent>('qa-alpha','activationStopIntent',stop.id);
+    await t.store.put('qa-alpha','activationStopIntent',stop.id,{...intent,activationDigest:'tampered'});
+    let writes=0;const pause=t.provider.pause.bind(t.provider);
+    t.provider.pause=async(c,g,guard)=>pause(c,g,async()=>{await guard();writes++;});
+    const refused=await service.dispatch('qa-alpha',stop.id);assert.equal(refused.state,'blocked');
+    assert.equal(refused.reason,'activation_stop_intent_changed');assert.equal(writes,0);
+    assert.deepEqual(await t.store.get('qa-alpha','operation',launch.id),original);
+    assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),holds);
+    assert.equal((await t.store.db.prepare('SELECT operation_id FROM leases WHERE project_id=? AND account_id=?').get('qa-alpha',launch.accountId))!.operation_id,launch.id);
+    await t.store.put('qa-alpha','activationStopIntent',stop.id,intent);
+    const fresh=await service.stopUncertainActivation(t.agent,'qa-alpha',{...args,requestKey:'new-pause-after-refusal'});
+    assert.equal((await service.dispatch('qa-alpha',fresh.id)).state,'succeeded');assert.equal(writes,1);
+    assert.equal((await t.store.get<Operation>('qa-alpha','operation',stop.id)).state,'blocked');
+    assert.deepEqual(await t.store.get('qa-alpha','activationStopIntent',stop.id),intent);
+  }finally{await t.close();}
+});
+
+test('an in-flight activation is observed, not recovered or replaced by a concurrent stop',async()=>{
+  const t=await setupTest();let release!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  try{
+    const {c,input}=await budgeted(t),launch=await t.service.execute(t.admin,'qa-alpha',input);
+    let entered!:()=>void;const started=new Promise<void>(resolve=>{entered=resolve;});
+    const activate=t.provider.activate.bind(t.provider);let writes=0;
+    t.provider.activate=async(c,g,guard)=>{await activate(c,g,async()=>{await guard();writes++;});entered();await gate;throw Error('synthetic_lost_ack');};
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local()},
+    });
+    const running=t.service.dispatch('qa-alpha',launch.id);await started;
+    await assert.rejects(service.recoverExecution(t.agent,'qa-alpha',launch.id),/execution_still_running/);
+    await service.recover();assert.equal((await t.store.get<Operation>('qa-alpha','operation',launch.id)).state,'running');
+    assert.equal((await service.dispatch('qa-alpha',launch.id)).state,'running');assert.equal(writes,1);
+    const inputStop={campaignId:c.id,operationId:launch.id,requestKey:'stop-after-settlement'};
+    await assert.rejects(service.stopUncertainActivation(t.agent,'qa-alpha',inputStop),/uncertain_activation_stop_scope/);
+    release();assert.equal((await running).state,'unknown');
+    const stop=await service.stopUncertainActivation(t.agent,'qa-alpha',inputStop);
+    assert.equal((await service.dispatch('qa-alpha',stop.id)).state,'succeeded');assert.equal(writes,1);
+    assert.equal((await t.store.get<Operation>('qa-alpha','operation',launch.id)).state,'stopped');
+  }finally{release();await t.close();}
+});
+
+test('delayed activation readback cannot overwrite a separately verified pause',async()=>{
+  const t=await setupTest();let release!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  try{
+    const {c,input}=await budgeted(t),launch=await t.service.execute(t.admin,'qa-alpha',input);
+    t.provider.loseNextResponse=true;assert.equal((await t.service.dispatch('qa-alpha',launch.id)).state,'unknown');
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local()},
+    });
+    let entered!:()=>void;const started=new Promise<void>(resolve=>{entered=resolve;});
+    const reconcile=t.provider.reconcile.bind(t.provider);
+    t.provider.reconcile=async(...args)=>{const observed=await reconcile(...args);entered();await gate;return observed;};
+    const readback=service.reconcile(t.agent,'qa-alpha',{operationId:launch.id});await started;
+    const stop=await service.stopUncertainActivation(t.agent,'qa-alpha',{campaignId:c.id,operationId:launch.id,requestKey:'separate-stop'});
+    assert.equal((await service.dispatch('qa-alpha',stop.id)).state,'succeeded');
+    const history=await service.readActivationStop(t.agent,'qa-alpha',c.id,stop.id);
+    const reservations=await t.store.list('qa-alpha','advertisingBudgetReservation');
+    release();await assert.rejects(readback,/reconciliation_material_changed|operation_changed|operation_lease_lost/);
+    assert.equal((await t.store.get<Operation>('qa-alpha','operation',launch.id)).state,'stopped');
+    assert.equal((await t.store.get<Campaign>('qa-alpha','campaign',c.id)).state,'paused');
+    assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),reservations);
+    assert.deepEqual(await service.readActivationStop(t.agent,'qa-alpha',c.id,stop.id),history);
+  }finally{release();await t.close();}
+});

@@ -329,6 +329,27 @@ uses that full check at the client POST/PUT boundary, including authenticated
 retries, without another duplicate check before entering each client method.
 Revocation before a later effect stops that effect and retains earlier identities.
 
+`MarketingServer.stopUncertainActivation` accepts a current host-authorized pause
+for an exact unknown activation. It retains the original operation verbatim in
+`ActivationStopIntent`, queues a separate pause under the actual actor, and only
+transfers the original account lease when that pause claims dispatch. It never
+replays activation, changes provider identity or grants spending authority. A
+failed preflight leaves the original lease intact. An uncertain stop keeps the
+lease and budget holds; the same request observes its original operation. A new
+explicit pause action may retry an uncertain stop, retaining all predecessor
+operations. Native pause verifies existing provider material before its writes.
+
+Only a verified pause records `ActivationStopReceipt`, changes the original
+activation and earlier uncertain stop attempts to `stopped`, and releases the
+execution lease. `stopped` is an execution disposition: the original outcome
+remains unknown, with the original receipt, actor and full pre-stop snapshots
+retained. Recurring budget reservations retain incurred exposure and the verified
+stop boundary; other uncertain-launch reservations remain charged. Typed
+`readActivationStop` returns this durable history. New work still needs its own
+current authority and budget admission. Original-operation readback is fenced
+while a linked stop is pending, and delayed results cannot resurrect stopped
+operations. Recovery refuses provider calls still in flight on the same Store.
+
 Activation re-enumerates the complete campaign child collections before effects,
 at each delivery write boundary and during final verification. Meta requires the
 exact original ad set/ad/creative associations; LinkedIn requires the exact
