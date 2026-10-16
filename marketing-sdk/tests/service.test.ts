@@ -1410,7 +1410,7 @@ test("imported event IDs and unknown attribution are preserved; legacy source ev
 });
 
 
-async function budgeted(t: Awaited<ReturnType<typeof setupTest>>) {
+async function budgeted(t: Awaited<ReturnType<typeof setupTest>>, approve = true) {
   await ready(t);
   const base = await campaign(t);
   const c = await t.service.saveCampaign(t.admin, "qa-alpha", { id: base.id, expectedRevision: base.revision, grantId: base.grantId,
@@ -1428,7 +1428,7 @@ async function budgeted(t: Awaited<ReturnType<typeof setupTest>>) {
   const prepare = await t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "prepare" });
   assert.equal((await t.service.dispatch("qa-alpha", prepare.id)).state, "succeeded");
   const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
-  await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
+  if (approve) await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
   return { c, p, observation, input: { packetId: packet.id, digest: packet.digest, requestKey: "budget-launch" } };
 }
 
@@ -1616,4 +1616,90 @@ test("paused edits retain provider identities and use update with durable unknow
     await assert.rejects(t.service.execute(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, requestKey: "old-approval" }), /changed|revision|paused|stale_material/);
     assert.deepEqual((await t.store.get<Operation>("qa-alpha", "operation", op.id)).receipt, saved.receipt);
   } finally { await t.close(); }
+});
+
+
+for (const variant of ['success', 'changed-before-dispatch', 'revoked-before-write', 'lost-response'] as const)
+test(`host owner activation authority ${variant} retains the actual agent and original receipt`, async () => {
+  const t = await setupTest();
+  try {
+    const {c, input} = await budgeted(t, false);
+    let revision = 'native-policy-1', revoked = false, checks = 0, writes = 0;
+    const inspect = async () => { if (revoked) throw new Error('native_owner_authority_revoked'); };
+    const service = new MarketingServer(t.store, t.service.providers, t.generation, t.service.agent, 'fixture', () => time, undefined, {
+      tracking: formulaTracking(t.store), executionAuthority: {
+        assertCurrent: inspect,
+        withCurrent: async (_p, _c, _a, local) => {await inspect();const value=await local();await inspect();return value;},
+        activationApproval: async (principal, campaign, packet) => {
+          await inspect(); checks++;
+          assert.equal(principal.userId,t.agent.userId);assert.equal(campaign.id,c.id);
+          assert.equal(packet.id,input.packetId);assert.equal(packet.digest,input.digest);
+          return {authorityId:'native-owner-action-1',revision,receiptReferences:['native-action:1','current-budget-approval:1']};
+        },
+      },
+    });
+    // Merely being an agent/admin does not create an SDK human approval.
+    await assert.rejects(t.service.execute(t.agent,'qa-alpha',input),/human_authorization_required/);
+    await assert.rejects(service.call(t.agent,'qa-alpha','execute',{...input,hostApproval:{approved:true}} as never),/unexpected_fields/);
+    const operation=await service.execute(t.agent,'qa-alpha',input);
+    const retained=await t.store.get<import('../server/activation-approval.js').RetainedHostActivationApproval>('qa-alpha','hostActivationApproval',input.packetId);
+    assert.equal(retained.source,'host_owner_authority');assert.equal(retained.actorId,t.agent.userId);
+    assert.equal(retained.packetDigest,input.digest);assert.equal(retained.approval.authorityId,'native-owner-action-1');
+    assert.deepEqual(await t.store.list('qa-alpha','decision'),[]);
+    assert.equal((await t.store.db.prepare('SELECT kind FROM users WHERE id=?').get(t.agent.userId))!.kind,'agent');
+    assert.deepEqual(await service.execute(t.agent,'qa-alpha',input),operation);
+    const activate=t.provider.activate.bind(t.provider);
+    t.provider.activate=async(campaign,grant,beforeWrite)=>{
+      if(variant==='revoked-before-write')revoked=true;
+      return activate(campaign,grant,async()=>{await beforeWrite();writes++;});
+    };
+    if(variant==='changed-before-dispatch')revision='native-policy-2';
+    if(variant==='lost-response')t.provider.loseNextResponse=true;
+    const result=await service.dispatch('qa-alpha',operation.id);
+    assert.equal(result.state,variant==='success'?'succeeded':variant==='changed-before-dispatch'?'blocked':'unknown');
+    assert.equal(writes,variant==='success'||variant==='lost-response'?1:0);
+    assert.ok(checks>=2);
+    assert.deepEqual(await t.store.get('qa-alpha','hostActivationApproval',input.packetId),retained);
+    assert.equal((await t.store.list('qa-alpha','hostActivationApproval')).length,1);
+    assert.deepEqual(await t.store.get('qa-alpha','executionActor',operation.id),t.agent);
+    const holds=await t.store.list<AdvertisingBudgetReservation>('qa-alpha','advertisingBudgetReservation');
+    assert.equal(holds[0]!.state,variant==='success'?'active':variant==='changed-before-dispatch'?'released':'held');
+    if(variant==='lost-response'){
+      const recovered=await service.reconcile(t.agent,'qa-alpha',{operationId:operation.id});
+      assert.equal(recovered.state,'succeeded');assert.equal(recovered.id,operation.id);assert.equal(writes,1);
+      assert.equal((await t.store.get<Campaign>('qa-alpha','campaign',c.id)).state,'enabled');
+    }
+  } finally {await t.close();}
+});
+
+test('host activation refusal never falls back to a human decision and malformed receipt retention rolls back',async()=>{
+  const t=await setupTest();try{
+    const {input}=await budgeted(t);
+    let malformed=false;
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local(),
+        activationApproval:async()=>{if(!malformed)throw Error('native_owner_authority_revoked');return {authorityId:'',revision:'1',receiptReferences:[]};}},
+    });
+    await assert.rejects(service.execute(t.agent,'qa-alpha',input),/native_owner_authority_revoked/);
+    malformed=true;await assert.rejects(service.execute(t.agent,'qa-alpha',input),/host_activation_approval_invalid/);
+    assert.deepEqual(await t.store.list('qa-alpha','hostActivationApproval'),[]);
+    assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),[]);
+    assert.equal((await t.store.list('qa-alpha','operation')).length,1); // original preparation only
+  }finally{await t.close();}
+});
+
+
+test('native host authority cannot override an explicit revoked SDK owner decision',async()=>{
+  const t=await setupTest();try{
+    const {input}=await budgeted(t);
+    const decision=(await t.store.list<import('../core/index.js').Decision>('qa-alpha','decision'))[0]!;
+    await t.service.revoke(t.admin,'qa-alpha',{decisionId:decision.id});let checks=0;
+    const service=new MarketingServer(t.store,t.service.providers,t.generation,t.service.agent,'fixture',()=>time,undefined,{
+      tracking:formulaTracking(t.store),executionAuthority:{assertCurrent:async()=>{},withCurrent:async(_p,_c,_a,local)=>local(),
+        activationApproval:async()=>{checks++;return {authorityId:'native-owner-action',revision:'1',receiptReferences:['native-action:1']};}},
+    });
+    await assert.rejects(service.execute(t.agent,'qa-alpha',input),/human_authorization_required/);
+    assert.equal(checks,0);assert.deepEqual(await t.store.list('qa-alpha','hostActivationApproval'),[]);
+    assert.deepEqual(await t.store.list('qa-alpha','advertisingBudgetReservation'),[]);
+  }finally{await t.close();}
 });

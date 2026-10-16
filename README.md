@@ -343,6 +343,18 @@ It does not require payment setup or publication Page readiness. Missing roles,
 scopes, account context or incomplete pagination refuse admission. Preparation
 and activation retain their existing billing, identity and budget requirements.
 
+A trusted host can implement `ExecutionAuthority.activationApproval` to bind an
+existing exact owner approval or owner-delegated native launch action to the SDK
+packet. This is server composition, never a public command or an agent-supplied
+approval claim. The SDK retains `hostActivationApproval` with the actual actor,
+packet digest and original host receipt references when reserving execution, and
+rechecks the same current authority before every effect. Changed/refused host
+authority never falls back to a human decision. An explicit SDK rejection or
+revocation also remains binding. Without this port the existing SDK human gate
+applies. No SDK human decision, spending grant or replacement provider identity is
+fabricated. Advertising-budget reservations, credential custody, preparation,
+tracking and uncertain-effect recovery remain independently enforced.
+
 Adopted campaigns require a trusted server `ExecutionAuthority` port for SDK
 prepare/activate/pause and recovery. The host revalidates its real principal and
 exact native action, with revocation guards held through local SDK commits and

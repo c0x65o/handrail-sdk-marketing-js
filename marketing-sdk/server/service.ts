@@ -1,3 +1,4 @@
+import {assertHostActivationApproval} from './activation-approval.js';
 import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import type { CampaignAccess } from "./campaign-access.js";
@@ -1235,28 +1236,20 @@ export class MarketingServer {
       return d;
     });
   }
-  private async approved(project: string, packetId: string) {
+  private async approved(principal: Principal, project: string, packetId: string, retainHost = false) {
     const packet = await this.currentPacket(project, packetId);
-    const d = (await this.store.list<Decision>(project, "decision")).find(
-      (x) => x.packetId === packet.id,
-    );
-    requireThat(
-      d &&
-        d.decision === "approved" &&
-        !d.revokedAt &&
-        d.digest === packet.digest,
-      "human_authorization_required",
-      403,
-    );
-    await this.store.authorize(
-      {
-        userId: d.actorId,
-      },
-      project,
-      [...HUMAN],
-      true,
-    );
+    const d = (await this.store.list<Decision>(project, "decision")).find(x => x.packetId === packet.id);
+    // An explicit SDK rejection/revocation is never bypassed by host authority.
+    // A later authorization must review a new packet instead of rewriting history.
+    if (d) {
+      requireThat(d.decision === "approved" && !d.revokedAt && d.digest === packet.digest, "human_authorization_required", 403);
+      await this.store.authorize({userId: d.actorId}, project, [...HUMAN], true);
+    }
+    const campaign = await this.store.get<Campaign>(project, "campaign", packet.campaignId);
+    if (await assertHostActivationApproval(this.store, this.options.executionAuthority, principal, campaign, packet, retainHost, this.now)) return;
+    requireThat(d, "human_authorization_required", 403);
   }
+
   async execute(
     p: Principal,
     project: string,
@@ -1296,7 +1289,7 @@ export class MarketingServer {
         input.packetId,
         input.digest,
       );
-      await this.approved(project, packet.id);
+      await this.approved(p, project, packet.id, true);
       return await this.reserve(
         p,
         project,
@@ -1395,7 +1388,7 @@ export class MarketingServer {
         requireThat(provider.update && provider.validateUpdate, "existing_campaign_update_unavailable");
         provider.validateUpdate(c, g, await this.assets(c));
       }
-      if (o.packetId) await this.approved(project, o.packetId);
+      if (o.packetId) await this.approved(await currentActor(), project, o.packetId);
       requireThat(
         (o.kind === "pause" ? c.receipt?.payloadDigest : digest(this.providers[g.provider].plan(c, g, await this.assets(c)))) ===
           o.payloadDigest,
@@ -1430,7 +1423,7 @@ export class MarketingServer {
           currentGrant.accountId === o.accountId,
         "grant_changed",
       );
-      if (o.packetId) await this.approved(project, o.packetId);
+      if (o.packetId) await this.approved(await currentActor(), project, o.packetId);
       requireThat(
         (await this.store.get<Campaign>(project, "campaign", c.id)).revision ===
           c.revision,
@@ -1457,7 +1450,7 @@ export class MarketingServer {
             .revision === o.campaignRevision,
           "stale_material",
         );
-        if (o.packetId) await this.approved(project, o.packetId);
+        if (o.packetId) await this.approved(await currentActor(), project, o.packetId);
         requireThat(
           (await this.store.get<Operation>(project, "operation", o.id))
             .state === "queued",
@@ -1539,7 +1532,7 @@ export class MarketingServer {
             .revision === o.campaignRevision,
           "stale_material",
         );
-        if (o.packetId) await this.approved(project, o.packetId);
+        if (o.packetId) await this.approved(await currentActor(), project, o.packetId);
         if (provider.evidence === "provider" && o.kind !== "pause") {
           if (proof) await this.consumeCampaignCheck(actor, c, current);
           else validateAccountCapability(c, current, true);
