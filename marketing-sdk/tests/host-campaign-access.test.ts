@@ -170,7 +170,9 @@ for(const change of ['none','custody-rotated'] as const)test(`activation-only ho
     const result=await f.server.dispatch('p',operation.id);
     assert.equal(result.state,change==='none'?'succeeded':'blocked',JSON.stringify(result));
     const current=await f.store.get<Campaign>('p','campaign',f.c.id);
-    assert.deepEqual(current.receipt!.ids,originalIds);assert.equal(current.state,change==='none'?'enabled':'paused');
+    const {inventoryDigest,...retainedIds}=current.receipt!.ids;
+    assert.deepEqual(retainedIds,originalIds);assert.equal(current.state,change==='none'?'enabled':'paused');
+    if(change==='none')assert.match(inventoryDigest!,/^[a-f0-9]{64}$/);else assert.equal(inventoryDigest,undefined);
     assert.equal(f.http.trace.filter(r=>r.method==='POST').length-beforeWrites,change==='none'?3:0);
     assert.deepEqual((await f.store.get<Grant>('p','grant',f.grant.id)).permissions,['activate','report']);
     assert.deepEqual(await f.store.list('p','vault'),[]);assert.deepEqual(await f.store.list('p','connection'),[]);

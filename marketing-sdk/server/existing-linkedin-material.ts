@@ -22,16 +22,21 @@ export interface ExistingLinkedInMaterialSource {
 
 /** Account/campaign-scoped child inventory. Pagination must finish before a
  * single-creative campaign can be adopted; a saved identity is not an inventory. */
-export async function existingLinkedInChildren(client: any, accountId: string, campaignId: string, creativeId: string) {
+export async function readLinkedInCampaignChildren(client: any, accountId: string, campaignId: string, creativeId: string,
+  guard: () => void | Promise<void> = () => {}) {
+  creativeId = creativeId.replace(/^urn:li:sponsoredCreative:/, "");
+  requireThat([accountId,campaignId,creativeId].every(id=>/^\d+$/.test(id)), "existing_campaign_identity_invalid", 422);
   let pageToken: string | null = null;
   const tokens = new Set<string>(), rows: {id: string; campaign: string; intendedStatus: string}[] = [];
   do {
+    await guard();
     const page: {elements?: any[]; metadata?: {nextPageToken?: unknown}} = await client.listCreatives(accountId,{campaignUrn:`urn:li:sponsoredCampaign:${campaignId}`,pageSize:100,pageToken});
+    await guard();
     requireThat(Array.isArray(page?.elements),"existing_campaign_children_incomplete");
     for (const row of page.elements!) {
       const id=String(row.id).replace(/^urn:li:sponsoredCreative:/,"");
       requireThat(id===creativeId&&row.campaign===`urn:li:sponsoredCampaign:${campaignId}`&&
-        ["PAUSED","DRAFT"].includes(row.intendedStatus)&&!rows.some(r=>r.id===id),"existing_campaign_children_mismatch");
+        !rows.some(r=>r.id===id),"existing_campaign_children_mismatch");
       rows.push({id,campaign:row.campaign,intendedStatus:row.intendedStatus});
     }
     const next: unknown=page.metadata?.nextPageToken;
@@ -40,6 +45,14 @@ export async function existingLinkedInChildren(client: any, accountId: string, c
     if(pageToken)tokens.add(pageToken);
   } while(pageToken);
   requireThat(rows.length===1,"existing_campaign_children_mismatch");
+  return rows;
+}
+
+/** Preserve adoption's paused-state proof independently of activation reads. */
+export async function existingLinkedInChildren(client: any, accountId: string, campaignId: string, creativeId: string,
+  guard: () => void | Promise<void> = () => {}) {
+  const rows = await readLinkedInCampaignChildren(client, accountId, campaignId, creativeId, guard);
+  requireThat(rows.every(row=>["PAUSED","DRAFT"].includes(row.intendedStatus)), "existing_campaign_children_mismatch");
   return rows;
 }
 

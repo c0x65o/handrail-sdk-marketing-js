@@ -20,10 +20,10 @@ import { buildMeasurementEvidence } from "./measurement.js";
 import { providerDayWindow } from "./reporting.js";
 import { ConnectionDiscovery, connectionScopes } from "./connection-discovery.js";
 import { material } from "./validation.js";
-import { existingLinkedInMaterial, existingLinkedInChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
+import { existingLinkedInMaterial, existingLinkedInChildren, readLinkedInCampaignChildren, type ExistingLinkedInMaterialSource } from "./existing-linkedin-material.js";
 import { existingMetaMaterial, reconcileExistingMetaMaterial, META_EXISTING_FIELDS, type ExistingMetaMaterialSource, type ReconciledMetaMaterialSource } from "./existing-meta-material.js";
 import { prepareMetaImageUpload } from "./meta-image.js";
-import { existingMetaChildren } from "./existing-meta-children.js";
+import { existingMetaChildren, readMetaCampaignChildren } from "./existing-meta-children.js";
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
@@ -1554,6 +1554,16 @@ export class NativeProvider implements ProviderPort {
       );
     }
   }
+  private async activationChildren(client: any, g: Grant, ids: Record<string,string>,
+    guard: () => void | Promise<void> = () => {}, paused = false) {
+    if (this.name === "meta") {
+      const expected = {campaign:ids.campaign!,adset:ids.adset!,ad:ids.ad!,creative:ids.creative!};
+      return (paused ? existingMetaChildren : readMetaCampaignChildren)(client,g.accountId,expected,guard);
+    }
+    if (this.name === "linkedin") return (paused ? existingLinkedInChildren : readLinkedInCampaignChildren)(
+      client,g.accountId,ids.campaign!,ids.creative!,guard);
+    return null;
+  }
   private async status(
     c: Campaign,
     g: Grant,
@@ -1575,6 +1585,10 @@ export class NativeProvider implements ProviderPort {
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
       if (activate) await this.prerequisite(c, g, "activate");
     };
+    const readGuard = async () => {
+      await (beforeRead ?? hostBeforeWrite)();
+      requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
+    };
     if (activate) await this.prerequisite(c, g, "activate");
     return await this.use(g, async (client) => {
       if (this.name === "linkedin") client.beforeWrite = async () => {
@@ -1588,6 +1602,10 @@ export class NativeProvider implements ProviderPort {
         const intent = activate ? "activate" : "pause";
         requireThat((await this.linkedInPermissions(client, g, undefined, guard, intent)).includes(intent), "provider_capability_missing");
         await beforeWrite();
+        if (activate) {
+          await this.activationChildren(client,g,ids,readGuard);
+          await beforeWrite(); // Inventory latency cannot outlive launch authority.
+        }
       };
       if (activate && c.material.settings) await this.verifySettings(client, c, g);
       const before = await this.snapshot(client, g, ids);
@@ -1599,12 +1617,17 @@ export class NativeProvider implements ProviderPort {
           (!activate || before.paused),
         "external_material_changed",
       );
+      if (activate) await this.activationChildren(client,g,ids,readGuard,true);
       if (this.name === "meta") {
         // Parent last on activation; parent first on pause.
         for (const object of activate
           ? [ids.ad, ids.adset, ids.campaign]
           : [ids.campaign, ids.adset, ids.ad]) {
           await beforeWrite();
+          if (activate) {
+            await this.activationChildren(client,g,ids,readGuard);
+            await beforeWrite();
+          }
           await client.updateDeliveryStatus(
             object,
             activate ? "ACTIVE" : "PAUSED",
@@ -1614,21 +1637,18 @@ export class NativeProvider implements ProviderPort {
         // A campaign-scoped action has no authority over a shared group. Stop
         // the campaign first; on activation, enable its creative before it.
         if (!activate) {
-          await beforeWrite();
           await client.updateCampaignStatus(
             g.accountId,
             ids.campaign,
             "PAUSED",
           );
         }
-        await beforeWrite();
         await client.updateCreativeStatus(
           g.accountId,
           ids.creative,
           activate ? "ACTIVE" : "PAUSED",
         );
         if (activate) {
-          await beforeWrite();
           await client.updateCampaignStatus(
             g.accountId,
             ids.campaign,
@@ -1661,8 +1681,9 @@ export class NativeProvider implements ProviderPort {
           digest(after.material) === ids.readbackDigest,
         "provider_outcome_unknown",
       );
+      const inventory = activate ? await this.activationChildren(client,g,ids,readGuard) : null;
       return this.receipt(
-        ids,
+        inventory ? {...ids,inventoryDigest:digest(inventory)} : ids,
         c.receipt!.payloadDigest,
         activate ? "enabled" : "paused",
       );
@@ -1693,9 +1714,10 @@ export class NativeProvider implements ProviderPort {
     const receipt = o.receipt || c.receipt;
     if (!receipt?.ids.campaign) return null; // incomplete writes need specific native repair, never replay.
     return await this.use(g, async (client) => {
-      let s;
+      let s, inventory;
       try {
         s = await this.snapshot(client, g, receipt.ids);
+        if (o.kind === "activate") inventory = await this.activationChildren(client,g,receipt.ids);
       } catch {
         return null;
       }
@@ -1729,7 +1751,7 @@ export class NativeProvider implements ProviderPort {
       if (!receipt.ids.readbackDigest || receipt.payloadDigest !== o.payloadDigest) return null;
       if (digest(s.material) !== receipt.ids.readbackDigest) return null;
       return this.receipt(
-        receipt.ids,
+        inventory ? {...receipt.ids,inventoryDigest:digest(inventory)} : receipt.ids,
         o.payloadDigest,
         o.kind === "activate" ? "enabled" : "paused",
       );

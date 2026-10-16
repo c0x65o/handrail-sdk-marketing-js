@@ -197,14 +197,16 @@ export class MetaMarketingClient {
     };
   }
 
-  async readAllPages(path, params) {
+  async readAllPages(path, params, guard = () => {}) {
     const data = [];
     const cursors = new Set();
     let after;
     for (let page = 0; page < 200; page += 1) {
       // Retain the trusted endpoint and query. Never send credentials to the
       // provider-returned paging.next URL, which is not an authority boundary.
+      await guard();
       const result = await this.request(path, { params: { ...params, after } });
+      await guard();
       if (!Array.isArray(result.data)) {
         throw new MetaMarketingError("Meta returned an invalid collection", { code: "provider_pagination_incomplete" });
       }

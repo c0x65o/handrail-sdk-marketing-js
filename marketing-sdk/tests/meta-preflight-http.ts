@@ -32,6 +32,13 @@ export function metaPreflightHttp(connectionFetch: typeof fetch, account = "act_
           assert.equal(url.searchParams.get("level"),"campaign");
           return Response.json({data:[{impressions:"1000",clicks:"25",spend:"17.50",actions:[{action_type:"lead",value:"999"}]}]});
         }
+        if (["adsets","ads"].includes(last)) {
+          const parent=url.pathname.split("/").at(-2);
+          return Response.json({data:[...objects.values()].filter(row=>last==="adsets"
+            ? row.campaign_id===parent&&!row.adset_id
+            : row.adset_id&&objects.get(row.adset_id)?.campaign_id===parent)
+            .map(row=>({...row,campaign_id:row.campaign_id??objects.get(row.adset_id)?.campaign_id,effective_status:row.status}))});
+        }
         if (objects.has(last)) return Response.json(objects.get(last));
         return connectionFetch(raw, init);
       }

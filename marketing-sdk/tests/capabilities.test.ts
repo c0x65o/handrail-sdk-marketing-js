@@ -196,10 +196,10 @@ async function native(provider: "meta" | "linkedin") {
       if (last === "customaudiences") return response({ data: [{ id: "20", name: "Existing customers" }] }, "audiences");
       if (init?.method !== "POST" && ["adsets", "ads"].includes(last)) {
         const parent = url.pathname.split("/").at(-2);
-        return Response.json({data: [...state.objects.values()].filter(row => last === "adsets"
+        return response({data: [...state.objects.values()].filter(row => last === "adsets"
           ? row.campaign_id === parent && !row.adset_id
           : row.adset_id && state.objects.get(row.adset_id)?.campaign_id === parent)
-          .map(row => ({...row, campaign_id: row.campaign_id ?? state.objects.get(row.adset_id)?.campaign_id, effective_status: row.status}))});
+          .map(row => ({...row, campaign_id: row.campaign_id ?? state.objects.get(row.adset_id)?.campaign_id, effective_status: row.status}))}, `${last}_inventory`);
       }
       if (last === "adimages") return response({ data: [{ hash: "meta-image", status: "ACTIVE" }] }, "image");
       const o = state.objects.get(last); assert.ok(o, `Unexpected synthetic Meta request ${path}`);
@@ -386,7 +386,9 @@ test("review: post-await scope changes stop before native writes and expired eli
     const activated = await t.port.activate(prepared, t.g, () => {});
     t.g.capabilityEvidence = [];
     const paused = await t.port.pause({ ...prepared, receipt: activated }, t.g, () => {});
-    assert.equal(paused.intent, "paused"); assert.deepEqual(paused.ids, receipt.ids);
+    assert.equal(paused.intent, "paused"); assert.deepEqual(paused.ids, activated.ids);
+    const {inventoryDigest,...originalIds}=paused.ids;
+    assert.match(inventoryDigest!,/^[a-f0-9]{64}$/);assert.deepEqual(originalIds,receipt.ids);
     await assert.rejects(t.port.activate({ ...prepared, receipt: paused }, t.g, () => {}), /account_capability_unverified/);
   } finally { await t.close(); }
 });
@@ -861,4 +863,73 @@ test("Reels identities and exact placement authority cannot be inferred from fee
   for(const placements of [[],["instagram_reels","instagram_reels"],["facebook_story"],["unknown"]]) {
     s.placements=placements as any;assert.ok(capabilityBlockers(c.material,g).includes("unsupported_placement"));
   }
+});
+
+for (const provider of ["meta", "linkedin"] as const) {
+  for (const when of ["before", "parent-boundary", "recovery"] as const) test(`${provider} activation rejects unexpected campaign children at ${when}`, async () => {
+    const t = await native(provider);
+    try {
+      eligible(t.c,t.g);
+      const receipt = await t.port.prepare(t.c,t.g,[t.a],"inventory",()=>{},()=>{});
+      const campaign = {...t.c,receipt};
+      const adId = provider === "meta" ? receipt.ids.ad! : `urn:li:sponsoredCreative:${receipt.ids.creative!.replace(/^urn:li:sponsoredCreative:/,"")}`;
+      const extraId = provider === "meta" ? "999" : "urn:li:sponsoredCreative:999";
+      const add = () => t.state.objects.set(extraId,{...t.state.objects.get(adId),id:extraId});
+      const initialWrites = t.state.writes;
+      if (when === "recovery") {
+        const active = await t.port.activate(campaign,t.g,()=>{},()=>{});
+        assert.ok(active.ids.inventoryDigest);
+        const operation = {kind:"activate",receipt:active,payloadDigest:active.payloadDigest};
+        const writes = t.state.writes; add();
+        assert.equal(await t.port.reconcile({...campaign,receipt:active},t.g,operation),null);
+        assert.equal(t.state.writes,writes);
+        t.state.objects.delete(extraId);
+        assert.equal((await t.port.reconcile({...campaign,receipt:active},t.g,operation))?.intent,"enabled");
+        assert.equal(t.state.writes,writes);
+        return;
+      }
+      if (when === "before") add();
+      await assert.rejects(t.port.activate(campaign,t.g,()=>{
+        if (when === "parent-boundary") {
+          const child = t.state.objects.get(provider === "meta" ? receipt.ids.adset! : adId);
+          if ((child.status ?? child.intendedStatus) === "ACTIVE") add();
+        }
+      },()=>{}), /existing_campaign_children_mismatch/);
+      assert.equal(t.state.writes-initialWrites,when === "before" ? 0 : provider === "meta" ? 2 : 1);
+      assert.equal(t.state.objects.get(receipt.ids.campaign!).status,provider === "meta" ? "PAUSED" : "DRAFT");
+      assert.equal(t.state.objects.get(extraId).status ?? t.state.objects.get(extraId).intendedStatus,
+        when === "before" ? provider === "meta" ? "PAUSED" : "DRAFT" : "ACTIVE");
+    } finally {await t.close();}
+  });
+}
+
+test("Meta activation refuses an extra child found after the first inventory page",async()=>{
+  const t=await native("meta");
+  try {
+    eligible(t.c,t.g);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],"paged-inventory",()=>{},()=>{});
+    let pages=0;
+    t.state.drift=(row,kind)=>{if(kind==="ads_inventory") {
+      if(++pages===1)row.paging={next:"https://untrusted.invalid",cursors:{after:"page2"}};
+      else row.data=[{...row.data[0],id:"999"}];
+    }};
+    const writes=t.state.writes;
+    await assert.rejects(t.port.activate({...t.c,receipt},t.g,()=>{},()=>{}),/existing_campaign_children_mismatch/);
+    assert.equal(pages,2);assert.equal(t.state.writes,writes);
+  }finally{await t.close();}
+});
+
+for (const provider of ["meta","linkedin"] as const) test(`${provider} activation rechecks write authority after child inventory`,async()=>{
+  const t=await native(provider);
+  try {
+    eligible(t.c,t.g);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],"inventory-authority",()=>{},()=>{});
+    let inventories=0,authorized=true;
+    t.state.drift=(_row,kind)=>{if(kind===(provider==="meta"?"ads_inventory":"creative_inventory")&&++inventories===2)authorized=false;};
+    const writes=t.state.writes;
+    await assert.rejects(t.port.activate({...t.c,receipt},t.g,()=>{
+      if(!authorized)throw new DomainError("authority_revoked_during_inventory",403);
+    },()=>{}),/authority_revoked_during_inventory/);
+    assert.equal(inventories,2);assert.equal(t.state.writes,writes);
+  }finally{await t.close();}
 });

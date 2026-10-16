@@ -329,6 +329,19 @@ uses that full check at the client POST/PUT boundary, including authenticated
 retries, without another duplicate check before entering each client method.
 Revocation before a later effect stops that effect and retains earlier identities.
 
+Activation re-enumerates the complete campaign child collections before effects,
+at each delivery write boundary and during final verification. Meta requires the
+exact original ad set/ad/creative associations; LinkedIn requires the exact
+campaign creative. Pagination must finish; extra, duplicate, missing or foreign
+children reject activation. Adoption retains its stricter paused-state checks.
+Inventory pages retain current read authority, and full write authority is checked
+again after inventory latency. Successful activation/reconciliation receipts keep
+an `inventoryDigest`; read-only activation recovery cannot settle an unexpected
+hierarchy as successful. Provider reads and writes are separate external requests,
+so these checks do not claim an atomic provider-side lock. A discrepancy after
+partial effects remains uncertain for explicit recovery; shared groups and
+unexpected children are never changed by this check.
+
 `inspectMetaToken` is a server-only, read-only qualification of native Meta
 custody using the app-authenticated Graph debugger. It verifies the app, token
 validity/type, scopes and both expiry clocks, returning fixed errors without
