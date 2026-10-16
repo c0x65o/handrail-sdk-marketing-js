@@ -9,6 +9,9 @@ import { CampaignStudio, ResponsesPlanningAdapter, planningInputDigest, digest, 
 import { emptyBrief, type PlanningAuthority, type CampaignOption } from '../core/index.js';
 import { testStore } from './datastore.js';
 import { externalSessionFixture } from './external-session-fixture.js';
+import {MarketingServer} from '../server/index.js';
+import {agentTools,marketingStudioToolSchemas,marketingToolSchemas} from '../agent/index.js';
+import type {StudioDraft,StudioView} from '../core/index.js';
 const approach:CampaignOption={title:'Local launch',audienceHypothesis:'People nearby',offer:'A guided tour',rationale:'Manual first',unknowns:['Availability'],provider:'meta',format:'single_image',destination:'https://example.test',variants:[{headline:'See the studio',body:'Book a guided tour.',cta:'Learn more'}]};
 async function fixture(port?:PlanningPort){
   mkdirSync(resolve(process.env.MARKETING_STUDIO_SQL_ARTIFACTS??'artifacts/studio-3baf00fd/sql'),{recursive:true});const dir=mkdtempSync(resolve(process.env.MARKETING_STUDIO_SQL_ARTIFACTS??'artifacts/studio-3baf00fd/sql','case-'));const store=await testStore(join(dir,'db'));await store.db.acquireExecutor();
@@ -18,6 +21,31 @@ async function fixture(port?:PlanningPort){
   const brief={...emptyBrief(),name:'Autumn tour',offer:'Guided studio tour',audience:'Local customers',facts:['Tours take 30 minutes'],destination:'https://example.test'};
   const d=await studio.saveBrief(p,'p',{requestKey:'brief',brief});return {store,host,session,p,studio,d,brief,path:join(dir,"db")};
 }
+test('public agent Studio commands use the same SQL drafts, revisions and validation without exposing human decisions',async()=>{
+ const f=await fixture();try{
+  const server=MarketingServer.unconnected(f.store,{studio:{sessions:f.host.authority}});
+  const call=agentTools({call:(command,input)=>server.call(f.p,'p',command,input),assetUrl:()=>''});
+  const input={requestKey:'agent-brief',brief:{...f.brief,name:'Agent-authored proposal'}};
+  const d=await call('marketing_saveBrief',input) as StudioDraft;
+  assert.deepEqual(await call('marketing_saveBrief',input),d);
+  const edited=await call('marketing_saveBrief',{...input,id:d.id,expectedRevision:1,requestKey:'agent-edit',brief:{...input.brief,offer:'Changed offer'}}) as StudioDraft;
+  assert.equal(edited.id,d.id);assert.equal(edited.revision,2);
+  assert.equal((await call('marketing_studio',{draftId:d.id}) as StudioView).draft.revision,2);
+  await assert.rejects(call('marketing_saveBrief',{...input,id:d.id,expectedRevision:1,requestKey:'stale'}),/revision_conflict/);
+  await assert.rejects(call('marketing_saveBrief',{...input,requestKey:'forged',approval:'approved'}),/unexpected_fields/);
+  for(const name of ['saveBrief','marketing_approveTextPlan','marketing_decide','marketing_grant','marketing_dispatch','marketing_marketing_saveBrief'])
+    await assert.rejects(call(name,{}),/agent_tool_not_allowed/);
+  assert.equal(new Set(marketingToolSchemas.map(s=>s.name)).size,marketingToolSchemas.length);
+  for(const schema of marketingStudioToolSchemas){
+    const exposed=marketingToolSchemas.find(t=>t.name===`marketing_${schema.command}`);
+    assert.deepEqual(exposed?.inputSchema,schema.inputSchema);
+    assert.equal(schema.inputSchema.additionalProperties,false);
+  }
+  assert.equal((await f.store.list('p','operation')).length,0);
+  assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
+ }finally{await f.store.close();}
+});
+
 test('manual Studio on real SQL: immutable retries, copy, archive, trash, recovery, revisions and retained references',async()=>{
  const f=await fixture();try{
   const retry=await f.studio.saveBrief(f.p,'p',{requestKey:'brief',brief:f.brief});assert.deepEqual(retry,f.d);

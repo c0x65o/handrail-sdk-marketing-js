@@ -1,5 +1,14 @@
 # @handrail/marketing
 
+`@handrail/marketing/agent` exports `marketingStudioToolSchemas` for the same
+local Studio brief, option, material, media-selection, library, check and promotion
+commands used by React. `agentTools` dispatches their exact names through the
+supplied client; the server validates current host invocation/session authority,
+revisions and immutable request receipts. Hosts may bind an existing native
+invocation and adapt their original request key. These commands grant no human
+approval, credential access, paid generation or provider execution. Promotion
+requires the host's canonical identity binding and current tracking/account proof.
+
 **Product direction and acceptance:** [From idea to accountable outcome — maintained
 product specification](marketing-sdk/PRODUCT.md). Start with the [first-time
 Connections journey](marketing-sdk/design/CONNECTIONS.md), [public contract design](marketing-sdk/design/CONNECTIONS-CONTRACT.md)
