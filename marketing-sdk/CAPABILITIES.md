@@ -331,6 +331,8 @@ lifetime budget from existing native consumers. Exactly one positive safe-intege
 minor-unit amount is required, with no ad-set-sharing field. It preserves the
 amount, creates only PAUSED objects and reads the selected budget back before
 returning success. Invalid or conflicting budget input never reaches transport.
+Readback accepts only safe integers or decimal digit strings; arrays, booleans,
+exponent notation and malformed/mismatched object identities remain unknown.
 Failed budget/status verification retains the created provider identity as an
 unknown outcome; it does not retry creation. This repairs a guard that incorrectly
 applied the ad-set rule to campaign budgets. It does not add campaign-budget

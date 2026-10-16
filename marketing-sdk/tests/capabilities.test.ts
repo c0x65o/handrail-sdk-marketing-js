@@ -573,7 +573,8 @@ test("Meta campaign-level budgets preserve exact amounts and pause/readback with
 });
 
 test("Meta campaign budget mismatch and unsafe readback preserve original creation identity",async()=>{
-  for(const readback of [{daily_budget:'1400'},{daily_budget:null},{daily_budget:'1500',lifetime_budget:'12000'},
+  for(const readback of [{daily_budget:'1400'},{daily_budget:null},{daily_budget:[1500]},{daily_budget:'15e2'},
+    {daily_budget:' 1500 '},{id:'99999',daily_budget:'1500'},{daily_budget:'1500',lifetime_budget:false},{daily_budget:'1500',lifetime_budget:'12000'},
     {daily_budget:'1500',lifetime_budget:'unknown'},{daily_budget:'1500',status:'ACTIVE',effective_status:'ACTIVE'}]){
     let posts=0,reads=0;
     const client=new MetaMarketingClient({accessToken:'fixture',fetchImpl:async(_url,init)=>{
@@ -582,6 +583,19 @@ test("Meta campaign budget mismatch and unsafe readback preserve original creati
     }});
     await assert.rejects(client.createPausedObject('act_123','campaign',{daily_budget:1500,status:'PAUSED'}),
       (error:any)=>error.providerOutcome==='unknown'&&error.providerObjectId==='12345'&&error.code==='verification_failed');
+    assert.equal(posts,1);assert.equal(reads,1);
+  }
+});
+
+test("Meta malformed creation readback retains the original identity without retry",async()=>{
+  for(const readback of [null,[],{}]){
+    let posts=0,reads=0;
+    const client=new MetaMarketingClient({accessToken:'fixture',fetchImpl:async(_url,init)=>{
+      if(init?.method==='POST'){posts++;return Response.json({id:'12345'});}
+      reads++;return Response.json(readback);
+    }});
+    await assert.rejects(client.createPausedObject('act_123','campaign',{daily_budget:1500,status:'PAUSED'}),
+      (error:any)=>error.providerOutcome==='unknown'&&error.providerObjectId==='12345');
     assert.equal(posts,1);assert.equal(reads,1);
   }
 });

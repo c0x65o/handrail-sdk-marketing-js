@@ -502,13 +502,22 @@ export class MetaMarketingClient {
       error.providerObjectId = created.id;
       throw error;
     }
+    if (!verified || typeof verified !== "object" || Array.isArray(verified) || verified.id !== created.id) {
+      throw Object.assign(new MetaMarketingError("Meta created object identity was not verified", {code:"verification_failed",status:502}),
+        {providerOutcome:"unknown",providerObjectId:created.id});
+    }
     if (type !== "creative" && !["PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"].includes(verified.status) && !String(verified.effective_status || "").includes("PAUSED")) {
       throw Object.assign(new MetaMarketingError("Meta object was not verified as paused", { code: "verification_failed", status: 502 }),
         {providerOutcome:"unknown",providerObjectId:created.id});
     }
-    if (campaignBudget && (Number(verified[campaignBudget]) !== input[campaignBudget]
-      || !Number.isFinite(Number(verified[campaignBudget === "daily_budget" ? "lifetime_budget" : "daily_budget"] ?? 0))
-      || Number(verified[campaignBudget === "daily_budget" ? "lifetime_budget" : "daily_budget"] ?? 0) !== 0)) {
+    const observedMinor = value => {
+      const parsed = typeof value === "number" ? value
+        : typeof value === "string" && /^[0-9]+$/.test(value) ? Number(value) : NaN;
+      return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    };
+    const otherBudget = verified[campaignBudget === "daily_budget" ? "lifetime_budget" : "daily_budget"];
+    if (campaignBudget && (observedMinor(verified[campaignBudget]) !== input[campaignBudget]
+      || otherBudget != null && observedMinor(otherBudget) !== 0)) {
       throw Object.assign(new MetaMarketingError("Meta campaign budget was not verified", {code:"verification_failed",status:502}),
         {providerOutcome:"unknown",providerObjectId:created.id});
     }
