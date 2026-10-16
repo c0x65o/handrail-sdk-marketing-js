@@ -324,7 +324,10 @@ campaign/tracking/budget write proof is still checked after discovery and before
 each external effect; a read check grants no write authority. Ports called
 without the separate read guard use their supplied write guard. This avoids
 repeatedly consuming the complete write proof for each read-only discovery page;
-it does not extend prerequisite, grant or credential expiry.
+it does not extend prerequisite, grant or credential expiry. LinkedIn preparation
+uses that full check at the client POST/PUT boundary, including authenticated
+retries, without another duplicate check before entering each client method.
+Revocation before a later effect stops that effect and retains earlier identities.
 
 `inspectMetaToken` is a server-only, read-only qualification of native Meta
 custody using the app-authenticated Graph debugger. It verifies the app, token

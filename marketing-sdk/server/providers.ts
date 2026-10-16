@@ -1094,7 +1094,9 @@ export class NativeProvider implements ProviderPort {
           }),
         );
       } else {
-        await beforeWrite();
+        // LinkedInClient fences each actual POST/PUT (and authenticated retry)
+        // through client.beforeWrite after permission discovery. Do not consume
+        // the same short-lived host proof again before entering that client.
         const image = await client.uploadImage({
           organizationId: g.organizationId,
           bytes: await this.bytes(c.projectId, assets[0]!),
@@ -1103,7 +1105,6 @@ export class NativeProvider implements ProviderPort {
         ids.image = image.assetUrn || image.urn || image.id;
         requireThat(ids.image, "image_upload_unknown");
         await retain(ids);
-        await beforeWrite();
         ids.group = (
           await client.createCampaignGroup(g.accountId, {
             ...plan.group,
@@ -1111,7 +1112,6 @@ export class NativeProvider implements ProviderPort {
           })
         ).id;
         await retain(ids);
-        await beforeWrite();
         ids.campaign = (
           await client.createCampaign(g.accountId, {
             ...plan.campaign,
@@ -1122,10 +1122,8 @@ export class NativeProvider implements ProviderPort {
         if (plan.conversion) {
           ids.conversion = plan.conversion.id;
           await retain(ids);
-          await beforeWrite();
           await client.associateCampaignConversion(ids.campaign, ids.conversion);
         }
-        await beforeWrite();
         ids.creative = (
           await client.createDirectSponsoredCreative(g.accountId, {
             ...plan.creative,

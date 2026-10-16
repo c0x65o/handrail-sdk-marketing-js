@@ -405,7 +405,7 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     await assert.rejects(provider.prepare(c, grant, [asset], "write-revoked", () => {},
       () => { if (discoveryReads > 4) throw new DomainError("write-revoked-after-discovery",403); fullWriteChecks++; },
       () => { discoveryReads++; }), /write-revoked-after-discovery/);
-    assert.equal(writes, 0); assert.ok(discoveryReads > 4); assert.ok(fullWriteChecks > 0);
+    assert.equal(writes, 0); assert.ok(discoveryReads > 4); assert.equal(fullWriteChecks, 0);
     const mutations = [
       (o: any) => { o.dailyBudget.amount = "420.00"; },
       (o: any) => { o.dailyBudget.currencyCode = "EUR"; },
@@ -430,6 +430,15 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       objects = new Map(); drift = (o, collection) => { if (collection === "adCampaignGroups") mutation(o); };
       await assert.rejects(provider.prepare(c, grant, [asset], "group-drift", () => {}, () => {}), /provider_effective_material_mismatch/);
     }
+    // Every actual effect gets a fresh full write check; discovery never
+    // duplicates that proof. Rejecting a later check prevents that write.
+    objects = new Map(); drift = null;
+    let guardedWrites = 0; const beforeGuardedWrites = writes;
+    await assert.rejects(provider.prepare(c, grant, [asset], "later-write-revoked", () => {}, () => {
+      guardedWrites++;
+      if (guardedWrites === 5) throw new DomainError("later-write-revoked", 403);
+    }, () => {}), /later-write-revoked/);
+    assert.equal(guardedWrites, 5); assert.equal(writes - beforeGuardedWrites, 4);
     objects = new Map(); drift = null; loseRead = true;
     let ids: Record<string, string> = {};
     await assert.rejects(provider.prepare(c, grant, [asset], "lost-ack", value => { ids = { ...value }; }, () => {}));
