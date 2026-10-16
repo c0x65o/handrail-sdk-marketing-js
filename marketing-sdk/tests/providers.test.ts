@@ -74,6 +74,7 @@ test("native image transport retains request and byte identities without retryin
       return "fixture-secret";
     },
     {
+      observe: async () => {},
       authorize: async () => {},
     },
     async (url, init) => {
@@ -106,6 +107,7 @@ test("native image transport retains request and byte identities without retryin
   const failing = new NativeGeneration(
     async () => "fixture-secret",
     {
+      observe: async () => {},
       authorize: async () => {},
     },
     async () => {
@@ -547,6 +549,7 @@ test("native video adapter: durable request ID callback before polling, bounded 
   const requests: string[] = [];
   let retained: string | null = null;
   let authorized = 0;
+  const observations: import("../server/index.js").GenerationUsageObservation[] = [];
   const bytes = readFileSync(
     new URL(
       "../../marketing-sdk/tests/fixtures/test-pattern.mp4",
@@ -556,6 +559,7 @@ test("native video adapter: durable request ID callback before polling, bounded 
   const adapter = new NativeGeneration(
     async () => "sensitive",
     {
+      observe: async (_g,_j,o) => {observations.push(o);},
       authorize: async () => {
         authorized++;
       },
@@ -596,9 +600,13 @@ test("native video adapter: durable request ID callback before polling, bounded 
   assert.equal(result.mime, "video/mp4");
   assert.equal(result.seconds, 1);
   assert.equal(requests.length, 3);
+  assert.deepEqual(observations.map(o=>o.phase),['submit','reconcile']);
+  assert.ok(observations.every(o=>o.usage.totalTokens===null&&o.measuredCost===null));
+  assert.ok(observations.every(o=>o.requestId==='request-1'));
   const bad = new NativeGeneration(
     async () => "sensitive",
     {
+      observe: async () => {},
       authorize: async () => {},
     },
     async () =>

@@ -148,6 +148,11 @@ export interface AgentPort {
   }>;
 }
 export interface BillingPort {
+  /** Durable, idempotent provider usage retention. Called after each paid API
+   * attempt, including errors; must survive expiry/revocation after dispatch.
+   * Observations do not settle/refund reservations or create new authority. */
+  observe(grant: GenerationGrant, job: Omit<GenerationJob,'campaignId'>,
+    observation: import('./generation-usage.js').GenerationUsageObservation): Promise<void>;
   /** Harmless local metadata only: no provider call, reservation or spend authority. */
   inspect?(grant: GenerationGrant): Promise<{ state: "configured" | "unavailable"; currency?: string; maxUnitMinor?: number; expiresAt?: string }>;
   /** Existing, externally enforced generation authority; never inferred from ads authority. */

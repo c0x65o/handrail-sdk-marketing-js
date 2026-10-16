@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import type { GenerationGrant, GenerationJob } from "../core/index.js";
 import type { BillingPort, GenerationOutput } from "./ports.js";
 import { requireThat, DomainError } from "./store.js";
+import {generationUsageObservation,generationRequestId} from './generation-usage.js';
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const MAX_DIMENSION = 16_384;
@@ -104,6 +105,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
     private beforeCredentialUse?: (provider: "openai" | "xai", project: string, grantId: string) => Promise<void>,
   ) {}
   validate(g: GenerationGrant) {
+    requireThat(typeof this.billing.observe==='function','generation_metering_unavailable');
     requireThat(
       g.provider === (g.kind === "image" ? "openai" : "xai"),
       "generation_provider_unavailable",
@@ -136,6 +138,13 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
     retain: (requestId: string) => void | Promise<void>,
     beforeWrite: () => Promise<void> = async () => {},
   ): Promise<GenerationOutput> {
+    let attempted=false,observed=false;
+    let responseStatus:number|null=null,responseId:string|null=null;
+    const observe=async(outcome:'response'|'error'|'unknown',usage?:unknown)=>{
+      observed=true;
+      try{await this.billing.observe(g,job,generationUsageObservation('submit',outcome,responseId,responseStatus,usage));}
+      catch{throw new DomainError('generation_metering_failed',502);}
+    };
     try {
       this.validate(g);
       requireThat(
@@ -157,7 +166,8 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           maxRetries: 0,
           timeout: 120000,
         });
-        const { data, request_id } = await client.images
+        attempted=true;
+        const { data, request_id, response } = await client.images
           .generate({
             model: g.model,
             prompt: job.prompt,
@@ -166,7 +176,8 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
             output_format: "png",
           })
           .withResponse();
-        if (request_id) await retain(request_id);
+        responseStatus=response.status;responseId=generationRequestId(request_id);
+        try {if (request_id) await retain(request_id);} finally {await observe('response',data.usage);}
         requireThat(typeof data.data?.[0]?.b64_json === "string" && data.data[0].b64_json.length > 0, "image_response_missing");
         requireThat(data.data[0].b64_json.length < Math.ceil(MAX_MEDIA_BYTES / 3) * 4, "invalid_media", 422);
         const bytes = Buffer.from(data.data[0].b64_json, "base64");
@@ -177,6 +188,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           ...(await inspectMedia(bytes, "image")),
         };
       }
+      attempted=true;
       const response = await this.fetcher(
         "https://api.x.ai/v1/videos/generations",
         {
@@ -196,19 +208,27 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           }),
         },
       );
+      responseStatus=response.status;responseId=generationRequestId(response.headers.get('x-request-id'));
       if (!response.ok) throw new DomainError("video_submission_uncertain");
       const result = await response.json();
+      responseId=generationRequestId(result.request_id)??responseId;
+      // Retain billing evidence even when the media/job response is malformed.
+      try{if(generationRequestId(result.request_id))await retain(result.request_id);}
+      finally{await observe('response',result.usage);}
       requireThat(
         typeof result.request_id === "string" &&
           /^[\w-]+$/.test(result.request_id),
         "video_request_id_missing",
       );
-      await retain(result.request_id);
       return {
         state: "processing",
         requestId: result.request_id,
       };
     } catch (error) {
+      if(attempted&&!observed){
+        if(error instanceof OpenAI.APIError){responseStatus=error.status??null;responseId=generationRequestId(error.requestID);}
+        await observe(responseStatus===null?'unknown':'error');
+      }
       if (error instanceof DomainError) throw error;
       throw new DomainError("generation_submission_uncertain", 502);
     }
@@ -217,6 +237,13 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
     job: J,
     g: GenerationGrant,
   ): Promise<GenerationOutput> {
+    let attempted=false,observed=false;
+    let responseStatus:number|null=null,responseId:string|null=null;
+    const observe=async(outcome:'response'|'error'|'unknown',usage?:unknown)=>{
+      observed=true;
+      try{await this.billing.observe(g,job,generationUsageObservation('reconcile',outcome,responseId,responseStatus,usage));}
+      catch{throw new DomainError('generation_metering_failed',502);}
+    };
     try {
       // Images have no retrieve-by-request-ID API. Unknown synchronous outcomes
       // stay fenced for provider support review, not a second paid submission.
@@ -225,12 +252,14 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           state: "unknown",
           requestId: job.providerRequestId,
         };
+      this.validate(g);
       requireThat(
         /^[\w-]+$/.test(job.providerRequestId),
         "invalid_provider_request_id",
       );
       const key = await this.credentials("xai", job.projectId, g.id);
       await this.beforeCredentialUse?.("xai", job.projectId, g.id);
+      attempted=true;
       const response = await this.fetcher(
         `https://api.x.ai/v1/videos/${job.providerRequestId}`,
         {
@@ -241,8 +270,10 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           signal: AbortSignal.timeout(20000),
         },
       );
+      responseStatus=response.status;responseId=generationRequestId(response.headers.get('x-request-id'))??job.providerRequestId;
       requireThat(response.ok, "video_reconciliation_unavailable");
       const result = await response.json();
+      await observe('response',result.usage);
       if (["failed", "expired"].includes(result.status))
         return {
           state: "failed",
@@ -287,6 +318,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
         ...media,
       };
     } catch (error) {
+      if(attempted&&!observed)await observe(responseStatus===null?'unknown':'error');
       if (error instanceof DomainError) throw error;
       throw new DomainError("generation_reconciliation_unavailable", 502);
     }

@@ -4,6 +4,7 @@ export * from "./ports.js";
 export * from "./providers.js";
 export * from "./agent.js";
 export * from "./generation.js";
+export * from "./generation-usage.js";
 export * from "./billing.js";
 export * from "../support/vault-crypto.js";
 export * from "./budgets.js";

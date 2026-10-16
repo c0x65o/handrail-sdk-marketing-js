@@ -21,7 +21,7 @@ async function fixture(provider: 'openai' | 'xai' = 'openai') {
  let revision='1', environment='fixture', guards=0, policyHook: (()=>Promise<void>) | undefined;
  const live=host.authority.withLiveSessions.bind(host.authority);
  host.authority.withLiveSessions=async (expected,local)=>live(expected,async()=>{guardedSessions.push(expected.map(e=>e.binding.sessionRef));guards++;try{return await local();}finally{guards--;}});
- const creative=new CreativeConnections({store,custody,environment:'fixture',sessionAuthority:host.authority,accessPolicy:async()=>{await policyHook?.();return {revision,environment,appLabel:'Synthetic',models:['model'],maxDurationSeconds:3600,grantIds:[]};},billing:{authorize:async()=>{throw Error('Forbidden billing');}}});
+ const creative=new CreativeConnections({store,custody,environment:'fixture',sessionAuthority:host.authority,accessPolicy:async()=>{await policyHook?.();return {revision,environment,appLabel:'Synthetic',models:['model'],maxDurationSeconds:3600,grantIds:[]};},billing:{observe:async()=>{throw Error("observation forbidden without a provider attempt");},authorize:async()=>{throw Error('Forbidden billing');}}});
  const service=createConnections({store,creative,sessionAuthority:host.authority});
  const routes=service.routes({origin:'https://sdk.example',authenticate:host.authenticate,mutationHeaders:()=>({'x-preview-request':'1'})});
  const req=async(path:string,body?:Record<string,string>,token=login.token)=>routes(host.request(token,path,{method:body?'POST':'GET',headers:{origin:'https://sdk.example','content-type':'application/x-www-form-urlencoded','x-preview-request':'1'},...(body?{body:new URLSearchParams(body)}:{})})).then(r=>{assert.ok(r);return r;});

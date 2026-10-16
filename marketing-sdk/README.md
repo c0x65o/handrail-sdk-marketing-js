@@ -232,6 +232,27 @@ consent and an expiry no later than its source. Source revocation blocks descend
 Local disconnect tombstones the new encrypted envelope while retaining safe intent
 receipts; provider-wide key revocation is a separate external operation.
 
+`BillingPort.observe` is required for native image/video generation. Supply the
+same durable billing integration when composing `DraftGenerationBilling`; missing
+observation support blocks dispatch before credential use. The transport records
+redacted usage after each provider submission or video poll, including failed
+requests and malformed media. Input, cached input, output, reasoning and image/text
+token counts remain separate; missing counts are null with reasons. Quotes remain
+reservations, and absent measured provider cost remains unknown, never zero or an
+inferred charge. Repeated video polls may contain cumulative counts: do not sum them.
+
+`BoundGenerationBilling.observe` saves immutable `generationUsageEvidence` against
+the original reservation, even if the grant expires or is revoked after dispatch.
+Identical observations are idempotent; corrections retain previous observations.
+Use the server-only `readGenerationUsageEvidence(store, projectId, jobId, {after,
+limit})` under the host's existing project read authority. It returns bounded pages
+and an opaque `nextAfter` cursor. Receipts contain provider/model and original
+job/grant/request identity, collection time, response status and normalized numeric
+usage; no prompts, media, credentials or raw provider errors. A failed observer
+leaves the job uncertain and preserves any retained original provider request;
+it must not trigger a new paid submission. This receipt contract does not settle
+charges, release reservations, issue authority or qualify live paid generation.
+
 This is an uncommitted candidate projection. The required public HTTPS full-SHA
 installation with matching lockfile remains gated on separately authorized source
 publication. Native Flutter dual-session handoff, Agent pre-grant compatibility,

@@ -4,6 +4,7 @@ import { Store, requireThat } from "./store.js";
 import type { BillingPort } from "./ports.js";
 import type { TextPlanningQuote, TextPlanningSettlement, PlanningRequest } from '../core/index.js';
 import { digest } from './store.js';
+import {generationUsagePrefix} from './generation-usage.js';
 
 /** Existing billing owner. quote/measure may resolve externally, outside locks.
  * inspect/admit/settle are bounded LOCAL operations in the caller's Store
@@ -83,6 +84,20 @@ export class BoundGenerationBilling implements BillingPort {
     readonly store: Store,
     readonly path: string | undefined,
   ) {}
+  async observe(g:GenerationGrant,job:Omit<GenerationJob,'campaignId'>,observation:import('./generation-usage.js').GenerationUsageObservation) {
+    requireThat(job.projectId===g.projectId&&job.grantId===g.id,'generation_usage_scope_mismatch');
+    // Retention must work after authority expires: the reservation establishes
+    // the original attempt, not permission for a new effect or a refund.
+    await this.store.transaction(async()=>{
+      const reservation=await this.store.get<{jobId:string;grantId:string}>(g.projectId,'generationCostReservation',job.id);
+      requireThat(reservation.jobId===job.id&&reservation.grantId===g.id,'generation_usage_reservation_missing');
+      const {observedAt:_at,...fact}=observation;
+      const identity={projectId:g.projectId,jobId:job.id,grantId:g.id,provider:g.provider,model:g.model,kind:g.kind};
+      const id=`${generationUsagePrefix(g.projectId,job.id)}${digest({identity,fact})}`;
+      if(!await this.store.db.prepare("SELECT id FROM records WHERE project_id=? AND kind='generationUsageEvidence' AND id=?").get(g.projectId,id))
+        await this.store.put(g.projectId,'generationUsageEvidence',id,{id,...identity,observation});
+    });
+  }
   private binding(g: GenerationGrant): GenerationBinding {
     requireThat(this.path, "generation_billing_binding_missing");
     const bindings = JSON.parse(

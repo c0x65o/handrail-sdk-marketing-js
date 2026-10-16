@@ -164,7 +164,8 @@ The command wire shapes and browser exports remain unchanged. The public-import
 host composition example adds optional `draftBilling: DraftGenerationBilling`.
 It composes `createNativeDraftGeneration` with the same CreativeConnections
 `credentials` and `assertCredentialAccess` hooks and original-session guards.
-An existing `BoundGenerationBilling` can supply `quote` and `authorizeDraft` through
+An existing `BoundGenerationBilling` can supply `quote`, `authorizeDraft` and the
+required durable `observe` callback through
 that v2 adapter; it creates no grant, credential, scheduler or spending authority.
 Absent v2 billing leaves generation unavailable. This source composition and native
 OpenAI wire transport have synthetic evidence, not authorized live execution.
