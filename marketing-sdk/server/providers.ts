@@ -27,7 +27,7 @@ import { existingMetaChildren, readMetaCampaignChildren } from "./existing-meta-
 import { GoogleAdsClient } from "./google.js";
 // Existing server-only clients; never imported by core or React.
 import { MetaMarketingClient, accountPath } from "../support/owner-marketing/meta-client.js";
-import { LinkedInMarketingClient } from "../support/owner-marketing/linkedin-client.js";
+import { LinkedInMarketingClient, linkedInCommentaryPlainText } from "../support/owner-marketing/linkedin-client.js";
 // Only structured provider status survives read failures; never raw error text or URLs.
 function existingReadFailure(code:string,error:unknown) {
   const e=error as {code?:unknown;httpStatus?:unknown;statusCode?:unknown;providerCode?:unknown;providerSubcode?:unknown;retryAfterMs?:unknown};
@@ -1538,7 +1538,8 @@ export class NativeProvider implements ProviderPort {
           s.campaign.campaignGroup ===
             `urn:li:sponsoredCampaignGroup:${ids.group}` &&
           s.creative.campaign === `urn:li:sponsoredCampaign:${ids.campaign}` &&
-          subset(s.post, {
+          subset({...s.post, commentary: typeof s.post.commentary === 'string'
+            ? linkedInCommentaryPlainText(s.post.commentary) : s.post.commentary}, {
             author: `urn:li:organization:${plan.creative.organizationId}`,
             commentary: plan.creative.commentary,
             contentLandingPage: plan.creative.landingPageUrl,

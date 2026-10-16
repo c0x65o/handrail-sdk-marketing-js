@@ -67,3 +67,5 @@ export type {ActivationCancellationReceipt} from './activation-cancellation.js';
 // Shared provider transport and private lifecycle coverage for native bindings.
 export {MetaMarketingClient,MetaMarketingError,META_AD_FIELDS,META_INSIGHT_FIELDS,redactProviderMessage,metaMarketingSafety} from '../support/owner-marketing/meta-client.js';
 export {recordMarketingCredentials,withMarketingCredentialCoverage,projectMarketingCredentialEvidence} from '../support/owner-marketing/evidence-credentials.js';
+
+export {LinkedInMarketingClient,LinkedInMarketingError,linkedInObjectName,linkedInFailureEvidence,linkedInCommentaryText,linkedInCommentaryPlainText,linkedInMarketingSafety} from '../support/owner-marketing/linkedin-client.js';

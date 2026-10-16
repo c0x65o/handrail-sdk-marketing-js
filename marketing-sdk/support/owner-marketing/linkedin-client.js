@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import {safeMarketingEvidence} from "./evidence-projection.js";
 import {recordMarketingCredentials} from "./evidence-credentials.js";
 
 const API_ROOT = "https://api.linkedin.com/rest";
@@ -58,7 +59,7 @@ function redactLinkedInMessage(message, secrets = []) {
 }
 
 function errorDetails(status, payload = {}) {
-  const providerCode = payload?.code ?? payload?.errorCode ?? payload?.status ?? null;
+  const providerCode = payload?.code ?? payload?.errorCode ?? payload?.serviceErrorCode ?? payload?.status ?? null;
   if (status === 429) return { code: "rate_limited", status: 429, retryable: true, providerCode };
   if (status === 400 && ["invalid_grant", "invalid_request"].includes(payload?.error)) return { code: "permission_error", status: 403, providerCode };
   if (status === 401 || status === 403) return { code: "permission_error", status: 403, providerCode };
@@ -66,41 +67,68 @@ function errorDetails(status, payload = {}) {
   return { code: "provider_error", status: status >= 400 && status < 500 ? 422 : 502, retryable: false, providerCode };
 }
 
-function providerValidationDetails(payload = {}, secrets = []) {
-  const raw = [];
-  const collect = (value) => {
-    if (raw.length >= 12 || value == null) return;
-    if (Array.isArray(value)) {
-      for (const item of value) collect(item);
-      return;
+// Bounded traversal of documented validation containers; never walk arbitrary
+// provider keys. Shared by existing human-readable errors and Results evidence.
+function validationRecords(payload) {
+  const records=[];let nodes=0,truncated=false;
+  const collect=(value,depth=0)=>{
+    if(value==null)return;
+    if(nodes++>=64||depth>6||records.length>=12){truncated=true;return;}
+    if(Array.isArray(value)) {
+      for(const item of value){collect(item,depth+1);if(truncated)break;}
+    } else if(typeof value==='object') {
+      if(value.code||value.type||value.errorCode||value.description||value.message||value.errorMessage)records.push(value);
+      for(const key of ['inputErrors','conditionalInputErrors','pathErrors','details','errors'])collect(value[key],depth+1);
     }
-    if (typeof value !== "object") return;
-    if (value.code || value.type || value.errorCode || value.description || value.message || value.errorMessage) raw.push(value);
-    for (const key of ["inputErrors", "conditionalInputErrors", "pathErrors", "details", "errors"]) collect(value[key]);
   };
-  collect(payload?.errorDetails);
-  collect(payload?.details);
-  return raw.slice(0, 12).map((detail) => {
-    const field = detail?.field
-      || detail?.fieldPath
-      || detail?.input?.inputPath?.fieldPath
-      || detail?.input?.fieldPath
-      || detail?.input?.parameterName
-      || null;
-    const type = detail?.type || detail?.code || detail?.errorCode || null;
-    const message = detail?.message || detail?.errorMessage || detail?.description || null;
-    return [field, type, message]
-      .map((value) => redactLinkedInMessage(value, secrets).trim())
-      .filter(Boolean)
-      .join(" · ")
-      .slice(0, 800);
+  collect(payload?.errorDetails);collect(payload?.details);
+  return {records,truncated};
+}
+function validationField(detail) {
+  return detail?.field||detail?.fieldPath||detail?.input?.inputPath?.fieldPath||
+    detail?.input?.inputPath?.parameterPath||detail?.input?.fieldPath||detail?.input?.parameterName||null;
+}
+function providerValidationDetails(payload = {}, secrets = []) {
+  return validationRecords(payload).records.map(detail=>{
+    const type=detail?.type||detail?.code||detail?.errorCode||null;
+    const message=detail?.message||detail?.errorMessage||detail?.description||null;
+    return [validationField(detail),type,message].map(value=>safeMarketingEvidence(redactLinkedInMessage(value,secrets),{lifecycle_credentials:secrets}).trim()).filter(Boolean).join(' · ').slice(0,800);
   }).filter(Boolean);
+}
+
+// Typed evidence only: retain uninterpreted provider codes and numeric limits,
+// never descriptions, input values, arbitrary paths, URLs or continuation data.
+function providerDiagnosticError(payload,secrets) {
+  const code=value=>typeof value==='string'&&/^[A-Z][A-Z_0-9]{0,99}$/.test(value)?value:null;
+  const numeric=value=>typeof value==='number'&&Number.isFinite(value)?value:
+    typeof value==='string'&&/^-?\d{1,16}(?:\.\d{1,8})?$/.test(value)?value:null;
+  const segments=new Set(['Campaign','AdSupplyForecast','account','campaign','campaignType','creativeType','type','format','objectiveType','optimizationTarget','optimizationTargetType','costType','bidType','bidPrice','competingBid','unitCost','targetCost','costCap','dailyBudget','totalBudget','amount','currencyCode','currency','runSchedule','timeRange','start','end','targetingCriteria','include','exclude','and','or','audienceExpansionEnabled','enableAudienceExpansion','offsiteDeliveryEnabled','enableAudienceNetwork','connectedTelevisionOnly','pacingStrategy','matchType']);
+  const field=value=>typeof value==='string'&&value.length<=160&&value.split(/[/.]/).filter(Boolean).every(part=>segments.has(part))&&value.split(/[/.]/).some(part=>segments.has(part))?value:null;
+  const project=detail=>({code:code(detail?.code??detail?.errorCode??detail?.type),field:field(validationField(detail)),
+    limits:Object.fromEntries(['minValue','maxValue','minLength','maxLength'].filter(key=>numeric(detail?.[key])!==null).map(key=>[key,numeric(detail[key])]))});
+  const {records,truncated}=validationRecords(payload);
+  // Some endpoints put field/limit evidence at the top level instead.
+  const top=project(payload),details=records.map(project);
+  if(top.field!==null||Object.keys(top.limits).length)details.unshift(top);
+  return safeMarketingEvidence({code:code(payload?.code??payload?.errorCode),
+    service_error_code:Number.isSafeInteger(payload?.serviceErrorCode)?payload.serviceErrorCode:null,
+    details:details.slice(0,12),truncated:truncated||details.length>12}, {lifecycle_credentials:secrets});
 }
 
 function accountId(value) {
   const id = String(value || "").trim().replace(/^urn:li:sponsoredAccount:/, "");
   if (!/^\d+$/.test(id)) throw new LinkedInMarketingError("A numeric LinkedIn ad account ID is required", { code: "invalid_configuration", status: 400 });
   return id;
+}
+
+function verifyUpdatedFields(live, fields) {
+  const matches = (actual, expected, key) => {
+    if (expected && typeof expected === "object") return Object.entries(expected).every(([field, value]) => matches(actual?.[field], value, field));
+    if (["amount", "start", "end"].includes(key)) return actual != null && Number(actual) === Number(expected);
+    return actual === expected;
+  };
+  if (!matches(live, fields)) throw new LinkedInMarketingError("LinkedIn update readback did not match the requested fields", {code: "provider_outcome_unknown", status: 503, retryable: true});
+  return live;
 }
 
 function scopes(value) {
@@ -154,6 +182,9 @@ function contentCallToActionLabel(value) {
 }
 
 function restliQueryValue(value, key = null) {
+  // Structured diagnostic criteria must encode atoms independently. In
+  // particular, staff-count URNs contain commas/parentheses of their own.
+  if (value && typeof value === 'object') return restliRecord(value);
   const raw = String(value);
   const encoded = encodeURIComponent(raw);
   const preserveRestliSyntax = key === "fields" || raw.startsWith("(") || raw.startsWith("List(");
@@ -163,6 +194,12 @@ function restliQueryValue(value, key = null) {
     .replace(/%29/gi, ")")
     .replace(/%2C/gi, ",");
   return raw.startsWith("(") ? delimiters.replace(/%3A/gi, ":") : delimiters;
+}
+
+function restliRecord(value) {
+  if (Array.isArray(value)) return `List(${value.map(restliRecord).join(',')})`;
+  if (value && typeof value === 'object') return `(${Object.entries(value).map(([key,item]) => `${restliRecord(key)}:${restliRecord(item)}`).join(',')})`;
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
 // LinkedIn limits object names by UTF-8 bytes, not JavaScript characters.
@@ -175,6 +212,35 @@ export function linkedInObjectName(value, fallback = "Handrail campaign") {
   return result.trimEnd();
 }
 
+// Explicit transport projection; never store headers, query values or bodies.
+export function linkedInFailureEvidence(error, env = {}) {
+  const scalar = value => {
+    const safe = safeMarketingEvidence(typeof value === 'string' || typeof value === 'number' ? value : null, env);
+    return typeof safe === 'string' ? safe.slice(0, 500) : safe;
+  };
+  return safeMarketingEvidence({
+    code: scalar(error?.code), message: scalar(error?.message),
+    provider_status: Number.isInteger(error?.providerStatus) ? error.providerStatus : null,
+    provider_code: scalar(error?.providerCode),
+    http: error?.providerRequest ? {
+      method: scalar(error.providerRequest.method), endpoint: scalar(error.providerRequest.endpoint),
+      api_version: scalar(error.providerRequest.api_version), operation: scalar(error.providerRequest.operation),
+    } : null,
+    transport_coverage: error?.providerRequest ? 'recorded' : 'unknown',
+  }, env);
+}
+
+// Posts commentary is LinkedIn little text, not URL-encoded text. Keep the
+// saved/approved material plain; escape only at the provider boundary.
+// https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/little-text-format
+export function linkedInCommentaryText(value) {
+  return String(value || "").replace(/[|{}@[\]()<>#\\*_~]/g, "\\$&");
+}
+
+export function linkedInCommentaryPlainText(value) {
+  return String(value || "").replace(/\\([|{}@[\]()<>#\\*_~])/g, "$1");
+}
+
 /** A fixed reason only; provider token fields never become diagnostics. */
 export function linkedInTokenVerificationReason(token, clientId, now = Date.now()) {
   return token?.active === false ? "token_inactive" : token?.active !== true ? "token_active_unverified" :
@@ -185,14 +251,15 @@ export function linkedInTokenVerificationReason(token, clientId, now = Date.now(
 }
 
 export class LinkedInMarketingError extends Error {
-  constructor(message, { code = "provider_error", status = 502, providerStatus = null, providerCode = null, providerDetails = [], retryable = false, secrets = [] } = {}) {
-    super(redactLinkedInMessage(message, secrets));
+  constructor(message, { code = "provider_error", status = 502, providerStatus = null, providerCode = null, providerDetails = [], providerDiagnostic = null, retryable = false, secrets = [] } = {}) {
+    super(safeMarketingEvidence(redactLinkedInMessage(message, secrets), {lifecycle_credentials:secrets}));
     this.name = "LinkedInMarketingError";
     this.code = code;
     this.statusCode = status;
     this.providerStatus = providerStatus;
-    this.providerCode = providerCode;
-    this.providerDetails = Array.isArray(providerDetails) ? providerDetails.slice(0, 12) : [];
+    this.providerCode = safeMarketingEvidence(typeof providerCode === "string" || typeof providerCode === "number" ? providerCode : null, {lifecycle_credentials:secrets});
+    this.providerDetails = safeMarketingEvidence(Array.isArray(providerDetails) ? providerDetails.slice(0, 12) : [], {lifecycle_credentials:secrets});
+    this.providerDiagnostic = providerDiagnostic;
     this.retryable = retryable;
   }
 }
@@ -224,22 +291,29 @@ export class LinkedInMarketingClient {
   }
 
   async fetchWithMeta(url, init, label) {
+    const secrets = [this.accessToken, this.refreshToken, this.clientId, this.clientSecret];
+    const parsed = new URL(url);
+    const endpoint = parsed.origin === new URL(this.apiRoot).origin && parsed.pathname.startsWith(new URL(this.apiRoot).pathname + '/')
+      ? parsed.pathname : parsed.origin === new URL(this.oauthRoot).origin && /\/(accessToken|introspectToken)$/.test(parsed.pathname)
+        ? parsed.pathname : '[external-asset-endpoint]';
+    const providerRequest = safeMarketingEvidence({method: String(init?.method || 'GET').toUpperCase(),
+      endpoint, api_version: init?.headers?.['linkedin-version'] || null, operation: label}, {lifecycle_credentials:secrets});
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let response;
+    let response, payload;
     try {
       response = await this.fetchImpl(url, { ...init, redirect: "error", signal: controller.signal });
+      payload = await responsePayload(response);
     } catch (error) {
-      throw new LinkedInMarketingError(error?.name === "AbortError" ? `${label} timed out` : "LinkedIn is unavailable", { code: "provider_unavailable", status: 503, retryable: true });
+      throw Object.assign(new LinkedInMarketingError(error?.name === "AbortError" ? `${label} timed out` : "LinkedIn is unavailable", { code: "provider_unavailable", status: 503, retryable: true, secrets }), {providerRequest,providerStatus:response?.status ?? null});
     } finally { clearTimeout(timer); }
-    const payload = await responsePayload(response);
     if (!response.ok) {
       const details = errorDetails(response.status, payload);
-      const secrets = [this.accessToken, this.refreshToken, this.clientId, this.clientSecret];
       const providerDetails = providerValidationDetails(payload, secrets);
       const summary = payload?.message || payload?.error_description || `${label} failed`;
       const message = providerDetails.length ? `${summary}: ${providerDetails.join("; ")}` : summary;
-      const error = new LinkedInMarketingError(message, { ...details, providerStatus: response.status, providerDetails, secrets });
+      const error = new LinkedInMarketingError(message, { ...details, providerStatus: response.status, providerDetails, providerDiagnostic: providerDiagnosticError(payload,secrets), secrets });
+      error.providerRequest = providerRequest;
       // An explicit validation/authorization rejection cannot have created the object.
       // Timeouts, throttling and server errors retain uncertain-outcome recovery.
       if ([400,401,403,404,409,422].includes(response.status)) error.providerOutcome = "rejected";
@@ -300,11 +374,15 @@ export class LinkedInMarketingClient {
     return token;
   }
 
-  async requestWithMeta(path, { method = "GET", query = {}, body = null, headers = {} } = {}) {
+  /** @param {string} path @param {{method?:string,query?:Record<string,any>,body?:any,headers?:Record<string,string>,maxUrlBytes?:number|null}} options */
+  async requestWithMeta(path, { method = "GET", query = {}, body = null, headers = {}, maxUrlBytes = null } = {}) {
     const accessToken = await this.accessTokenForRequest();
     const url = new URL(`${this.apiRoot}/${String(path).replace(/^\//, "")}`);
     const queryEntries = Object.entries(query || {}).filter(([, value]) => value != null && value !== "");
     if (queryEntries.length) url.search = queryEntries.map(([key, value]) => `${encodeURIComponent(key)}=${restliQueryValue(value, key)}`).join("&");
+    if (maxUrlBytes !== null && Buffer.byteLength(url.href, 'utf8') > maxUrlBytes) {
+      throw new LinkedInMarketingError('LinkedIn read URL exceeds its bound', {code:'request_bound_exceeded',status:422});
+    }
     const init = {
       method,
       headers: {
@@ -369,7 +447,7 @@ export class LinkedInMarketingClient {
     try {
       await this.request(`adAccounts/${id}/adCampaignGroups/${group.id}`, { method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" }, body: { patch: { $set: fields } } });
       writeAccepted = true;
-      return await this.getCampaignGroup(id, group.id);
+      return verifyUpdatedFields(await this.getCampaignGroup(id, group.id), fields);
     } catch (error) {
       if (!writeAccepted) {
         error.providerOutcome = error.retryable ? "unknown" : "rejected";
@@ -382,6 +460,9 @@ export class LinkedInMarketingClient {
       });
       verification.providerOutcome = "unknown";
       verification.cause = error;
+      verification.providerRequest = error.providerRequest || {method: "GET", endpoint: `/rest/adAccounts/${id}/adCampaignGroups/${group.id}`, api_version: this.apiVersion, operation: "LinkedIn mutation readback"};
+      verification.providerStatus = error.providerStatus;
+      verification.providerCode = error.providerCode;
       throw verification;
     }
   }
@@ -443,7 +524,7 @@ export class LinkedInMarketingClient {
     try {
       await this.request(`adAccounts/${id}/adCampaigns/${campaign.id}`, { method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" }, body: { patch: { $set: fields } } });
       writeAccepted = true;
-      return await this.getCampaign(id, campaign.id);
+      return verifyUpdatedFields(await this.getCampaign(id, campaign.id), fields);
     } catch (error) {
       if (!writeAccepted) {
         error.providerOutcome = error.retryable ? "unknown" : "rejected";
@@ -456,6 +537,9 @@ export class LinkedInMarketingClient {
       });
       verification.providerOutcome = "unknown";
       verification.cause = error;
+      verification.providerRequest = error.providerRequest || {method: "GET", endpoint: `/rest/adAccounts/${id}/adCampaigns/${campaign.id}`, api_version: this.apiVersion, operation: "LinkedIn mutation readback"};
+      verification.providerStatus = error.providerStatus;
+      verification.providerCode = error.providerCode;
       throw verification;
     }
   }
@@ -510,10 +594,40 @@ export class LinkedInMarketingClient {
     throw new LinkedInMarketingError("Conversion inventory exceeded bounded pagination", { code: "verification_failed", status: 502 });
   }
 
+  async createInsightTagApplicantConversion(adAccountId) {
+    // Be explicit: omission has returned INSIGHT_TAG_URL_MATCH_RULES in practice.
+    // No URL rules, campaign association or synthetic event. The caller must
+    // durably retain this POST receipt BEFORE attempting GET/qualification.
+    const body = {
+      account: `urn:li:sponsoredAccount:${accountId(adAccountId)}`,
+      name: "ApplicantRequestMOU", type: "OTHER", enabled: true, valueType: "NO_VALUE",
+      conversionMethod: "INSIGHT_TAG_JAVASCRIPT_EVENT",
+      attributionType: "LAST_TOUCH_BY_CONVERSION",
+      postClickAttributionWindowSize: 30, viewThroughAttributionWindowSize: 7,
+    };
+    const created = await this.requestWithMeta("conversions", { method: "POST", body });
+    const id = created.id || created.payload?.id;
+    // Allowlisted response fields plus the full response hash; never retain
+    // HTTP authorization, cookies or arbitrary provider error text.
+    const response = Object.fromEntries(['id','account','enabled','type','name','conversionMethod','imagePixelTag',
+      'urlMatchRuleExpression','urlRules','attributionType','created','lastModified','valueType',
+      'postClickAttributionWindowSize','viewThroughAttributionWindowSize','associatedCampaigns','campaigns']
+      .filter(key=>created.payload?.[key]!==undefined).map(key=>[key,created.payload[key]]));
+    return {id:/^[1-9]\d*$/.test(String(id||''))?String(id):null,creation_evidence:{
+      api_version:this.apiVersion,request:body,http_status:created.response.status,
+      restli_id:created.response.headers.get('x-restli-id'),response,
+      response_sha256:crypto.createHash('sha256').update(JSON.stringify(created.payload)).digest('hex'),
+    }};
+  }
+
   getCampaignConversion(campaignId, conversionId) {
     const campaign = urnId(campaignId, "sponsoredCampaign");
     const conversion = partnerConversionUrn(conversionId);
     return this.request(`campaignConversions/(campaign:${encodeURIComponent(campaign.urn)},conversion:${encodeURIComponent(conversion.urn)})`);
+  }
+
+  listAuthenticatedAccountRoles({start = 0, count = 100} = {}) {
+    return this.request('adAccountUsers', {query: {q: 'authenticatedUser', start, count}});
   }
 
   async associateCampaignConversion(campaignId, conversionId) {
@@ -551,8 +665,10 @@ export class LinkedInMarketingClient {
     return { conversion: conversion.urn, eventId: safeEventId };
   }
 
-  async getCreative(adAccountId, creativeId) {
+  /** @param {string} adAccountId @param {string} creativeId @param {{assertCreative?:(creative:any)=>void|Promise<void>}} options */
+  async getCreative(adAccountId, creativeId, {assertCreative} = {}) {
     const creative = await this.request(`adAccounts/${accountId(adAccountId)}/creatives/${encodeURIComponent(urnId(creativeId, "sponsoredCreative").urn)}`);
+    await assertCreative?.(creative);
     return this.expandCreativePost(creative);
   }
 
@@ -594,7 +710,7 @@ export class LinkedInMarketingClient {
     const post = {
       adContext: { dscAdAccount: `urn:li:sponsoredAccount:${id}`, dscStatus: "ACTIVE" },
       author: organization.urn,
-      commentary: String(input.commentary || "").trim().slice(0, 3000),
+      commentary: linkedInCommentaryText(String(input.commentary || "").trim()),
       visibility: "PUBLIC",
       distribution: { feedDistribution: "NONE", thirdPartyDistributionChannels: [] },
       lifecycleState: "PUBLISHED",
@@ -623,6 +739,26 @@ export class LinkedInMarketingClient {
     return { id: identity.id, urn: identity.urn, status: "DRAFT", payload: created.payload };
   }
 
+  async updatePostCommentary(postUrn, commentary) {
+    if (!/^urn:li:(share|ugcPost):[0-9]+$/.test(postUrn || "")) throw new LinkedInMarketingError("A mapped LinkedIn post is required", { code: "invalid_configuration", status: 400 });
+    return this.request(`posts/${encodeURIComponent(postUrn)}`, {
+      method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" },
+      body: { patch: { $set: { commentary: linkedInCommentaryText(String(commentary || "").trim()) } } },
+    });
+  }
+
+  async updatePostDestination(postUrn, destinationUrl) {
+    if (!/^urn:li:(share|ugcPost):[0-9]+$/.test(postUrn || "")) throw new LinkedInMarketingError("A mapped LinkedIn post is required", { code: "invalid_configuration", status: 400 });
+    const url = new URL(destinationUrl);
+    if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new LinkedInMarketingError("An HTTPS destination is required", { code: "invalid_configuration", status: 400 });
+    // The lifecycle records intent before dispatch and verifies the full
+    // hierarchy afterwards. Never retry an ambiguous response here.
+    return this.request(`posts/${encodeURIComponent(postUrn)}`, {
+      method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" },
+      body: { patch: { $set: { contentLandingPage: destinationUrl } } },
+    });
+  }
+
   async updateCreativeStatus(adAccountId, creativeId, intendedStatus) {
     if (!["ACTIVE", "PAUSED"].includes(intendedStatus)) throw new LinkedInMarketingError("LinkedIn creative status must be ACTIVE or PAUSED", { code: "unsafe_status", status: 400 });
     const id = accountId(adAccountId);
@@ -631,7 +767,7 @@ export class LinkedInMarketingClient {
     try {
       await this.request(`adAccounts/${id}/creatives/${encodeURIComponent(creative.urn)}`, { method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" }, body: { patch: { $set: { intendedStatus } } } });
       writeAccepted = true;
-      return await this.getCreative(id, creative.id);
+      return verifyUpdatedFields(await this.getCreative(id, creative.id), {intendedStatus});
     } catch (error) {
       if (!writeAccepted) {
         error.providerOutcome = error.retryable ? "unknown" : "rejected";
@@ -644,6 +780,9 @@ export class LinkedInMarketingClient {
       });
       verification.providerOutcome = "unknown";
       verification.cause = error;
+      verification.providerRequest = error.providerRequest || {method: "GET", endpoint: `/rest/adAccounts/${id}/creatives/${creative.urn}`, api_version: this.apiVersion, operation: "LinkedIn mutation readback"};
+      verification.providerStatus = error.providerStatus;
+      verification.providerCode = error.providerCode;
       throw verification;
     }
   }
@@ -876,7 +1015,8 @@ export class LinkedInMarketingClient {
 export const linkedInMarketingSafety = Object.freeze({
   connectionVerificationSupported: true,
   campaignWritesSupported: true,
-  preparationCreatesDraftOnly: true,
+  // SDK preparation may create an ACTIVE dedicated group containing stopped campaigns.
+  preparationCreatesDraftOnly: false,
   activationRequiresOwner: true,
   reportingSupported: true,
   targetingDiscoverySupported: true,

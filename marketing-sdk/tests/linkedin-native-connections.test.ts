@@ -20,7 +20,7 @@ function changeResponse(f: Fixture, change: (url: URL, body: any) => any) {
   (f.connections.discovery as { fetcher: typeof fetch }).fetcher = async (input, init) =>
     Response.json(change(new URL(String(input)), await (await original(input, init)).json()));
 }
-async function campaign(f: Fixture, g: Grant) {
+async function campaign(f: Fixture, g: Grant, body = "Body") {
   const transport = nativeTransport(f);
   const tracking = await trackingFixture(f.store, "https://example.com");
   const server = new MarketingServer(f.store, f.server.providers, f.server.generation, f.server.agent,
@@ -33,7 +33,7 @@ async function campaign(f: Fixture, g: Grant) {
     seconds: null, source: "uploaded", jobId: null, rightsReceipt: "fixture", parentAssetIds: [] };
   await f.store.put("p", "asset", asset.id, asset);
   const c: Campaign = { id: "c", projectId: "p", revision: 1, grantId: g.id, creativeSetId: "cs", state: "draft", receipt: null,
-    material: { settings: fixtureSettings("linkedin", "2041", "555"), purpose: "acquisition", name: "Fixture", headline: "Headline", body: "Body",
+    material: { settings: fixtureSettings("linkedin", "2041", "555"), purpose: "acquisition", name: "Fixture", headline: "Headline", body,
       destination, destinationDigest: captured.digest, assetIds: ["a"], audience: { provider: "linkedin", locations: ["urn:li:geo:1"], expansion: false },
       budget: { currency: "USD", minor: 42000 }, advertisingBudget: { lifetime: { currency: "USD", minor: 42000 }, daily: { currency: "USD", minor: 3000 } },
       startAt: new Date(Math.floor(Date.now() / 86400000) * 86400000 + 86400000).toISOString(),
@@ -188,6 +188,19 @@ test("native preparation retains lost-ack identity, reconciles read-only, and re
     transport.conflict();
     await assert.rejects(f.native.prepare(c, g, [asset], "post-conflict", () => {}, () => {}), /provider_effective_material_mismatch/);
   } finally { await f.close(); }
+});
+test("native preparation verifies plain approved commentary while retaining escaped provider text", async () => {
+  const f=await connectionFixture("linkedin",true);
+  try {
+    const body='Build (and improve) #software — 20% value. Literal \\# example.';
+    const g=await connected(f),{c,asset,transport}=await campaign(f,g,body);
+    const receipt=await f.native.prepare(c,g,[asset],"escaped-copy",()=>{},()=>{});
+    assert.ok(receipt.ids.readbackDigest);
+    const posted=transport.objects.get('urn:li:sponsoredCreative:103').inlineContent.post.commentary;
+    assert.notEqual(posted,body);assert.equal(c.material.body,body);
+    const {linkedInCommentaryPlainText}=await import('../server/index.js');
+    assert.equal(linkedInCommentaryPlainText(posted),body);
+  } finally {await f.close();}
 });
 test("LinkedIn prerequisite receipts replay without provider reads and stale material cannot reach a write", async () => {
   const f = await connectionFixture("linkedin", true);
