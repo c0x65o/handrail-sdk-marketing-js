@@ -142,7 +142,13 @@ export function GuidedFields({ value: m, grant: g, onChange }: { value: Material
           <p>{s.delivery === "advantage_plus_broad" ? "Broad acquisition audience without interest suggestions." : "Expanded acquisition audience; interests are suggestions."} Conversion goal: Lead.</p>
         </>}
         {s.delivery === "expanded" && <p>Expanded traffic audience. Provider-reported expansion must match the selected values before execution.</p>}
-        {s.targeting.optimization !== undefined && <p>Retained targeting optimization hint: {s.targeting.optimization}. Expansion is verified separately.</p>}
+        {s.targeting.optimization !== undefined && <p>Retained targeting optimization hint: {s.targeting.optimization}. Expansion is verified separately.
+          <button type="button" onClick={() => settings({targeting:{...s.targeting,optimization:undefined}})}>Remove targeting optimization hint</button>
+        </p>}
+        {s.targeting.expansion !== undefined && !["expanded", "advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery) && <p role="status">
+          The selected delivery mode does not accept the retained expansion settings. Review the audience before removing them.
+          <button type="button" onClick={() => settings({targeting:{...s.targeting,expansion:undefined}})}>Remove retained expansion settings</button>
+        </p>}
         {["expanded", "advantage_plus_interests", "advantage_plus_broad"].includes(s.delivery) && <>
           {(["detailedTargeting", "lookalike"] as const).map(key => <Select key={key} label={key === "detailedTargeting" ? "Detailed targeting expansion" : "Lookalike expansion"}
             value={s.targeting.expansion?.[key] === undefined ? "" : String(s.targeting.expansion[key])} choices={["0","1"]}

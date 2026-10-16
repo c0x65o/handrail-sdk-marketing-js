@@ -497,6 +497,33 @@ test(`expanded traffic ${optimization} preserves ${hint??'absent'} targeting hin
   assert.equal((await inspect()).candidateReceipt.intent,'paused');
   const editor=renderToStaticMarkup(createElement(GuidedFields,{value:m,grant:g,onChange:()=>{}}));
   assert.match(editor,/Expanded traffic audience/);assert.match(editor,/Detailed targeting expansion/);assert.doesNotMatch(editor,/Lead Pixel/);
+  assert.doesNotMatch(editor,/Remove retained expansion settings/);
+  // A deliberate tuple change preserves the prior settings until the user
+  // explicitly removes each incompatible field. It must be possible to finish
+  // that edit without replacing targeting, budget, attribution or history.
+  const originalMaterial=structuredClone(m);
+  const originalBlockers=capabilityStatus(m,g).blockers;
+  let edited=structuredClone(m);if(edited.settings?.provider!=='meta')throw Error('Meta required');
+  edited.settings.delivery='strict';edited.audience.expansion=false;
+  assert.equal(capabilityStatus(edited,g).sdkSupported,false);
+  const remove=(label:string)=>{
+    const tree=GuidedFields({value:edited,grant:g,onChange:x=>{edited=x;}});
+    const find=(node:any):any=>Array.isArray(node)?node.map(find).find(Boolean):
+      node?.type==='button'&&node.props.children===label?node:node?.props?find(node.props.children):null;
+    const button=find(tree);assert.ok(button,`Missing explicit editor action: ${label}`);button.props.onClick();
+  };
+  remove('Remove retained expansion settings');
+  if(hint){assert.equal(capabilityStatus(edited,g).sdkSupported,false);remove('Remove targeting optimization hint');}
+  assert.deepEqual(capabilityStatus(edited,g).blockers,originalBlockers,
+    'Removing incompatible fields must preserve unrelated readiness/authority blockers');
+  const expected=structuredClone(originalMaterial);if(expected.settings?.provider!=='meta')throw Error('Meta required');
+  expected.settings.delivery='strict';expected.audience.expansion=false;
+  expected.settings.targeting.expansion=undefined;
+  if(hint)expected.settings.targeting.optimization=undefined;
+  assert.deepEqual(edited,expected);assert.deepEqual(m,originalMaterial);
+  const strictPlan:any=providerPlan({...c,material:edited},g,assets);
+  assert.equal(strictPlan.adset.targeting.targeting_optimization,'none');
+  assert.deepEqual(source,before);assert.deepEqual(g.permissions,['pause','report']);
   for(const value of [undefined,[],[{key:'detailed_targeting',value:0},{key:'lookalike',value:0}],
     [{key:'detailed_targeting',value:true},{key:'lookalike',value:0}]]){
     f.observed.adset.targeting_optimization_types=value;

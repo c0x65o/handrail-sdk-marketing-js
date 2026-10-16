@@ -1047,7 +1047,12 @@ to require both observed bits to be zero. Historical reconciliation records a
 difference when retained observations said expansion was off; it grants no
 material approval or spending authority. Missing, duplicate or non-binary readback
 still blocks execution. The editor exposes the expansion expectations without a
-Lead pixel or conversion goal.
+Lead pixel or conversion goal. Changing the delivery tuple retains original
+targeting until an explicit edit: the guided editor offers removal of an
+incompatible expansion expectation and a separate removal of the retained
+optimization hint. These edits preserve the rest of the audience, budgets,
+attribution, historical source and authority; they do not grant account eligibility
+or approve a provider update.
 
 `targeting_optimization_types` stays in the expected provider plan/readback but is
 excluded from AdSet creation requests: it is a returned field, not a writable
