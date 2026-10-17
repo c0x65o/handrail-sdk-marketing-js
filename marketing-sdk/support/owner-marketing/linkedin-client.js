@@ -738,24 +738,20 @@ export class LinkedInMarketingClient {
     return { id: identity.id, urn: identity.urn, status: "DRAFT", payload: created.payload };
   }
 
-  async updatePostCommentary(postUrn, commentary) {
+  async updatePostMaterial(postUrn, {commentary,destinationUrl}) {
     if (!/^urn:li:(share|ugcPost):[0-9]+$/.test(postUrn || "")) throw new LinkedInMarketingError("A mapped LinkedIn post is required", { code: "invalid_configuration", status: 400 });
-    return this.request(`posts/${encodeURIComponent(postUrn)}`, {
-      method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" },
-      body: { patch: { $set: { commentary: linkedInCommentaryText(String(commentary || "").trim()) } } },
-    });
-  }
-
-  async updatePostDestination(postUrn, destinationUrl) {
-    if (!/^urn:li:(share|ugcPost):[0-9]+$/.test(postUrn || "")) throw new LinkedInMarketingError("A mapped LinkedIn post is required", { code: "invalid_configuration", status: 400 });
-    const url = new URL(destinationUrl);
-    if (url.protocol !== "https:" || url.username || url.password || url.hash) throw new LinkedInMarketingError("An HTTPS destination is required", { code: "invalid_configuration", status: 400 });
-    // The lifecycle records intent before dispatch and verifies the full
-    // hierarchy afterwards. Never retry an ambiguous response here.
-    return this.request(`posts/${encodeURIComponent(postUrn)}`, {
-      method: "POST", headers: { "x-restli-method": "PARTIAL_UPDATE" },
-      body: { patch: { $set: { contentLandingPage: destinationUrl } } },
-    });
+    const fields = {};
+    if(commentary!==undefined){
+      if(typeof commentary!=="string"||!commentary.trim())throw new LinkedInMarketingError("Exact commentary is required",{code:"invalid_configuration",status:400});
+      fields.commentary=linkedInCommentaryText(commentary);
+    }
+    if(destinationUrl!==undefined){
+      const url=new URL(destinationUrl);
+      if(url.protocol!=="https:"||url.username||url.password||url.hash)throw new LinkedInMarketingError("An HTTPS destination is required",{code:"invalid_configuration",status:400});
+      fields.contentLandingPage=destinationUrl;
+    }
+    if(!Object.keys(fields).length)throw new LinkedInMarketingError("Post changes are required",{code:"invalid_configuration",status:400});
+    return this.request(`posts/${encodeURIComponent(postUrn)}`,{method:"POST",headers:{"x-restli-method":"PARTIAL_UPDATE"},body:{patch:{$set:fields}}});
   }
 
   async updateCreativeStatus(adAccountId, creativeId, intendedStatus) {

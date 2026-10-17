@@ -1,3 +1,4 @@
+import {inspectLinkedInPostOwnership} from "./linkedin-post-ownership.js";
 import {compareLinkedInCommentaryUrls} from "../support/owner-marketing/linkedin-commentary-links.js";
 import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
@@ -994,6 +995,11 @@ export class NativeProvider implements ProviderPort {
         "linkedin_explicit_daily_budget_required");
       normalized.advertisingBudget.daily.minor = previous.advertisingBudget.daily.minor;
     }
+    if(this.name === "linkedin") {
+      normalized.body=previous.body;
+      normalized.destination=previous.destination;
+      normalized.destinationDigest=previous.destinationDigest;
+    }
     requireThat(digest(normalized) === digest(previous), "existing_campaign_edit_unqualified");
     this.plan(c, g, assets);
   }
@@ -1021,15 +1027,33 @@ export class NativeProvider implements ProviderPort {
     }
     return this.use(g, async (client,custodyGuard) => {
       const proofGuard=async()=>{await custodyGuard();await readGuard();};
+      const postChanged=this.name==='linkedin'&&(plan.creative.commentary!==oldPlan.creative.commentary||
+        plan.creative.landingPageUrl!==oldPlan.creative.landingPageUrl);
+      let postWrite=false,postOwnershipEvidence:Receipt["postOwnershipEvidence"];
       if (this.name === "linkedin") client.beforeWrite = async () => {
         requireThat((await this.linkedInPermissions(client, g, undefined, readGuard, "prepare")).includes("prepare"), "provider_capability_missing");
         await guard();
+        if(postChanged){
+          postOwnershipEvidence=await inspectLinkedInPostOwnership(client,g.accountId,ids.campaign!,ids.creative!,ids.post!,g.organizationId!,proofGuard);
+          const current=await this.snapshot(client,g,ids);
+          requireThat(current.paused,'existing_campaign_not_paused');
+          // Before the first write all original material must still match.
+          // The post write follows any campaign edit and still binds old copy.
+          await this.verifySnapshot(client,g,ids,current,postWrite?{...plan,creative:oldPlan.creative}:oldPlan,proofGuard);
+          await guard();
+        }
       };
       await this.verifySettings(client, c, g);
       const before = await this.snapshot(client, g, ids);
       requireThat(before.paused, "existing_campaign_not_paused");
       requireThat(digest(before.material) === previousDigest, "external_material_changed");
       await this.verifySnapshot(client,g,ids,before,oldPlan,proofGuard);
+      if(postChanged){
+        const postId=before.material.creative.content?.reference;
+        requireThat(typeof postId==='string'&&(!ids.post||ids.post===postId),'linkedin_post_identity_unverified');
+        await inspectLinkedInPostOwnership(client,g.accountId,ids.campaign!,ids.creative!,postId,g.organizationId!,proofGuard);
+        ids.post=postId;
+      }
       if (this.name === "linkedin" && plan.campaign.endAt !== oldPlan.campaign.endAt) {
         const schedule = before.material.group.runSchedule;
         requireThat(Number.isFinite(schedule?.start) && plan.campaign.startAt >= schedule.start &&
@@ -1062,6 +1086,14 @@ export class NativeProvider implements ProviderPort {
               ? { runSchedule: { start: plan.campaign.startAt, end: plan.campaign.endAt } } : {}),
           };
           if (Object.keys(fields).length) await client.updateCampaign(g.accountId, ids.campaign, fields);
+          if(postChanged){
+            postWrite=true;
+            await client.updatePostMaterial(ids.post,{
+              ...(plan.creative.commentary!==oldPlan.creative.commentary?{commentary:plan.creative.commentary}:{}),
+              ...(plan.creative.landingPageUrl!==oldPlan.creative.landingPageUrl?{destinationUrl:plan.creative.landingPageUrl}:{}),
+            });
+            postWrite=false;
+          }
         }
       }
       const after = await this.snapshot(client, g, ids);
@@ -1070,7 +1102,7 @@ export class NativeProvider implements ProviderPort {
       await guard();
       const observed = { ...ids, readbackDigest: digest(after.material) };
       await retain(observed);
-      return { ...this.receipt(observed, digest(plan), "paused"), ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}), providerRequestId: client.lastRequestId || null };
+      return { ...this.receipt(observed, digest(plan), "paused"), ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}), ...(postOwnershipEvidence?{postOwnershipEvidence}:{}), providerRequestId: client.lastRequestId || null };
     });
   }
   private async bytes(project: string, a: Asset) {
@@ -1420,6 +1452,7 @@ export class NativeProvider implements ProviderPort {
         requireThat(rawPost?.id === reference, "creative_reference_unverified");
       }
       requireThat(rawPost, "linkedin_post_readback_required");
+      if(ids.post)requireThat(creative.content?.reference===ids.post&&rawPost.id===ids.post,'linkedin_post_identity_unverified');
       const post = {
         author: rawPost.author,
         commentary: rawPost.commentary,
@@ -1892,8 +1925,10 @@ export class NativeProvider implements ProviderPort {
     const receipt = o.receipt || c.receipt;
     if (!receipt?.ids.campaign) return null; // incomplete writes need specific native repair, never replay.
     return await this.use(g, async (client,custodyGuard) => {
-      let s, inventory;
+      let s, inventory,postOwnershipEvidence:Receipt['postOwnershipEvidence'];
       try {
+        if(o.kind==='prepare'&&this.name==='linkedin'&&receipt.ids.post)
+          postOwnershipEvidence=await inspectLinkedInPostOwnership(client,g.accountId,receipt.ids.campaign!,receipt.ids.creative!,receipt.ids.post,g.organizationId!,custodyGuard);
         s = await this.snapshot(client, g, receipt.ids);
         if (o.kind === "activate") inventory = await this.activationChildren(client,g,receipt.ids);
       } catch {
@@ -1919,7 +1954,7 @@ export class NativeProvider implements ProviderPort {
           return null;
         }
         return {...this.receipt({...receipt.ids,readbackDigest:digest(s.material)},o.payloadDigest,"paused"),
-          ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{})};
+          ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}),...(postOwnershipEvidence?{postOwnershipEvidence}:{})};
       }
       if (!receipt.ids.readbackDigest || receipt.payloadDigest !== o.payloadDigest) return null;
       if (digest(s.material) !== receipt.ids.readbackDigest) return null;
@@ -1933,7 +1968,7 @@ export class NativeProvider implements ProviderPort {
         }catch{return null;}
       }
       return {...this.receipt(inventory?{...receipt.ids,inventoryDigest:digest(inventory)}:receipt.ids,
-        o.payloadDigest,o.kind==='activate'?'enabled':'paused'),...(commentaryUrlEvidence?{commentaryUrlEvidence}:{})};
+        o.payloadDigest,o.kind==='activate'?'enabled':'paused'),...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}),...(postOwnershipEvidence?{postOwnershipEvidence}:{})};
     });
   }
   async metrics(

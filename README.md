@@ -1265,3 +1265,16 @@ and uncertain-operation recovery use current proof; a saved successful proof is
 never reused as authority. Pause does not require a reachable commentary link.
 The optional comparison guard is trusted host custody and is checked around each
 public read; it cannot confer spending or provider-write authority.
+
+Existing LinkedIn campaign preparation can update commentary and destination on
+its original referenced dark post. The SDK checks complete account creative
+pagination, the exact post/account/organization and sole creative ownership
+before each write. It preserves campaign, creative, post and image identities,
+uses one Posts partial update, and retains post ownership evidence. Original
+material drift, revoked authority and shared posts stop the update. Lost replies
+are reconciled by fresh ownership/material reads; a partially applied combined
+campaign/post update remains unresolved and never replays either write. Headline
+and media replacement remain unsupported by this in-place contract.
+
+Provider contract: [LinkedIn Posts API, September 2026](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api?view=li-lms-2026-09),
+“Update Posts.” Fixture checks do not establish live provider qualification.

@@ -436,6 +436,8 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     let objects = new Map<string, any>(), writes = 0, loseRead = false, drift: ((o: any, collection: string) => void) | null = null;
     const statusWrites: {id:string;status:string}[]=[];
     let losePauseAcknowledgement=false;
+    let sharedPost=false,losePostAcknowledgement=false,rejectPost=false;
+
     const fetcher: typeof fetch = async (raw, init) => {
       const url = new URL(String(raw)), path = decodeURIComponent(url.pathname), last = path.split("/").at(-1)!;
       if (path.endsWith("/introspectToken")) return Response.json({ active: true, scope: "rw_ads r_ads_reporting r_organization_admin w_organization_social r_organization_social" });
@@ -448,7 +450,9 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         if (last === "images") return Response.json({ value: { uploadUrl: "https://fixture.invalid/upload", image: "urn:li:image:fixture" } });
         if (objects.has(last)) {
           statusWrites.push({id:last,status:body.patch.$set.status??body.patch.$set.intendedStatus});
+          if(last==='urn:li:share:12345'&&rejectPost)throw Error('post-write-rejected-fixture');
           Object.assign(objects.get(last), body.patch.$set);
+          if(last==='urn:li:share:12345'&&losePostAcknowledgement){losePostAcknowledgement=false;throw Error('lost-post-acknowledgement');}
           if(losePauseAcknowledgement&&last==="urn:li:sponsoredCreative:103") {
             losePauseAcknowledgement=false;loseRead=true;
           }
@@ -459,7 +463,8 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
         drift?.(objects.get(id), last);
         return Response.json({}, { status: 201, headers: { "x-restli-id": id } });
       }
-      if (path === "/rest/adAccounts/123/creatives") return Response.json({elements:[objects.get("urn:li:sponsoredCreative:103")]});
+      if (path === "/rest/adAccounts/123/creatives") return Response.json({elements:[{...objects.get("urn:li:sponsoredCreative:103"),account:'urn:li:sponsoredAccount:123'},
+        ...(!url.searchParams.has('campaigns')&&sharedPost?[{id:'urn:li:sponsoredCreative:104',campaign:'urn:li:sponsoredCampaign:999',account:'urn:li:sponsoredAccount:123',content:{reference:'urn:li:share:12345'}}]:[])],metadata:{}});
       if (path === "/rest/campaignConversions") return Response.json({ elements: [] });
       if (path === "/rest/adAccounts/123") return Response.json({ id: 123, currency: "USD", status: "ACTIVE", servingStatuses: ["RUNNABLE"], reference: "urn:li:organization:42" });
       if (path.includes("/images/")) return Response.json({ id: "urn:li:image:fixture", owner: "urn:li:organization:42", status: "AVAILABLE" });
@@ -701,6 +706,64 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     const adoptedReceipt=await provider.update(adopted,grant,[asset],()=>{},()=>{});
     assert.equal(writes,adoptedBefore+1);assert.equal(objects.size,countBefore);
     assert.equal(adoptedReceipt.ids.campaign,pausedAgain.ids.campaign);assert.deepEqual(objects.get("101"),groupBefore);
+
+    // Actual Posts API updates retain original creative/post/image identities.
+    // A complete current account inventory must prove this post has one owner.
+    const creative=objects.get('urn:li:sponsoredCreative:103'),postId='urn:li:share:12345';
+    objects.set(postId,{...creative.inlineContent.post,id:postId,adContext:{dscAdAccount:'urn:li:sponsoredAccount:123'}});
+    delete creative.inlineContent;creative.content={reference:postId};
+    const postBaseline=await provider.inspectExistingCampaign({...adopted,receipt:null},grant,[asset],
+      Object.fromEntries(['group','campaign','creative','image'].map(k=>[k,adoptedReceipt.ids[k]!])),async()=>{});
+    const changedPost=structuredClone(adopted);changedPost.revision++;changedPost.receipt=postBaseline.candidateReceipt;
+    changedPost.preparedMaterial=structuredClone(adopted.material);
+    changedPost.material.body='Revised copy (with exact punctuation).';
+    changedPost.material.destination='https://example.com/new-kit?exact=1';changedPost.material.destinationDigest='b'.repeat(64);
+    fixtureEligibility(changedPost,grant);
+    const beforePost=writes,postCount=objects.size;
+    sharedPost=true;
+    await assert.rejects(provider.update(changedPost,grant,[asset],()=>{},()=>{}),/linkedin_post_shared_or_unowned/);
+    assert.equal(writes,beforePost);sharedPost=false;
+    const unowned=objects.get(postId).adContext;objects.get(postId).adContext={dscAdAccount:'urn:li:sponsoredAccount:999'};
+    await assert.rejects(provider.update(changedPost,grant,[asset],()=>{},()=>{}),/linkedin_post_owner_unverified/);
+    objects.get(postId).adContext=unowned;assert.equal(writes,beforePost);
+    await assert.rejects(provider.update(changedPost,grant,[asset],()=>{sharedPost=true;},()=>{}),/linkedin_post_shared_or_unowned/);
+    sharedPost=false;assert.equal(writes,beforePost,'ownership is checked again after durable intent');
+    const originalPostBody=objects.get(postId).commentary;
+    await assert.rejects(provider.update(changedPost,grant,[asset],()=>{objects.get(postId).commentary='Unrelated external edit';},()=>{}),/provider_effective_material_mismatch/);
+    objects.get(postId).commentary=originalPostBody;assert.equal(writes,beforePost);
+    let revoked=false;
+    await assert.rejects(provider.update(changedPost,grant,[asset],()=>{revoked=true;},()=>{if(revoked)throw new DomainError('post-authority-revoked',403);}),/post-authority-revoked/);
+    assert.equal(writes,beforePost);
+
+    const newHeadline=structuredClone(changedPost);newHeadline.material.headline='New headline';
+    await assert.rejects(provider.update(newHeadline,grant,[asset],()=>{},()=>{}),/existing_campaign_edit_unqualified/);
+    let postIds:Record<string,string>={};losePostAcknowledgement=true;
+    await assert.rejects(provider.update(changedPost,grant,[asset],v=>{postIds={...v};},()=>{}));
+    assert.equal(writes,beforePost+1);assert.equal(objects.size,postCount);assert.equal(postIds.post,postId);
+    assert.equal(objects.get(postId).commentary,String.raw`Revised copy \(with exact punctuation\).`);
+    assert.equal(objects.get(postId).contentLandingPage,changedPost.material.destination);
+    assert.deepEqual(objects.get('101'),groupBefore);assert.equal(objects.get('unrelated').status,'ACTIVE');
+    const postPlan=provider.plan(changedPost,grant,[asset]);
+    sharedPost=true;
+    assert.equal(await provider.reconcile(changedPost,grant,{kind:'prepare',payloadDigest:digest(postPlan),
+      receipt:{...postBaseline.candidateReceipt,ids:postIds,payloadDigest:digest(postPlan)}}),null);
+    sharedPost=false;assert.equal(writes,beforePost+1);
+    const postRecovered=await provider.reconcile(changedPost,grant,{kind:'prepare',payloadDigest:digest(postPlan),
+      receipt:{...postBaseline.candidateReceipt,ids:postIds,payloadDigest:digest(postPlan)}});
+    assert.ok(postRecovered);assert.equal(writes,beforePost+1);assert.equal(postRecovered.ids.post,postId);
+    assert.equal(postRecovered.postOwnershipEvidence?.postId,postId);assert.match(postRecovered.postOwnershipEvidence!.inventoryDigest,/^[a-f0-9]{64}$/);
+    for(const key of ['group','campaign','creative','image'])assert.equal(postRecovered.ids[key],adoptedReceipt.ids[key]);
+    assert.equal(postRecovered.intent,'paused');
+    const partial=structuredClone(changedPost);partial.revision++;partial.receipt=postRecovered;
+    partial.preparedMaterial=structuredClone(changedPost.material);partial.material.body='Second exact copy';
+    partial.material.advertisingBudget!.daily!.minor+=100;fixtureEligibility(partial,grant);rejectPost=true;
+    let partialIds:Record<string,string>={};const beforePartial=writes;
+    await assert.rejects(provider.update(partial,grant,[asset],v=>{partialIds={...v};},()=>{}));
+    assert.equal(writes,beforePartial+2);assert.equal(objects.get('102').dailyBudget.amount,'36.00');
+    const partialPlan=provider.plan(partial,grant,[asset]);
+    assert.equal(await provider.reconcile(partial,grant,{kind:'prepare',payloadDigest:digest(partialPlan),
+      receipt:{...postRecovered,ids:partialIds,payloadDigest:digest(partialPlan)}}),null);
+    assert.equal(writes,beforePartial+2,'partial outcome recovery never replays either write');
 
   } finally { await store.close(); if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, { recursive: true, force: true }); }
 });

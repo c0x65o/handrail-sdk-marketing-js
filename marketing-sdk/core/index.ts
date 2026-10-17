@@ -129,6 +129,7 @@ export interface Receipt {
   observedAt: string;
   evidence: "fixture" | "provider";
   /** Fresh unauthenticated URL proof; original material/readback bytes stay intact. */
+  postOwnershipEvidence?: {postId:string;inventoryDigest:string;observedAt:string};
   commentaryUrlEvidence?: {
     expectedDigest: string;
     observedDigest: string;
