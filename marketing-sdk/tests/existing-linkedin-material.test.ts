@@ -119,3 +119,17 @@ test('recruitment website-visit capture preserves its applicant outcome without 
   f.campaign.objectiveType='WEBSITE_CONVERSION';f.source.retainedProviderTerms.objectiveType='WEBSITE_CONVERSION';
   await assert.rejects(f.capture(),{code:'exact_conversion_binding_required'});
 });
+
+
+test('changed retained terms expose exact campaign differences without authority or credential data',async()=>{
+  const f=fixture();f.campaign.dailyBudget.amount='9.00';f.campaign.runSchedule.start+=1000;
+  await assert.rejects(f.capture(),(error:any)=>{
+    assert.equal(error.code,'existing_material_retained_terms_changed');
+    assert.deepEqual(error.materialDiagnostic,{phase:'retained_provider_terms',changedFields:['dailyBudget','runSchedule'],differences:[
+      {field:'dailyBudget',retained:{currency:'USD',minor:1000},observed:{currency:'USD',minor:900}},
+      {field:'runSchedule',retained:{start:1791127433318,end:null},observed:{start:1791127434318,end:null}},
+    ]});
+    assert.ok(!JSON.stringify(error.materialDiagnostic).includes('private-fixture'));return true;
+  });
+  assert.equal(f.source.retainedProviderTerms.dailyBudget.amount,'10.00');assert.deepEqual(f.grant.permissions,['pause','report']);
+});

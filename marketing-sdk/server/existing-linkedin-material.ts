@@ -1,6 +1,6 @@
 import { CAPABILITY_VERSION, type Grant, type LinkedInSettings, type Material, type TargetingOption } from "../core/index.js";
 import { exactLinkedInTargeting, linkedInTargeting } from "./capabilities.js";
-import { requireThat, digest } from "./store.js";
+import { requireThat, digest, DomainError } from "./store.js";
 import { material as validateMaterial } from "./validation.js";
 
 /** Trusted native source, bound to retained history by the host. These are
@@ -83,11 +83,26 @@ export function existingLinkedInMaterial(source: ExistingLinkedInMaterialSource,
   const daily = money(campaign.dailyBudget), lifetime = campaign.totalBudget == null ? null : money(campaign.totalBudget);
   const bid = money(campaign.unitCost);
   const retained=source.retainedProviderTerms;
-  requireThat(retained&&digest(money(retained.dailyBudget))===digest(daily)&&digest(money(retained.unitCost))===digest(bid)&&
-    retained.runSchedule?.start===campaign.runSchedule?.start&&(retained.runSchedule?.end??null)===(campaign.runSchedule?.end??null)&&
-    ["campaignGroup","associatedEntity","objectiveType","format","type","costType","locale","audienceExpansionEnabled","offsiteDeliveryEnabled","politicalIntent"]
-      .every(key=>Object.hasOwn(retained,key)&&digest({value:(retained as any)[key]})===digest({value:campaign[key]}))&&
-    exactLinkedInTargeting(retained.targetingCriteria,campaign.targetingCriteria),"existing_material_retained_terms_changed");
+  requireThat(retained,"existing_material_retained_terms_changed");
+  const retainedTerms:Record<string,unknown>={dailyBudget:money(retained.dailyBudget),unitCost:money(retained.unitCost),
+    runSchedule:{start:retained.runSchedule?.start,end:retained.runSchedule?.end??null}};
+  const observedTerms:Record<string,unknown>={dailyBudget:daily,unitCost:bid,
+    runSchedule:{start:campaign.runSchedule?.start,end:campaign.runSchedule?.end??null}};
+  const fields=["campaignGroup","associatedEntity","objectiveType","format","type","costType","locale","audienceExpansionEnabled","offsiteDeliveryEnabled","politicalIntent"];
+  for(const key of fields){retainedTerms[key]=(retained as any)[key];observedTerms[key]=campaign[key];}
+  const changedFields=Object.keys(retainedTerms).filter(key=>fields.includes(key)&&!Object.hasOwn(retained,key)||
+    digest({value:retainedTerms[key]})!==digest({value:observedTerms[key]}));
+  if(!exactLinkedInTargeting(retained.targetingCriteria,campaign.targetingCriteria)){
+    changedFields.push('targetingCriteria');retainedTerms.targetingCriteria=retained.targetingCriteria;observedTerms.targetingCriteria=campaign.targetingCriteria;
+  }
+  if(changedFields.length){
+    // Only campaign terms cross this diagnostic boundary, never provider bodies,
+    // credentials or request headers. The mismatch remains a hard rejection.
+    throw Object.assign(new DomainError('existing_material_retained_terms_changed',409),{
+      materialDiagnostic:{phase:'retained_provider_terms',changedFields,
+        differences:changedFields.map(field=>({field,retained:retainedTerms[field]??null,observed:observedTerms[field]??null}))},
+    });
+  }
   requireThat(daily.minor > 0 && (!lifetime || lifetime.minor > 0), "existing_material_money_invalid");
   const settings: LinkedInSettings = { version: CAPABILITY_VERSION, provider: "linkedin", apiVersion: "202609",
     accountId: grant.accountId, format: "STANDARD_UPDATE", objective: campaign.objectiveType, optimization: campaign.optimizationTargetType,
