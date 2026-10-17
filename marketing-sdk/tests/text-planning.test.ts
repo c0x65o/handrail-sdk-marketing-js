@@ -17,6 +17,34 @@ async function fixture(transport?:typeof fetch){
  const approve=async()=>{const q=await review();return studio.approveTextPlan(p,'p',{reviewId:q.id,reviewDigest:q.reviewDigest,requestKey:'approve'});};
  return {...f,dir,store,hostStore,host,session,p,studio,d,input,review,approve,close:async()=>{await store.close();await hostStore.close();}};
 }
+for(const mode of ['current','rotated','routing-invalid','missing-revision'] as const)test('host text custody '+mode+' keeps keys outside the SDK store and fences exact routing',async()=>{
+ const f=await fixture();try{
+  await f.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind='vault'").run('p');
+  let revision='native-vault-revision-1',calls=0;
+  const custody={store:f.store,
+   async inspect(project:string,ref:string){return project==='p'&&ref==='text-fixture-secret';},
+   async revision(){return mode==='missing-revision'?'':revision;},
+   async read(){return {apiKey:'synthetic-host-text-key',organization:'org-native',project:mode==='routing-invalid'?'invalid\nroute':'proj-native'};},
+  };
+  const capability=createSyntheticTextPlanning({...f.options,custody},async(url,init)=>{
+   calls++;assert.equal(String(url),'https://api.openai.com/v1/responses');
+   assert.equal(new Headers(init?.headers).get('OpenAI-Organization'),'org-native');
+   assert.equal(new Headers(init?.headers).get('OpenAI-Project'),'proj-native');
+   return f.fetcher(url,init);
+  });
+  const studio=new CampaignStudio(f.store,{sessions:f.host.authority,textPlanning:capability});
+  if(mode==='missing-revision'){await assert.rejects(studio.reviewTextPlan(f.p,'p',f.input),/text_credential_revision_required/);return;}
+  const q=await studio.reviewTextPlan(f.p,'p',f.input);
+  assert.doesNotMatch(JSON.stringify(q),/synthetic-host-text-key/);
+  if(mode==='rotated')revision='native-vault-revision-2';
+  const approve=()=>studio.approveTextPlan(f.p,'p',{reviewId:q.id,reviewDigest:q.reviewDigest,requestKey:'host-approve'});
+  if(mode==='rotated'){await assert.rejects(approve(),/text_authority_changed/);assert.equal(calls,0);return;}
+  const request=await approve(),done=await studio.dispatchPlanning('p',request.id);
+  assert.equal(done.state,mode==='current'?'succeeded':'unknown');assert.equal(calls,mode==='current'?1:0);
+  await studio.dispatchPlanning('p',request.id);assert.equal(calls,mode==='current'?1:0);
+  assert.deepEqual(await f.store.list('p','vault'),[],'native custody never copies a secret into SDK vault');
+ }finally{await f.close();}
+});
 test('interactive native-shaped path: exact quote, duplicate admission/dispatch, measured settlement, validated explicit option',async()=>{
  const f=await fixture();try{
   const q=await f.review();assert.equal(q.evidence,'synthetic');assert.equal(q.requestBytes>0,true);assert.equal(f.calls.dispatch,0);

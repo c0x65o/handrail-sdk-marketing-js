@@ -1,7 +1,6 @@
 import type { TextPlanningCommands, TextPlanningConnection, TextPlanningReview, PlanningRequest, PlanningUsage, StudioDraft, CampaignOption } from '../core/index.js';
 import { Store, digest, id, requireThat, type Principal } from './store.js';
 import { sessionExpiryBound, sessionBinding, assertSessionInspection, inspectLiveSessions, type SessionAuthority, type SessionInspection } from './session-authority.js';
-import { EncryptedCredentialCustody } from './credential-custody.js';
 import { BoundTextPlanningBilling, type TextPlanningBilling } from './billing.js';
 import { CAMPAIGN_OPTIONS_SCHEMA, PLANNING_PROMPT, PLANNING_VERSION, unknownUsage, validatePlanningOutput, type PlanningResponsesBody } from './planning.js';
 import { text, keys } from './validation.js';
@@ -46,8 +45,17 @@ export interface TextPlanningAccess {
    * No network or recursive session lock. Missing guard means unavailable. */
   withCurrent<T>(expected: Awaited<ReturnType<TextPlanningAccess['inspect']>>, local: () => Promise<T>): Promise<T>;
 }
+/** Host-owned private custody. Metadata methods are local and usable inside
+ * current-authority guards. revision changes for the key AND account routing.
+ * read runs outside SQL guards; no credential copies are required in SDK Store. */
+export interface TextPlanningCustody {
+  readonly store:Store;
+  inspect(project:string,ref:string):Promise<boolean>;
+  revision(project:string,ref:string):Promise<string>;
+  read(project:string,ref:string):Promise<{apiKey:string;organization?:string|null;project?:string|null}>;
+}
 export interface NativeTextPlanningOptions {
-  store: Store; sessions: SessionAuthority; custody: EncryptedCredentialCustody;
+  store: Store; sessions: SessionAuthority; custody: TextPlanningCustody;
   access: TextPlanningAccess; billing: TextPlanningBilling; environment: string;
   timeoutMs?: number;
   connections?: CreativeConnections;
@@ -79,7 +87,7 @@ export class NativeTextPlanning {
     requireThat(key === factoryKey && options.custody?.store === options.store && typeof options.environment==='string' && options.environment.length > 0, 'native_text_factory_required');
     requireThat(['list','inspect','withCurrent'].every(k=>typeof options.access?.[k as keyof TextPlanningAccess]==='function')&&
       ['quote','inspect','admit','measure','settle'].every(k=>typeof options.billing?.[k as keyof TextPlanningBilling]==='function')&&
-      typeof options.sessions?.withLiveSessions==='function','text_host_permission_custody_and_billing_hooks_required');
+      typeof options.sessions?.withLiveSessions==='function'&&['inspect','revision','read'].every(k=>typeof options.custody[k as keyof TextPlanningCustody]==='function'),'text_host_permission_custody_and_billing_hooks_required');
     this.timeoutMs = options.timeoutMs ?? 60000;
     requireThat(finite(this.timeoutMs, 120000) && this.timeoutMs >= 10, 'planning_timeout_invalid');
     this.billing = new BoundTextPlanningBilling(options.store, options.billing);
@@ -102,9 +110,11 @@ export class NativeTextPlanning {
       c.id === connectionId && c.environment === this.options.environment && c.state === 'available' && current(c.expiresAt) &&
       ['openai','xai'].includes(c.provider) && [c.label,c.model,c.revision,c.permissionRevision,c.credentialRevision,c.configurationRevision,a.custodyRef].every(x => typeof x === 'string' && x.length > 0 && x.length <= 500), 'text_permission_or_connection_unavailable', 403);
     requireThat(await this.options.custody.inspect(project, a.custodyRef), 'text_credential_setup_required');
-    // Bind the actual retained encrypted envelope as well as host revisions.
-    // Replacing the value at the same custody reference must stale old reviews.
-    const custodyDigest=digest(await this.store.get(project,'vault',a.custodyRef));
+    // Bind actual current custody as well as permission/config revisions. Native
+    // Vault remains its owner; replacing a key/routing at one ref stales reviews.
+    const revision=await this.options.custody.revision(project,a.custodyRef);
+    requireThat(typeof revision==='string'&&revision.length>0&&revision.length<=500,'text_credential_revision_required');
+    const custodyDigest=digest([project,a.custodyRef,revision]);
     await inspectLiveSessions(this.options.sessions, [s]); return {...a,custodyDigest};
   }
   private async guard<T>(record: ReviewRecord, action: () => Promise<T>, checkQuote = true) {
@@ -215,8 +225,13 @@ export class NativeTextPlanning {
       });
       if(!claim)return this.store.get<PlanningRequest>(project,'planningRequest',requestId);
       const signal=abort?AbortSignal.any([abort,AbortSignal.timeout(this.timeoutMs)]):AbortSignal.timeout(this.timeoutMs);
-      const secret=await bounded(this.options.custody.read<{apiKey:string}>(project,record.access.custodyRef),signal);
+      const secret=await bounded(this.options.custody.read(project,record.access.custodyRef),signal);
       requireThat(typeof secret.apiKey==='string'&&secret.apiKey.length>=8&&secret.apiKey.length<=4096&&!/\s/.test(secret.apiKey),'text_credential_unavailable');
+      const headers:Record<string,string>={authorization:`Bearer ${secret.apiKey}`,'content-type':'application/json'};
+      for(const [key,value] of [['OpenAI-Organization',secret.organization],['OpenAI-Project',secret.project]] as const){
+        requireThat(value==null||(record.review.connection.provider==='openai'&&typeof value==='string'&&value.length>0&&value.length<=500&&!/\s/.test(value)),'text_credential_routing_invalid');
+        if(value!=null)headers[key]=value;
+      }
       let pending:Promise<Response>|undefined;
       // Commit the physical-attempt fence first. A crash after this commit and
       // before fetch is intentionally unknown, never a reason to dispatch twice.
@@ -229,7 +244,7 @@ export class NativeTextPlanning {
       // the network promise is awaited only after those short guards are released.
       await this.guard(record,async()=>{
         await this.store.db.assertExecutionOwner();signal.throwIfAborted();await this.draft(project,claim.draftId,claim.draftRevision);
-        pending=this.transport(endpoints[claim.provider],{method:'POST',redirect:'error',signal,headers:{authorization:`Bearer ${secret.apiKey}`,'content-type':'application/json'},body:JSON.stringify(record.body)});
+        pending=this.transport(endpoints[claim.provider],{method:'POST',redirect:'error',signal,headers,body:JSON.stringify(record.body)});
         pending.catch(()=>{});attempted=true;
       });
       const response=await bounded(pending!,signal);

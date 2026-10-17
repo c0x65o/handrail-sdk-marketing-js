@@ -32,7 +32,7 @@ export * from "./studio-generation.js";
 export * from "./tracking.js";
 
 export { createNativeTextPlanning, createSyntheticTextPlanning, createTextPlanningAccess } from './text-planning.js';
-export type { NativeTextPlanning, NativeTextPlanningOptions, TextPlanningAccess, TextPurposePermission } from './text-planning.js';
+export type { NativeTextPlanning, NativeTextPlanningOptions, TextPlanningAccess, TextPurposePermission, TextPlanningCustody } from './text-planning.js';
 export * from "./measurement.js";
 export * from "./measurement-adoption.js";
 export * from "./execution-authority.js";

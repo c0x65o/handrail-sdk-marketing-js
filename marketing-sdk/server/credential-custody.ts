@@ -1,4 +1,4 @@
-import { Store } from "./store.js";
+import { Store, digest } from "./store.js";
 import type { CredentialCipher } from "../support/vault-crypto.js";
 /** Shared existing encrypted Store boundary. Server-only; refs convey no authority.
  * Callers must authorize before/after awaits. Inspection never decrypts a value. */
@@ -16,5 +16,9 @@ export class EncryptedCredentialCustody {
   async read<T>(project: string, ref: string): Promise<T> {
     const sealed = await this.store.get<{ encrypted: string; keyId: string }>(project, "vault", ref);
     return JSON.parse(this.cipher.decryptPayloadAsString(sealed.encrypted, sealed.keyId));
+  }
+  /** Opaque current revision; never expose the encrypted envelope to a caller. */
+  async revision(project: string, ref: string): Promise<string> {
+    return digest(await this.store.get(project, 'vault', ref));
   }
 }

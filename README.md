@@ -1119,3 +1119,21 @@ and single-use reservation authority server-side. `image-authority.ts` is the
 browser-safe optional transport contract. Native credential metadata is not
 needed by the form. Quotes are reservations; token-based estimates are not
 provider invoices or provider-enforced hard charge caps.
+# Host text-planning custody
+
+`createNativeTextPlanning` accepts server-only `TextPlanningCustody` from the
+host's existing credential owner. Its `inspect` and `revision` methods provide
+local metadata under authority guards; `read` reveals the credential outside
+SQL guards. The opaque revision must change whenever the key or account routing
+changes. The SDK binds it to the exact project/reference and reviewed request,
+so a rotation invalidates previous approval. Native hosts need not copy keys
+into the SDK store. `EncryptedCredentialCustody` implements the same contract
+for applications that already use that custody owner.
+
+OpenAI organization/project routing is sent only from this private credential
+binding, using the [official authentication headers](https://developers.openai.com/api/reference/overview#authentication).
+Missing current permission, custody revision, exact quote or human approval
+still prevents a paid request. This port creates no permission or billing
+authority, and does not retry uncertain requests.
+
+
