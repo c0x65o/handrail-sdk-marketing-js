@@ -116,7 +116,7 @@ export class MarketingServer {
   }
   private get activationStops() { return new ActivationStops(this.store); }
   private trackingService?: MarketingTracking;
-  get tracking(): MarketingTracking { return this.trackingService ??= new MarketingTracking(this.store, this.studio.sessions, this.options.tracking ?? {}, (project, input) => this.recordEvent(project, input), this.mode, this.now); }
+  get tracking(): MarketingTracking { return this.trackingService ??= new MarketingTracking(this.store, this.studio.sessions, this.options.tracking ?? {}, (project, input) => this.recordEvent(project, input), this.mode, this.now, this.options.executionAuthority); }
   private studioService?: CampaignStudio;
   get studio(): CampaignStudio { return this.studioService ??= new CampaignStudio(this.store, { ...this.options.studio, tracking: (p, project, owner) => this.tracking.tracking(p, project, { owner }), withTracking: (p, project, view, local) => this.tracking.withCurrentView(p, project, view, local), withPromotion: (p, project, draftId, local) => {
     // Host identity/ownership guards precede SDK session/source/SQL guards. Both
@@ -588,12 +588,30 @@ export class MarketingServer {
       return write.campaign;
     });
   }
-  private async withCampaignSave<T>(p: Principal, project: string, input: Commands["saveCampaign"]["input"], local: (prepared: CampaignSave) => Promise<T>, replay?: () => Promise<T | null>) {
+  private async campaignSaveGrant(p: Principal, project: string, input: Commands["saveCampaign"]["input"], revisionOnly: boolean) {
+    if (!revisionOnly) return this.grant(project, input.grantId, undefined, input.id);
+    requireThat(input.id && this.options.executionAuthority, "material_revision_authority_required", 403);
+    const campaign = await this.store.get<Campaign>(project, "campaign", input.id!);
+    const grant = await this.store.get<Grant>(project, "grant", input.grantId);
+    requireThat(campaign.projectId === project && campaign.grantId === grant.id && grant.projectId === project &&
+      (!grant.campaignId || grant.campaignId === campaign.id) && !grant.revokedAt, "material_revision_grant_scope", 403);
+    await this.options.executionAuthority!.assertCurrent(p, campaign, "revise_material");
+    return grant;
+  }
+  private async withMaterialRevision<T>(p: Principal, project: string, input: Commands["saveCampaign"]["input"], local: () => Promise<T>) {
+    requireThat(input.id && this.options.executionAuthority, "material_revision_authority_required", 403);
+    const campaign = await this.store.get<Campaign>(project, "campaign", input.id!);
+    return this.options.executionAuthority!.withCurrent(p, campaign, "revise_material", local);
+  }
+  private async withCampaignSave<T>(p: Principal, project: string, input: Commands["saveCampaign"]["input"], local: (prepared: CampaignSave) => Promise<T>, replay?: () => Promise<T | null>, revisionOnly = false) {
     const session = await this.legacyAuthority(p, project);
-    const prepared = await this.legacyGuard(p, project, session, async () => {
+    const guard = <R>(local: () => Promise<R>) => revisionOnly
+      ? this.withMaterialRevision(p, project, input, () => this.legacyGuard(p, project, session, local))
+      : this.legacyGuard(p, project, session, local);
+    const prepared = await guard(async () => {
       const recovered = await replay?.();
       if (recovered) return { recovered };
-      const g = await this.grant(project, input.grantId, undefined, input.id);
+      const g = await this.campaignSaveGrant(p, project, input, revisionOnly);
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g);
       requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
@@ -610,8 +628,8 @@ export class MarketingServer {
     // Ownership/byte reads and native decoding finish before final admission.
     const observed = new Map<string, Buffer>();
     prepared.assets = digest(await this.assets(prepared.c, true, observed));
-    return this.legacyGuard(p, project, session, async () => {
-      const g = await this.grant(project, input.grantId, undefined, input.id);
+    return guard(async () => {
+      const g = await this.campaignSaveGrant(p, project, input, revisionOnly);
       requireThat(await this.legacySetupBinding(project, g) === prepared.grant, "grant_changed");
       const old = input.id ? await this.store.get<Campaign>(project, "campaign", input.id) : null;
       requireThat((old ? digest(old) : null) === prepared.previous, "revision_conflict");
@@ -630,20 +648,29 @@ export class MarketingServer {
     });
   }
   async saveCampaign(p: Principal, project: string, input: Commands["saveCampaign"]["input"]) {
-    return this.withCampaignSave(p, project, input, prepared => this.saveCampaignLocal(p, project, input, prepared), async () => {
-      const g = await this.grant(project, input.grantId, undefined, input.id);
+    return this.saveCampaignRevision(p, project, input, false);
+  }
+  /** Host-authorized local edit of an existing campaign. Does not renew or use
+   * its provider grant. Preparation and delivery retain all current checks. */
+  async reviseCampaignMaterial(p: Principal, project: string, input: Commands["saveCampaign"]["input"]) {
+    requireThat(input.id && this.options.executionAuthority, "material_revision_authority_required", 403);
+    return this.saveCampaignRevision(p, project, input, true);
+  }
+  private async saveCampaignRevision(p: Principal, project: string, input: Commands["saveCampaign"]["input"], revisionOnly: boolean) {
+    return this.withCampaignSave(p, project, input, prepared => this.saveCampaignLocal(p, project, input, prepared, revisionOnly), async () => {
+      const g = await this.campaignSaveGrant(p, project, input, revisionOnly);
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g); requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
       if (input.requestKey === undefined) return null;
       const write = await this.requestResult<{campaign: Campaign}>(project, input.requestKey,
         { command: "saveCampaign", actorId: p.userId, grantRevision: g.revision, ...input }, "campaignWrite");
       return write?.campaign ?? null;
-    });
+    }, revisionOnly);
   }
-  private async saveCampaignLocal(p: Principal, project: string, input: Commands["saveCampaign"]["input"], prepared: CampaignSave) {
+  private async saveCampaignLocal(p: Principal, project: string, input: Commands["saveCampaign"]["input"], prepared: CampaignSave, revisionOnly = false) {
     return await this.store.transaction(async () => {
       await this.auth(p, project, true);
-      const g = await this.grant(project, input.grantId, undefined, input.id);
+      const g = await this.campaignSaveGrant(p, project, input, revisionOnly);
       material(input.material, g.provider);
       const blockers = capabilityBlockers(input.material, g);
       requireThat(!blockers.length, blockers[0] || "unsupported_capability", 422);
@@ -681,7 +708,7 @@ export class MarketingServer {
         const c = prepared.c;
         requireThat(c.grantId === g.id && digest(c.material) === digest(input.material), "material_changed");
         await this.auth(p, project, true);
-        const currentGrant = await this.grant(project, g.id, undefined, input.id);
+        const currentGrant = await this.campaignSaveGrant(p, project, input, revisionOnly);
         requireThat(digest(currentGrant) === digest(g), "grant_changed");
         await this.store.put(project, "campaign", c.id, c, old?.revision);
         await this.store.put(
@@ -1371,6 +1398,16 @@ export class MarketingServer {
     requireThat(this.options.executionAuthority, "host_execution_authority_required", 403);
     return this.tracking.rebindCampaignMaterial(p, project, input,
       local => this.executionTransaction(p, project, input.campaignId, "prepare", local));
+  }
+  /** Same-material tracking custody refresh for an exact host-authorized launch.
+   * Source/configuration and historical QA remain unchanged. No provider effect. */
+  async refreshCampaignActivationTracking(p: Principal, project: string, input: {
+    campaignId: string; expectedRevision: number; expectedBindingRevision: number; requestKey: string;
+  }) {
+    keys(input, ["campaignId", "expectedRevision", "expectedBindingRevision", "requestKey"]);
+    requireThat(this.options.executionAuthority, "host_execution_authority_required", 403);
+    return this.tracking.rebindCampaignMaterial(p, project, {...input, previousRevision: input.expectedRevision},
+      local => this.executionTransaction(p, project, input.campaignId, "activate", local));
   }
   /** Called by the one host execution owner. Claims are persisted before any I/O.
    * A process lost during I/O leaves running; recover() changes it to unknown,

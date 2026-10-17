@@ -1204,3 +1204,5 @@ its exact current grant changed. This preserves material and configuration,
 requires the same guarded preparation authority, and grants no passing QA.
 Campaign tracking resolves its own grant ID; another valid grant on the same
 provider account cannot mask expired or revoked campaign custody.
+
+Host-only `reviseCampaignMaterial` edits an existing local campaign under current `revise_material` authority and live session guards. It preserves the exact execution grant, including expiry and invocation lifetime, and rejects revocation, pending execution, scope changes and concurrent revisions. It cannot prepare or launch. `refreshCampaignActivationTracking` carries unchanged tracking configuration to the exact current launch grant under host activation authority; invocation grants require the actual live host custody port. Neither path creates provider, spending or QA evidence.

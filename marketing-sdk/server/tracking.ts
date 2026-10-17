@@ -1,3 +1,5 @@
+import { assertCurrentGrant } from './grant-authority.js';
+import type { ExecutionAuthority } from './execution-authority.js';
 import { materialCurrency, TRACKING_OUTCOMES, type TrackingCommands, type TrackingOwner, type TrackingSource, type TrackingBinding, type TrackingTest, type TrackingView, type TrackingDiagnostic, type TrackingOutcome, type CampaignDraft, type Campaign, type Commands, type FirstPartyEvent, type MarketingPurpose, type Money } from '../core/index.js';
 import { Store, digest, id, requireThat, type Principal } from './store.js';
 import { keys, text, instant } from './validation.js';
@@ -96,7 +98,7 @@ export const trackingCommandFields: Record<keyof TrackingCommands, string[]> = {
 };
 export class MarketingTracking {
   constructor(readonly store: Store, readonly sessions: SessionAuthority, readonly options: TrackingOptions,
-    private readonly ingest: (project: string, input: Commands['event']['input']) => Promise<FirstPartyEvent>, readonly mode: 'fixture' | 'live', readonly now = () => Date.now()) {}
+    private readonly ingest: (project: string, input: Commands['event']['input']) => Promise<FirstPartyEvent>, readonly mode: 'fixture' | 'live', readonly now = () => Date.now(), private readonly executionAuthority?: ExecutionAuthority) {}
   private async inspection(p: Principal, project: string) {
     const binding = sessionBinding(p), s = await this.sessions.inspectSession(binding, project);
     assertSessionInspection(s,binding,project); return s;
@@ -186,7 +188,8 @@ export class MarketingTracking {
     const accountId=record.material.settings?.accountId;
     const grant=accountId?(await this.store.list<import('../core/index.js').Grant>(project,'grant')).find(g=>
       (owner.kind==='draft'||g.id===(record as Campaign).grantId)&&g.accountId===accountId &&
-      g.provider===record.material.settings?.provider && !g.revokedAt && Date.parse(g.expiresAt ?? "")>this.now()):null;
+      g.provider===record.material.settings?.provider && !g.revokedAt && (Date.parse(g.expiresAt ?? "")>this.now() || owner.kind==='campaign' && !!g.lifetime && !!this.executionAuthority)):null;
+    if(grant?.lifetime)await assertCurrentGrant(grant,this.now(),this.executionAuthority);
     return { revision:record.revision, material:record.material, purpose:record.material.purpose??'acquisition', digest:digest(record.material), accountDigest:grant?digest(grant):null };
   }
   private async binding(project: string, owner: TrackingOwner) { return (await this.store.list<TrackingBinding>(project,'trackingBinding')).find(b=>b.id===this.ownerKey(owner))??null; }

@@ -1,7 +1,7 @@
 import type { Campaign, Operation, Grant, Packet } from "../core/index.js";
 import type { Principal } from "./store.js";
 
-export type ExecutionAction = Operation["kind"] | "reconcile" | "read";
+export type ExecutionAction = Operation["kind"] | "reconcile" | "read" | "revise_material";
 /** A trusted host action may have revocation-based authority without a browser
  * session. This port never issues a session, grant, approval or spending right.
  * Host guards must precede SDK transactions and remain held through their local

@@ -165,3 +165,46 @@ test('campaign video ranges retain bytes after draft lifecycle and reject lost p
     await assert.rejects(handleCampaignMedia(f.server.studio,f.principal,'p',video.id,new Request('http://localhost/video')),/asset_integrity_failure/);
   }finally{await f.close();}
 });
+
+for (const lifetime of ['expired', 'invocation'] as const) test(`host local material revision preserves ${lifetime} execution grant without renewing provider authority`, async () => {
+  const f = await fixture();
+  try {
+    const campaign = await f.call('promoteStudio', f.input);
+    const original = await f.store.get<Grant>('p', 'grant', campaign.grantId);
+    const grant: Grant = {...original, campaignId: campaign.id, permissions: ['pause', 'report'],
+      ...(lifetime === 'invocation' ? {expiresAt: null, lifetime: {kind: 'invocation' as const, invocationRef: 'completed-original-action'}} : {expiresAt: '2020-01-01T00:00:00.000Z'})};
+    await f.store.put('p', 'grant', grant.id, grant);
+    let active = true, guards = 0;
+    const executionAuthority: import('../server/execution-authority.js').ExecutionAuthority = {
+      async assertCurrent(p, c, action) {
+        if(action !== 'revise_material') throw new Error('local_revision_cannot_execute'); assert.equal(p.userId, f.principal.userId);
+        assert.equal(c.projectId, 'p'); assert.equal(c.id, campaign.id);
+        if (!active) throw new Error('original_host_authority_revoked');
+      },
+      async withCurrent(p, c, action, local) {
+        await this.assertCurrent(p,c,action); guards++;
+        const result = await local(); await this.assertCurrent(p,c,action); return result;
+      },
+    };
+    const server = new MarketingServer(f.store, f.server.providers, f.server.generation, f.server.agent, 'fixture', undefined, undefined,
+      {tracking: f.source.options, executionAuthority});
+    const input = {id: campaign.id, expectedRevision: campaign.revision, grantId: grant.id,
+      material: {...campaign.material, name: 'Local revised name'}, requestKey: 'local-revision'};
+    await assert.rejects(f.server.reviseCampaignMaterial(f.principal, 'p', input), /material_revision_authority_required/);
+    await assert.rejects(server.saveCampaign(f.principal, 'p', input), /grant_expired_or_revoked|invocation_grant_authority_required/);
+    const saved = await server.reviseCampaignMaterial(f.principal, 'p', input);
+    assert.equal(saved.revision, campaign.revision + 1); assert.equal(saved.material.name, input.material.name);
+    assert.equal(saved.grantId, campaign.grantId); assert.deepEqual(saved.receipt, campaign.receipt);
+    assert.deepEqual(await f.store.get('p','grant',grant.id), grant);
+    assert.deepEqual(await server.reviseCampaignMaterial(f.principal, 'p', input), saved);
+    assert.ok(guards >= 3); assert.equal((await f.store.list('p','operation')).length,0);
+    assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
+    await assert.rejects(server.prepare(f.principal,'p',{campaignId:campaign.id,requestKey:'execution-still-denied'}), /local_revision_cannot_execute/);
+    await assert.rejects(f.server.prepare(f.principal,'p',{campaignId:campaign.id,requestKey:'expired-execution-denied'}), /grant_expired_or_revoked|invocation_grant_authority_required/);
+    active=false;
+    await assert.rejects(server.reviseCampaignMaterial(f.principal,'p',input), /original_host_authority_revoked/);
+    active=true;
+    await f.store.put('p','grant',grant.id,{...grant,revokedAt:new Date().toISOString()});
+    await assert.rejects(server.reviseCampaignMaterial(f.principal,'p',{...input,expectedRevision:saved.revision,requestKey:'revoked-grant'}), /material_revision_grant_scope/);
+  } finally { await f.close(); }
+});
