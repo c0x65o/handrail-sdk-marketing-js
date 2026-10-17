@@ -1,3 +1,4 @@
+import {sessionBinding} from '../server/session-authority.js';
 import { fixtureSettings } from './capability-fixtures.js';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
@@ -596,7 +597,7 @@ test('source-retained admission digest binds the original test snapshot and pres
 });
 
 
-test('budget tracking carry-forward preserves history, requires host authority and cannot edit configuration',async()=>{
+test('material tracking carry-forward preserves history, requires host authority and cannot edit configuration',async()=>{
   const f=await fixture();try{
     const campaign:Campaign={id:'budget-tracking',projectId:'p',revision:1,grantId:'none',creativeSetId:'set',state:'paused',
       receipt:{ids:{campaignId:'existing-provider'},payloadDigest:'original',intent:'paused',delivery:'unverified',providerRequestId:null,observedAt:new Date().toISOString(),evidence:'fixture'},
@@ -620,39 +621,61 @@ test('budget tracking carry-forward preserves history, requires host authority a
     const changed=structuredClone(campaign);changed.preparedMaterial=structuredClone(campaign.material);changed.revision=2;changed.state='draft';changed.material.advertisingBudget!.daily!.minor=110;
     const input={campaignId:campaign.id,previousRevision:1,expectedRevision:2,expectedBindingRevision:1,requestKey:'budget-only'};
     await f.store.put('p','campaign',campaign.id,changed);
-    await assert.rejects(base.rebindCampaignBudgetTracking(agent,'p',input),/host_execution_authority_required/);
-    for(const field of ['headline','destination','currency','cap','receipt','grant'] as const){
+    await assert.rejects(base.rebindCampaignMaterialTracking(agent,'p',input),/host_execution_authority_required/);
+    for(const field of ['purpose','destination','currency','account','receipt','grant','enabled'] as const){
       const bad=structuredClone(changed);
-      if(field==='headline')bad.material.headline='Different offer';
+      if(field==='purpose')bad.material.purpose='recruitment';
+      if(field==='enabled')bad.state='enabled';
       if(field==='destination')bad.material.destination+='?changed=1';
       if(field==='currency')bad.material.advertisingBudget!.daily!.currency='EUR';
-      if(field==='cap')bad.material.advertisingBudget!.lifetime!.minor=20000;
+      if(field==='account')bad.material.settings={provider:'meta',accountId:'other'} as NonNullable<Campaign['material']['settings']>;
       if(field==='receipt')bad.receipt!.ids.campaignId='different-provider';
       if(field==='grant')bad.grantId='other-account';
       await f.store.put('p','campaign',campaign.id,bad);
-      await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_budget/);
+      await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/tracking_/);
       assert.deepEqual(await f.store.get('p','trackingBinding',binding.id),binding);
     }
     await f.store.put('p','campaign',campaign.id,changed);
-    authorized=false;await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/budget_authority_revoked/);authorized=true;
-    revokeAfter=true;await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/budget_authority_revoked/);revokeAfter=false;
+    authorized=false;await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/budget_authority_revoked/);authorized=true;
+    revokeAfter=true;await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/budget_authority_revoked/);revokeAfter=false;
     assert.deepEqual(await f.store.get('p','trackingBinding',binding.id),binding);
     const access=f.source.options.sources!.inspectAccess;f.source.options.sources!.inspectAccess=async()=>false;
-    await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_source_not_authorized/);f.source.options.sources!.inspectAccess=access;
+    await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/tracking_source_not_authorized/);f.source.options.sources!.inspectAccess=access;
     // Studio versions precede provider preparation. Their material is durable,
     // but the later successful operation owns the prepared provider receipt.
     await f.store.put('p','campaignVersion',campaign.id+':1',{...campaign,state:'draft',receipt:null});
-    await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/tracking_budget_revision_mismatch/);
+    await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/tracking_material_revision_mismatch/);
     await f.store.put('p','operation','original-preparation',{id:'original-preparation',projectId:'p',campaignId:campaign.id,
       kind:'prepare',campaignRevision:1,state:'succeeded',receipt:campaign.receipt});
-    const updated=await service.rebindCampaignBudgetTracking(agent,'p',input);
+    const updated=await service.rebindCampaignMaterialTracking(agent,'p',input);
     assert.equal(updated.revision,2);assert.equal(updated.ownerRevision,2);assert.equal(updated.materialDigest,digest(changed.material));
     assert.deepEqual({...updated,revision:binding.revision,ownerRevision:binding.ownerRevision,materialDigest:binding.materialDigest,createdAt:binding.createdAt},binding);
     assert.deepEqual(await f.store.get('p','trackingBindingHistory',binding.id+':1'),binding);
     assert.deepEqual(await f.store.list('p','event'),events);assert.deepEqual(await f.store.list('p','trackingTest'),tests);
     assert.notEqual((await service.call(agent,'p','tracking',{owner})).readiness,'passed');
-    assert.deepEqual(await service.rebindCampaignBudgetTracking(agent,'p',input),updated);
-    await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',{...input,expectedRevision:3}),/invalid_budget_tracking_revision/);
-    authorized=false;await assert.rejects(service.rebindCampaignBudgetTracking(agent,'p',input),/budget_authority_revoked/);
+    assert.deepEqual(await service.rebindCampaignMaterialTracking(agent,'p',input),updated);
+    const actorSession=await f.host.authority.inspectSession(sessionBinding(agent),'p');
+    const originalRequest=await f.store.get<{result:unknown}>('p','trackingRequest',digest([actorSession.binding,'rebindCampaignBudget',input.requestKey]));
+    assert.deepEqual(originalRequest.result,updated,'Persisted budget request identities survive the API generalization');
+    await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',{...input,expectedRevision:1}),/invalid_material_tracking_revision/);
+    authorized=false;await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/budget_authority_revoked/);authorized=true;
+    // Multiple local revisions retain the same provider hierarchy. Carrying
+    // configuration to targeting/creative/budget material never copies tests.
+    await f.store.put('p','campaignVersion',campaign.id+':2',changed);
+    const revised=structuredClone(changed);revised.revision=4;
+    revised.material.headline='Different offer';revised.material.audience.locations=['US'];
+    revised.material.advertisingBudget!.lifetime!.minor=20000;
+    await f.store.put('p','campaign',campaign.id,revised);
+    const next={...input,previousRevision:2,expectedRevision:4,expectedBindingRevision:2,requestKey:'material-revision'};
+    await f.store.put('p','operation','pending-edit',{id:'pending-edit',projectId:'p',campaignId:campaign.id,state:'unknown'});
+    await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',next),/tracking_execution_pending/);
+    await f.store.put('p','operation','pending-edit',{id:'pending-edit',projectId:'p',campaignId:campaign.id,state:'failed'});
+    const rebound=await service.rebindCampaignMaterialTracking(agent,'p',next);
+    assert.equal(rebound.ownerRevision,4);assert.equal(rebound.revision,3);assert.equal(rebound.materialDigest,digest(revised.material));
+    assert.deepEqual(rebound.source,binding.source);assert.equal(rebound.outcome,binding.outcome);
+    assert.equal(rebound.destination,binding.destination);assert.deepEqual(rebound.providerMapping,binding.providerMapping);
+    assert.deepEqual(await f.store.list('p','trackingTest'),tests);
+    assert.notEqual((await service.call(agent,'p','tracking',{owner})).readiness,'passed');
+    assert.deepEqual(await service.rebindCampaignMaterialTracking(agent,'p',next),rebound);
   }finally{await f.close();}
 });

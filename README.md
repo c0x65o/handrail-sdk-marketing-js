@@ -1049,13 +1049,20 @@ Infinity may be used only as an internal calculation bound by guarded private
 custody; it is never a persisted deadline or a reported token-expiry fact.
 
 
-`MarketingServer.rebindCampaignBudgetTracking` is a host-only carry-forward for an
-existing campaign's daily-budget-only revision. It requires current host execution
-authority for preparation throughout the transaction and current session/source
-access. The previous campaign revision, provider receipt, account/grant identity,
-and all non-budget material must match. It appends a tracking binding revision and
-preserves the original binding, tests and events; it neither copies a passing QA
-result nor grants spending authority. General tracking setup remains human-only.
+`MarketingServer.rebindCampaignMaterialTracking` carries unchanged tracking
+configuration across an existing stopped campaign's material revisions. It requires
+current host execution authority for the exact requested preparation throughout
+the transaction and current session/source access. The prior bound campaign
+version, original paused provider receipt, prepared material and account/grant
+identity remain verified. No unresolved operation may be present. The destination,
+purpose, provider/account, conversion configuration and currency must remain the
+same; changing those requires explicit tracking setup. Targeting, placement,
+creative, schedule and budget edits remain subject to the host's exact execution
+authority and provider capability checks, not an authority inferred from tracking.
+It appends a tracking binding revision and preserves the original binding, tests
+and events. It never copies a passing QA result, replays conversions or grants
+spending authority. Multiple intervening local revisions are supported through the
+original bound version. General tracking setup remains human-only.
 
 
 An invocation grant containing `activate` requires explicit

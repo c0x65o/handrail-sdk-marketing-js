@@ -1361,15 +1361,15 @@ export class MarketingServer {
       return {intent,receipt};
     });
   }
-  /** Bind unchanged tracking to a daily-budget revision under the same current
+  /** Bind unchanged tracking to a material revision under the same current
    * execution authority used for its paused provider update. Not an HTTP/agent
    * setup command; human-only tracking configuration remains unchanged. */
-  async rebindCampaignBudgetTracking(p: Principal, project: string, input: {
+  async rebindCampaignMaterialTracking(p: Principal, project: string, input: {
     campaignId: string; previousRevision: number; expectedRevision: number;
     expectedBindingRevision: number; requestKey: string;
   }) {
     requireThat(this.options.executionAuthority, "host_execution_authority_required", 403);
-    return this.tracking.rebindCampaignBudget(p, project, input,
+    return this.tracking.rebindCampaignMaterial(p, project, input,
       local => this.executionTransaction(p, project, input.campaignId, "prepare", local));
   }
   /** Called by the one host execution owner. Claims are persisted before any I/O.

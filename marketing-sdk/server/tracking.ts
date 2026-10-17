@@ -1,4 +1,4 @@
-import { TRACKING_OUTCOMES, type TrackingCommands, type TrackingOwner, type TrackingSource, type TrackingBinding, type TrackingTest, type TrackingView, type TrackingDiagnostic, type TrackingOutcome, type CampaignDraft, type Campaign, type Commands, type FirstPartyEvent, type MarketingPurpose, type Money } from '../core/index.js';
+import { materialCurrency, TRACKING_OUTCOMES, type TrackingCommands, type TrackingOwner, type TrackingSource, type TrackingBinding, type TrackingTest, type TrackingView, type TrackingDiagnostic, type TrackingOutcome, type CampaignDraft, type Campaign, type Commands, type FirstPartyEvent, type MarketingPurpose, type Money } from '../core/index.js';
 import { Store, digest, id, requireThat, type Principal } from './store.js';
 import { keys, text, instant } from './validation.js';
 import { assertSessionInspection, inspectLiveSessions, sessionBinding, type SessionAuthority, type SessionInspection } from './session-authority.js';
@@ -299,44 +299,59 @@ export class MarketingTracking {
       return result;
     });
   }
-  /** Host-only carry-forward of unchanged configuration after an exact daily
-   * budget edit. This does not expose agent tracking setup or copy QA/coverage.
-   * The host must guard current execution authority through the entire commit. */
-  async rebindCampaignBudget(p: Principal, project: string, input: {
+  /** Host-only carry-forward of unchanged tracking configuration after a material
+   * revision. This does not expose agent tracking setup or copy QA/coverage.
+   * The host guards the exact requested update through the entire commit. */
+  async rebindCampaignMaterial(p: Principal, project: string, input: {
     campaignId: string; previousRevision: number; expectedRevision: number;
     expectedBindingRevision: number; requestKey: string;
-  }, withHostBudgetAuthority: <T>(local: () => Promise<T>) => Promise<T>): Promise<TrackingBinding> {
+  }, withHostMaterialAuthority: <T>(local: () => Promise<T>) => Promise<T>): Promise<TrackingBinding> {
     keys(input,['campaignId','previousRevision','expectedRevision','expectedBindingRevision','requestKey']);
     text(input.campaignId,160);text(input.requestKey,160);
-    requireThat(typeof withHostBudgetAuthority==='function','host_execution_authority_required',403);
+    requireThat(typeof withHostMaterialAuthority==='function','host_execution_authority_required',403);
     requireThat(Number.isSafeInteger(input.previousRevision)&&input.previousRevision>0&&
-      input.expectedRevision===input.previousRevision+1&&Number.isSafeInteger(input.expectedBindingRevision)&&input.expectedBindingRevision>0,
-      'invalid_budget_tracking_revision',422);
+      Number.isSafeInteger(input.expectedRevision)&&input.expectedRevision>input.previousRevision&&Number.isSafeInteger(input.expectedBindingRevision)&&input.expectedBindingRevision>0,
+      'invalid_material_tracking_revision',422);
     const session=await this.inspection(p,project),owner:TrackingOwner={kind:'campaign',id:input.campaignId};
     const old=await this.store.get<TrackingBinding>(project,'trackingBindingHistory',`${this.ownerKey(owner)}:${input.expectedBindingRevision}`);
     requireThat(old.owner.kind==='campaign'&&old.owner.id===input.campaignId&&old.ownerRevision===input.previousRevision,
       'tracking_material_or_binding_changed');
-    return this.guarded(p,session,false,()=>withHostBudgetAuthority(async()=>{
+    return this.guarded(p,session,false,()=>withHostMaterialAuthority(async()=>{
       await this.store.authorize(p,project,['admin','editor']);
+      // This persisted discriminator predates general material edits. Keep its
+      // identity so an original budget receipt remains replayable after upgrade;
+      // every request executes this one current implementation.
       return this.once(project,session,'rebindCampaignBudget',input,async()=>{
         const previous=await this.store.get<Campaign>(project,'campaignVersion',`${input.campaignId}:${input.previousRevision}`);
         const campaign=await this.store.get<Campaign>(project,'campaign',input.campaignId);
-        const prepared=(await this.store.list<import('../core/index.js').Operation>(project,'operation')).some(operation=>
+        const operations=await this.store.list<import('../core/index.js').Operation>(project,'operation');
+        requireThat(!operations.some(o=>o.campaignId===campaign.id&&['queued','running','unknown'].includes(o.state)),
+          'tracking_execution_pending');
+        const prepared=operations.some(operation=>
           operation.projectId===project&&operation.campaignId===campaign.id&&operation.kind==='prepare'&&
           operation.campaignRevision===previous.revision&&operation.state==='succeeded'&&
           digest(operation.receipt??null)===digest(campaign.receipt??null));
         requireThat(previous.projectId===project&&campaign.projectId===project&&previous.id===campaign.id&&
           campaign.revision===input.expectedRevision&&campaign.grantId===previous.grantId&&
-          campaign.receipt?.intent==='paused'&&digest(campaign.preparedMaterial??null)===digest(previous.material)&&
-          (prepared||previous.receipt&&digest(campaign.receipt)===digest(previous.receipt))&&
+          ['draft','paused'].includes(campaign.state)&&campaign.receipt?.intent==='paused'&&
+          (prepared&&digest(campaign.preparedMaterial??null)===digest(previous.material)||
+            previous.receipt&&digest(campaign.receipt)===digest(previous.receipt)&&
+            digest(campaign.preparedMaterial??null)===digest(previous.preparedMaterial??previous.material))&&
           digest(campaign.draftOrigin??null)===digest(previous.draftOrigin??null)&&digest(campaign.adoptionOrigin??null)===digest(previous.adoptionOrigin??null),
-          'tracking_budget_revision_mismatch');
-        const material=structuredClone(campaign.material),before=previous.material.advertisingBudget?.daily;
-        requireThat(before&&material.advertisingBudget?.daily&&before.currency===material.advertisingBudget.daily.currency,
-          'tracking_budget_only_update_required');
-        material.advertisingBudget!.daily!.minor=before!.minor;
-        requireThat(digest(material)===digest(previous.material)&&old.materialDigest===digest(previous.material),
-          'tracking_budget_only_update_required');
+          'tracking_material_revision_mismatch');
+        // Only existing configuration may carry forward. Provider/account,
+        // purpose, destination and conversion changes require explicit setup.
+        // Amounts, audience, placement and creative changes remain the host's
+        // exact material authority; this local binding authorizes no effects.
+        const configuration=(material:Campaign['material'])=>({purpose:material.purpose??'acquisition',
+          destination:material.destination,applicantGoal:material.applicantGoal??null,provider:material.settings?.provider??null,
+          accountId:material.settings?.accountId??null,conversion:material.settings?.conversion??null,
+          currency:materialCurrency(material)});
+        requireThat([campaign.material.budget,...Object.values(campaign.material.advertisingBudget??{})]
+          .filter((value):value is Money=>!!value&&typeof value==='object'&&'currency' in value)
+          .every(value=>value.currency===materialCurrency(campaign.material)),'tracking_configuration_change_requires_setup');
+        requireThat(digest(configuration(campaign.material))===digest(configuration(previous.material))&&
+          old.materialDigest===digest(previous.material),'tracking_configuration_change_requires_setup');
         const current=await this.binding(project,owner),facts=await this.owner(project,owner);
         requireThat(current?.revision===old.revision&&digest(current)===digest(old)&&
           facts.material.destination===old.destination&&facts.purpose===old.purpose,'tracking_material_or_binding_changed');
@@ -344,7 +359,7 @@ export class MarketingTracking {
           materialDigest:facts.digest,accountDigest:facts.accountDigest,createdAt:new Date(this.now()).toISOString()};
         await this.store.put(project,'trackingBinding',binding.id,binding,old.revision);
         await this.store.put(project,'trackingBindingHistory',`${binding.id}:${binding.revision}`,binding);
-        await this.store.append(project,campaign.id,'tracking.budget_revision_bound',{
+        await this.store.append(project,campaign.id,'tracking.material_revision_bound',{
           previousBindingRevision:old.revision,bindingRevision:binding.revision,previousCampaignRevision:previous.revision,
           campaignRevision:campaign.revision,configurationChanged:false,testsReplayed:false,spendingAuthorityGranted:false});
         return binding;
