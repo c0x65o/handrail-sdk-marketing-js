@@ -375,6 +375,35 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
     const combinedReceipt=await provider.reconcile(combined,grant,{kind:"prepare",payloadDigest:digest(combinedPlan),
       receipt:{...targetReceipt,ids:combinedIds,payloadDigest:digest(combinedPlan)}});
     assert.ok(combinedReceipt);assert.equal(writes,combinedBefore+1);assert.equal(objects.size,objectCount);
+    const scheduled=structuredClone(combined);
+    scheduled.revision++;scheduled.receipt=combinedReceipt;scheduled.preparedMaterial=structuredClone(combined.material);
+    scheduled.material.startAt="2026-10-09T00:00:00Z";scheduled.material.endAt="2026-10-14T00:00:00Z";
+    if(daily)scheduled.material.advertisingBudget!.daily!.minor+=50;
+    else scheduled.material.budget!.minor+=50;
+    fixtureEligibility(scheduled,grant);const scheduleBefore=writes;
+    const clearEnd=structuredClone(scheduled);clearEnd.material.endAt=null;
+    await assert.rejects(provider.update(clearEnd,grant,[asset],()=>{},()=>{}),/existing_campaign_schedule_clear_unqualified/);
+    await assert.rejects(provider.update(scheduled,grant,[asset],()=>{},()=>{throw Error("schedule-authority-revoked");}),/schedule-authority-revoked/);
+    assert.equal(writes,scheduleBefore);
+    const originalEnd=objects.get(combinedReceipt.ids.adset!).end_time;
+    objects.get(combinedReceipt.ids.adset!).end_time="2026-10-13T00:00:00Z";
+    await assert.rejects(provider.update(scheduled,grant,[asset],()=>{},()=>{}),/external_material_changed/);
+    objects.get(combinedReceipt.ids.adset!).end_time=originalEnd;
+    let scheduleIds:Record<string,string>={};loseBudgetAcknowledgment=true;
+    await assert.rejects(provider.update(scheduled,grant,[asset],v=>{scheduleIds={...v};},()=>{}));
+    assert.equal(writes,scheduleBefore+1);
+    const schedulePlan=provider.plan(scheduled,grant,[asset]) as any;
+    assert.deepEqual(requests.filter(r=>r.method==='POST').at(-1)?.body,{
+      [budgetField]:schedulePlan.adset[budgetField],start_time:scheduled.material.startAt,end_time:scheduled.material.endAt});
+    const scheduleReceipt=await provider.reconcile(scheduled,grant,{kind:"prepare",payloadDigest:digest(schedulePlan),
+      receipt:{...combinedReceipt,ids:scheduleIds,payloadDigest:digest(schedulePlan)}});
+    assert.ok(scheduleReceipt);assert.equal(writes,scheduleBefore+1);assert.equal(objects.size,objectCount);
+    for(const key of ["campaign","adset","ad","creative","image"])assert.equal(scheduleReceipt.ids[key],stopped.ids[key]);
+    assert.equal(objects.get(scheduleReceipt.ids.adset!).status,"PAUSED");
+    const next=structuredClone(scheduled);next.revision++;next.receipt=scheduleReceipt;next.preparedMaterial=structuredClone(scheduled.material);
+    next.material.audience.ageMin=33;fixtureEligibility(next,grant);
+    const nextReceipt=await provider.update(next,grant,[asset],()=>{},()=>{});
+    assert.equal(nextReceipt.intent,"paused");assert.equal(objects.get(nextReceipt.ids.adset!).end_time,scheduled.material.endAt);
     assert.equal(combinedReceipt.intent,"paused");assert.equal(combinedReceipt.delivery,"unverified");
   } finally {
     await store.close();
@@ -567,7 +596,7 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     assert.equal((await provider.pause(legacy, grant, () => {})).intent, "paused");
     await assert.rejects(provider.activate(legacy, grant, () => {}), /explicit_daily_budget_required/);
     const edited: Campaign = { ...c, revision: 2, state: "draft", receipt: reconciledPause!, preparedMaterial: structuredClone(c.material),
-      material: { ...c.material, advertisingBudget: { ...c.material.advertisingBudget!, daily: { currency: "USD", minor: 3100 } } } };
+      material: { ...c.material, endAt: "2026-10-12T00:00:00Z", advertisingBudget: { ...c.material.advertisingBudget!, daily: { currency: "USD", minor: 3100 } } } };
     const beforeUpdate = writes, countBefore = objects.size;
     assert.equal(await provider.reconcile(edited, grant, { kind: "prepare", payloadDigest: digest(provider.plan(edited, grant, [asset])), receipt: null }), null);
     const wrong = { ...edited, material: { ...edited.material, budget: { currency: "USD", minor: 43000 },
@@ -581,6 +610,8 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     const updated = await provider.update(edited, grant, [asset], value => { ids = { ...value }; }, () => {});
     assert.equal(writes, beforeUpdate + 1); assert.equal(objects.size, countBefore);
     assert.equal(objects.get("102").dailyBudget.amount, "31.00");
+    assert.equal(objects.get("102").runSchedule.end,Date.parse(edited.material.endAt!));
+    assert.equal(JSON.parse(updated.ids.groupSchedule!).endAt,Date.parse(c.material.endAt!));
     assert.deepEqual(objects.get("101"), groupBefore); assert.equal(objects.get("unrelated").status, "ACTIVE");
     for (const key of ["group", "campaign", "creative", "image"]) assert.equal(updated.ids[key], receipt.ids[key]);
     assert.equal(updated.intent, "paused");
@@ -625,6 +656,51 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
     assert.equal(objects.get("102").dailyBudget.amount,"33.00");
     assert.deepEqual(objects.get("101"),groupBefore);assert.equal(objects.get("unrelated").status,"ACTIVE");
     assert.equal(combinedReceipt.intent,"paused");assert.equal(combinedReceipt.delivery,"unverified");
+    const scheduled=structuredClone(combined);scheduled.revision++;scheduled.receipt=combinedReceipt;
+    scheduled.preparedMaterial=structuredClone(combined.material);scheduled.material.endAt="2026-10-14T00:00:00Z";
+    scheduled.material.advertisingBudget!.daily!.minor=3400;fixtureEligibility(scheduled,grant);
+    const scheduleBefore=writes;
+    const startChanged=structuredClone(scheduled);startChanged.material.startAt="2026-10-09T00:00:00Z";
+    await assert.rejects(provider.update(startChanged,grant,[asset],()=>{},()=>{}),/linkedin_campaign_start_immutable/);
+    const outside=structuredClone(scheduled);outside.material.endAt="2026-10-16T00:00:00Z";fixtureEligibility(outside,grant);
+    await assert.rejects(provider.update(outside,grant,[asset],()=>{},()=>{}),/campaign_schedule_outside_group/);
+    fixtureEligibility(scheduled,grant);
+    await assert.rejects(provider.update(scheduled,grant,[asset],()=>{},()=>{throw Error("schedule-authority-revoked");}),/schedule-authority-revoked/);
+    assert.equal(writes,scheduleBefore);
+    let scheduleIds:Record<string,string>={};
+    await assert.rejects(provider.update(scheduled,grant,[asset],v=>{scheduleIds={...v};loseRead=true;},()=>{}));
+    assert.equal(writes,scheduleBefore+1);assert.equal(scheduleIds.readbackDigest,undefined);
+    const schedulePlan=provider.plan(scheduled,grant,[asset]) as any;
+    assert.equal(schedulePlan.group.endAt,Date.parse(c.material.endAt!));
+    assert.equal(schedulePlan.campaign.endAt,Date.parse(scheduled.material.endAt!));
+    const scheduleReceipt=await provider.reconcile(scheduled,grant,{kind:"prepare",payloadDigest:digest(schedulePlan),
+      receipt:{...combinedReceipt,ids:scheduleIds,payloadDigest:digest(schedulePlan)}});
+    assert.ok(scheduleReceipt);assert.equal(writes,scheduleBefore+1);assert.equal(objects.size,countBefore);
+    assert.deepEqual(objects.get("101"),groupBefore);assert.equal(objects.get("unrelated").status,"ACTIVE");
+    assert.equal(objects.get("102").runSchedule.start,Date.parse(c.material.startAt));
+    assert.equal(objects.get("102").runSchedule.end,Date.parse(scheduled.material.endAt!));
+    assert.equal(objects.get("102").dailyBudget.amount,"34.00");
+    // Later revisions must still bind to the ORIGINAL group schedule.
+    const next=structuredClone(scheduled);next.revision++;next.receipt=scheduleReceipt;next.preparedMaterial=structuredClone(scheduled.material);
+    next.material.advertisingBudget!.daily!.minor=3500;fixtureEligibility(next,grant);
+    const nextReceipt=await provider.update(next,grant,[asset],()=>{},()=>{});
+    assert.equal(nextReceipt.payloadDigest,digest(provider.plan(next,grant,[asset])));
+    assert.deepEqual(objects.get("101"),groupBefore);
+    const enabledAfterSchedule=await provider.activate({...next,receipt:nextReceipt,preparedMaterial:structuredClone(next.material)},grant,()=>{});
+    assert.equal(enabledAfterSchedule.intent,"enabled");assert.deepEqual(objects.get("101"),groupBefore);
+    assert.equal(objects.get("unrelated").status,"ACTIVE");
+    const pausedAgain=await provider.pause({...next,receipt:enabledAfterSchedule},grant,()=>{});
+    // Qualify the distinct adoption receipt shape with actual read-only inspection.
+    objects.get("102").totalBudget=structuredClone(objects.get("101").totalBudget);
+    const adoptedBase={...next,receipt:null,preparedMaterial:undefined};
+    const inspection=await provider.inspectExistingCampaign(adoptedBase,grant,[asset],Object.fromEntries(["group","campaign","creative","image"].map(k=>[k,pausedAgain.ids[k]!])),async()=>{});
+    assert.equal(inspection.candidateReceipt.ids.groupOwnership,"shared");
+    const adopted={...adoptedBase,receipt:inspection.candidateReceipt,preparedMaterial:structuredClone(next.material),
+      material:{...next.material,endAt:"2026-10-13T00:00:00Z"}};
+    fixtureEligibility(adopted,grant);const adoptedBefore=writes;
+    const adoptedReceipt=await provider.update(adopted,grant,[asset],()=>{},()=>{});
+    assert.equal(writes,adoptedBefore+1);assert.equal(objects.size,countBefore);
+    assert.equal(adoptedReceipt.ids.campaign,pausedAgain.ids.campaign);assert.deepEqual(objects.get("101"),groupBefore);
 
   } finally { await store.close(); if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, { recursive: true, force: true }); }
 });

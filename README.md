@@ -1214,3 +1214,23 @@ Campaign tracking resolves its own grant ID; another valid grant on the same
 provider account cannot mask expired or revoked campaign custody.
 
 Host-only `reviseCampaignMaterial` edits an existing local campaign under current `revise_material` authority and live session guards. It preserves the exact execution grant, including expiry and invocation lifetime, and rejects revocation, pending execution, scope changes and concurrent revisions. It cannot prepare or launch. `refreshCampaignActivationTracking` carries unchanged tracking configuration to the exact current launch grant under host activation authority; invocation grants require the actual live host custody port. Neither path creates provider, spending or QA evidence.
+
+### Existing campaign schedules
+
+The shared paused-campaign preparation path updates Meta ad-set `start_time` and
+finite `end_time`, and LinkedIn campaign finite `runSchedule.end`. LinkedIn keeps
+its immutable original start. Budget, targeting and schedule changes share one
+exact provider partial update, current preparation authority and full paused
+readback. Provider IDs and historical receipts remain unchanged. No activation
+is part of preparation.
+
+LinkedIn group schedules are retained separately from campaign schedules in the
+SDK receipt. A group originally created by the SDK can contain other campaigns;
+updates never mutate it. Changed campaign schedules must fit the observed group
+bounds. Later edits and read-only uncertain-operation recovery retain these terms.
+Adopted shared-group receipts keep their distinct campaign budget semantics.
+
+Removing an existing end date remains `existing_campaign_schedule_clear_unqualified`;
+provider-specific clearing contracts still need qualification. Creative replacement
+also remains unqualified. Successful transport tests establish request/readback and
+recovery behavior, not real delivery or an authorized live pilot.

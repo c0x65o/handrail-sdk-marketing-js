@@ -1699,7 +1699,8 @@ test("paused edits retain provider identities and use update with durable unknow
     const packet = await t.service.packet(t.admin, "qa-alpha", { campaignId: c.id });
     await t.service.decide(t.admin, "qa-alpha", { packetId: packet.id, digest: packet.digest, decision: "approved" });
     const edited = await t.service.saveCampaign(t.admin, "qa-alpha", { id: c.id, expectedRevision: c.revision, grantId: c.grantId,
-      material: { ...c.material, budget: { ...c.material.budget!, minor: c.material.budget!.minor + 100 } } });
+      material: { ...c.material, endAt: new Date(Date.parse(c.material.endAt!) + 86400000).toISOString(),
+        budget: { ...c.material.budget!, minor: c.material.budget!.minor + 100 } } });
     assert.deepEqual(edited.receipt, c.receipt); assert.deepEqual(edited.preparedMaterial, c.material);
     assert.equal(edited.state, "draft");
     await assert.rejects(t.service.prepare(t.admin, "qa-alpha", { campaignId: c.id, requestKey: "unsupported-update" }), /existing_campaign_update_unavailable/);

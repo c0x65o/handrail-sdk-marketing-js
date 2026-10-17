@@ -260,6 +260,21 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
   );
   requireThat(m.advertisingBudget?.daily, "linkedin_explicit_daily_budget_required");
   const ls = settings?.provider === "linkedin" ? settings : undefined;
+  // A campaign update never changes its container, even if the SDK originally
+  // created that group. Retain the original plan terms across later revisions.
+  const groupMaterial = c.receipt && c.receipt.ids.groupOwnership !== "shared"
+    ? c.preparedMaterial ?? m : m;
+  let groupSchedule = { startAt: Date.parse(groupMaterial.startAt),
+    ...(groupMaterial.endAt === null ? {} : { endAt: materialEndTime(groupMaterial) }) };
+  if (c.receipt?.ids.groupSchedule) {
+    let retained: unknown;
+    try { retained = JSON.parse(c.receipt.ids.groupSchedule); } catch { /* rejected below */ }
+    const value = retained as typeof groupSchedule | undefined;
+    requireThat(value && Number.isFinite(value.startAt) &&
+      (value.endAt === undefined || Number.isFinite(value.endAt) && value.endAt > value.startAt),
+      "retained_group_schedule_invalid");
+    groupSchedule = { startAt: value!.startAt, ...(value!.endAt === undefined ? {} : { endAt: value!.endAt }) };
+  }
   return {
     provider: g.provider,
     ...(ls ? { capabilityVersion: ls.version, conversion: ls.conversion } : {}),
@@ -272,8 +287,7 @@ export function providerPlan(c: Campaign, g: Grant, assets: Asset[]) {
       status: "ACTIVE",
       ...(m.budget ? { totalBudgetCents: m.budget.minor } : {}),
       currencyCode: materialCurrency(m),
-      startAt: Date.parse(m.startAt),
-      ...(m.endAt === null ? {} : { endAt: materialEndTime(m) }),
+      ...groupSchedule,
     },
     campaign: {
       name: m.name,
@@ -936,8 +950,8 @@ export class NativeProvider implements ProviderPort {
     const oldPlan = this.plan({ ...c, material: previous }, g, assets);
     requireThat(digest(oldPlan) === c.receipt.payloadDigest, "prepared_material_binding_changed");
     const normalized = structuredClone(c.material);
-    // Existing object updates preserve creative, schedule, identity and shared
-    // group terms. Audience and placement changes use the same exact capability,
+    // Existing object updates preserve creative, identity and shared group
+    // terms. Audience, placement and schedule changes use the same exact capability,
     // drift, authority and readback guards as budget changes; never recreation.
     requireThat(previous.settings?.provider === this.name && normalized.settings?.provider === this.name &&
       previous.audience.provider === normalized.audience.provider, "existing_campaign_edit_unqualified");
@@ -947,6 +961,14 @@ export class NativeProvider implements ProviderPort {
       requireThat(digest(previous.settings!.targeting.expansion ?? null) === digest(c.material.settings!.targeting.expansion ?? null),
         "existing_campaign_edit_unqualified");
     }
+    // A finite end can be added/changed without guessing a provider-specific
+    // clear operation. LinkedIn's original start is immutable; Meta explicitly
+    // supports start_time updates (provider acceptance is still verified).
+    requireThat(normalized.endAt !== null || previous.endAt === null,
+      "existing_campaign_schedule_clear_unqualified");
+    normalized.endAt = previous.endAt;
+    if (this.name === "meta") normalized.startAt = previous.startAt;
+    else requireThat(normalized.startAt === previous.startAt, "linkedin_campaign_start_immutable");
     normalized.audience = structuredClone(previous.audience);
     normalized.settings!.targeting = structuredClone(previous.settings!.targeting);
     normalized.settings!.placements = structuredClone(previous.settings!.placements);
@@ -991,6 +1013,10 @@ export class NativeProvider implements ProviderPort {
     };
     await guard();
     const { readbackDigest: previousDigest, ...ids } = c.receipt!.ids;
+    if (this.name === "linkedin" && ids.groupOwnership !== "shared") {
+      ids.groupSchedule = JSON.stringify({ startAt: oldPlan.group.startAt,
+        ...(oldPlan.group.endAt === undefined ? {} : { endAt: oldPlan.group.endAt }) });
+    }
     return this.use(g, async client => {
       if (this.name === "linkedin") client.beforeWrite = async () => {
         requireThat((await this.linkedInPermissions(client, g, undefined, readGuard, "prepare")).includes("prepare"), "provider_capability_missing");
@@ -1000,6 +1026,12 @@ export class NativeProvider implements ProviderPort {
       const before = await this.snapshot(client, g, ids);
       requireThat(before.paused, "existing_campaign_not_paused");
       requireThat(digest(before.material) === previousDigest, "external_material_changed");
+      if (this.name === "linkedin" && plan.campaign.endAt !== oldPlan.campaign.endAt) {
+        const schedule = before.material.group.runSchedule;
+        requireThat(Number.isFinite(schedule?.start) && plan.campaign.startAt >= schedule.start &&
+          (schedule.end == null || Number.isFinite(schedule.end) && plan.campaign.endAt <= schedule.end),
+          "campaign_schedule_outside_group");
+      }
       // Persist original identities without claiming the new material has been
       // observed. A lost acknowledgment is resolved by reads, never replay.
       await retain({ ...ids });
@@ -1010,13 +1042,22 @@ export class NativeProvider implements ProviderPort {
           const body = {
             ...(plan.adset[field] !== oldPlan.adset[field] ? { [field]: plan.adset[field] } : {}),
             ...(digest(plan.adset.targeting) !== digest(oldPlan.adset.targeting) ? { targeting: plan.adset.targeting } : {}),
+            ...(plan.adset.start_time !== oldPlan.adset.start_time ? { start_time: plan.adset.start_time } : {}),
+            ...(plan.adset.end_time !== oldPlan.adset.end_time ? { end_time: plan.adset.end_time } : {}),
           };
           if (Object.keys(body).length) await client.request(ids.adset, { method: "POST", body });
-        } else if (digest(plan.campaign.targetingCriteria) !== digest(oldPlan.campaign.targetingCriteria)) {
-          await client.updateCampaignTargeting(g.accountId, ids.campaign, plan.campaign.targetingCriteria,
-            plan.campaign.dailyBudgetCents !== oldPlan.campaign.dailyBudgetCents ? plan.campaign.dailyBudgetCents : undefined, g.currency);
-        } else if (plan.campaign.dailyBudgetCents !== oldPlan.campaign.dailyBudgetCents) {
-          await client.updateCampaignBudget(g.accountId, ids.campaign, plan.campaign.dailyBudgetCents, g.currency);
+        } else {
+          // One exact partial update for all campaign fields; no group mutation,
+          // activation or replay if the acknowledgment is lost.
+          const fields = {
+            ...(digest(plan.campaign.targetingCriteria) !== digest(oldPlan.campaign.targetingCriteria)
+              ? { targetingCriteria: plan.campaign.targetingCriteria } : {}),
+            ...(plan.campaign.dailyBudgetCents !== oldPlan.campaign.dailyBudgetCents
+              ? { dailyBudget: { amount: (plan.campaign.dailyBudgetCents / 100).toFixed(2), currencyCode: g.currency } } : {}),
+            ...(plan.campaign.endAt !== oldPlan.campaign.endAt
+              ? { runSchedule: { start: plan.campaign.startAt, end: plan.campaign.endAt } } : {}),
+          };
+          if (Object.keys(fields).length) await client.updateCampaign(g.accountId, ids.campaign, fields);
         }
       }
       const after = await this.snapshot(client, g, ids);
