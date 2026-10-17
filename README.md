@@ -1106,3 +1106,16 @@ Native generation custody can return `{apiKey, organization, project}` to bind
 OpenAI billing routing explicitly. Null organization/project suppress ambient
 OpenAI SDK environment routing. Bare-key integrations remain valid for provider
 default accounts. Routing is carried only to the SDK transport, not receipts.
+
+`MarketingClient.imageGeneration` optionally binds a native host's model/price
+configuration, estimates, exact human reviews, approvals, revocations and saved
+request reads to the SDK Studio media step. The SDK owns the review form and
+uses its existing `generateDraftMedia` intent/recovery path after approval.
+Host responses supply actual policy/custody facts; the UI cannot manufacture a
+grant or enable a blocked policy. Lost decision responses retain their original
+keys and recover by reading receipts without an automatic paid request. Native
+hosts must enforce current sessions, exact material, price revisions, custody
+and single-use reservation authority server-side. `image-authority.ts` is the
+browser-safe optional transport contract. Native credential metadata is not
+needed by the form. Quotes are reservations; token-based estimates are not
+provider invoices or provider-enforced hard charge caps.

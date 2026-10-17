@@ -1,5 +1,6 @@
 import type { MeasurementInput, MeasurementEvidence } from "./measurement.js";
 export * from "./adoption.js";
+export * from "./image-authority.js";
 export * from "./audience.js";
 import type { AudienceCommands } from "./audience.js";
 import type { CampaignCheckCommands } from "./preflight.js";
@@ -509,6 +510,7 @@ export interface Commands extends AudienceCommands, ConnectionCommands, StudioCo
 }
 export type Command = keyof Commands;
 export interface MarketingClient {
+  imageGeneration?: import("./image-authority.js").ImageGenerationAuthorityClient;
   call<K extends Command>(
     command: K,
     input: Commands[K]["input"],
