@@ -1650,49 +1650,46 @@ export class NativeProvider implements ProviderPort {
           requireThat(s.association?.campaign === `urn:li:sponsoredCampaign:${ids.campaign}` && s.association?.conversion === ids.conversion, "conversion_association_unverified");
         }
       }
-      requireThat(
-        s.group.account === s.campaign.account &&
-        s.campaign.account === `urn:li:sponsoredAccount:${plan.accountId}` &&
-        s.campaign.associatedEntity === `urn:li:organization:${plan.campaign.organizationId}` &&
-        linkedInMoney(s.campaign.dailyBudget, (plan.campaign.dailyBudgetCents / 100).toFixed(2), plan.campaign.currencyCode) &&
-        (ids.groupOwnership !== "shared" || (plan.group.totalBudgetCents === undefined ? s.campaign.totalBudget == null :
-          linkedInMoney(s.campaign.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.campaign.currencyCode))) &&
-        linkedInMoney(s.campaign.unitCost, plan.campaign.unitCostAmount, plan.campaign.currencyCode) &&
-        s.campaign.objectiveType === plan.campaign.objectiveType &&
-        s.campaign.type === plan.campaign.type && s.campaign.costType === plan.campaign.costType &&
-        s.campaign.format === plan.campaign.format &&
-        (ids.groupOwnership === "shared" || (plan.group.totalBudgetCents === undefined ? s.group.totalBudget == null :
-          linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode))) &&
-        (ids.groupOwnership === "shared" || plan.group.endAt !== undefined || s.group.runSchedule?.end == null) &&
-        (plan.campaign.endAt !== undefined || s.campaign.runSchedule?.end == null) &&
-          exactLinkedInTargeting(s.campaign.targetingCriteria, plan.campaign.targetingCriteria) &&
-          (ids.groupOwnership === "shared" || subset(s.group.runSchedule, {
-            start: plan.group.startAt,
-            ...(plan.group.endAt === undefined ? {} : { end: plan.group.endAt }),
-          })) &&
-          subset(s.campaign.runSchedule, {
-            start: plan.campaign.startAt,
-            ...(plan.campaign.endAt === undefined ? {} : { end: plan.campaign.endAt }),
-          }) &&
-          s.campaign.campaignGroup ===
-            `urn:li:sponsoredCampaignGroup:${ids.group}` &&
-          s.creative.campaign === `urn:li:sponsoredCampaign:${ids.campaign}` &&
-          subset({...s.post, commentary: typeof s.post.commentary === 'string'
-            ? linkedInCommentaryPlainText(s.post.commentary) : s.post.commentary}, {
-            author: `urn:li:organization:${plan.creative.organizationId}`,
-            commentary: plan.creative.commentary,
-            contentLandingPage: plan.creative.landingPageUrl,
-            content: {
-              media: {
-                id: ids.image,
-                title: plan.creative.mediaTitle,
-              },
-            },
-          }) &&
-          s.campaign.audienceExpansionEnabled === false &&
-          s.campaign.offsiteDeliveryEnabled === false,
-        "provider_effective_material_mismatch",
-      );
+      // Fixed field names only: never return provider values, post copy, URLs or
+      // credential material when explaining a rejected adoption/readback.
+      const comparisons = {
+        'group.account': s.group.account === s.campaign.account,
+        'campaign.account': s.campaign.account === `urn:li:sponsoredAccount:${plan.accountId}`,
+        'campaign.associatedEntity': s.campaign.associatedEntity === `urn:li:organization:${plan.campaign.organizationId}`,
+        'campaign.dailyBudget': linkedInMoney(s.campaign.dailyBudget, (plan.campaign.dailyBudgetCents / 100).toFixed(2), plan.campaign.currencyCode),
+        'campaign.totalBudget': ids.groupOwnership !== "shared" || (plan.group.totalBudgetCents === undefined ? s.campaign.totalBudget == null :
+          linkedInMoney(s.campaign.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.campaign.currencyCode)),
+        'campaign.unitCost': linkedInMoney(s.campaign.unitCost, plan.campaign.unitCostAmount, plan.campaign.currencyCode),
+        'campaign.objectiveType': s.campaign.objectiveType === plan.campaign.objectiveType,
+        'campaign.type': s.campaign.type === plan.campaign.type,
+        'campaign.costType': s.campaign.costType === plan.campaign.costType,
+        'campaign.format': s.campaign.format === plan.campaign.format,
+        'group.totalBudget': ids.groupOwnership === "shared" || (plan.group.totalBudgetCents === undefined ? s.group.totalBudget == null :
+          linkedInMoney(s.group.totalBudget, (plan.group.totalBudgetCents / 100).toFixed(2), plan.group.currencyCode)),
+        'group.unexpectedEnd': ids.groupOwnership === "shared" || plan.group.endAt !== undefined || s.group.runSchedule?.end == null,
+        'campaign.unexpectedEnd': plan.campaign.endAt !== undefined || s.campaign.runSchedule?.end == null,
+        'campaign.targetingCriteria': exactLinkedInTargeting(s.campaign.targetingCriteria, plan.campaign.targetingCriteria),
+        'group.runSchedule': ids.groupOwnership === "shared" || subset(s.group.runSchedule, {
+          start: plan.group.startAt, ...(plan.group.endAt === undefined ? {} : { end: plan.group.endAt }),
+        }),
+        'campaign.runSchedule': subset(s.campaign.runSchedule, {
+          start: plan.campaign.startAt, ...(plan.campaign.endAt === undefined ? {} : { end: plan.campaign.endAt }),
+        }),
+        'campaign.campaignGroup': s.campaign.campaignGroup === `urn:li:sponsoredCampaignGroup:${ids.group}`,
+        'creative.campaign': s.creative.campaign === `urn:li:sponsoredCampaign:${ids.campaign}`,
+        'post.author': subset(s.post, {author: `urn:li:organization:${plan.creative.organizationId}`}),
+        'post.commentary': subset({...s.post, commentary: typeof s.post.commentary === 'string'
+          ? linkedInCommentaryPlainText(s.post.commentary) : s.post.commentary}, {commentary: plan.creative.commentary}),
+        'post.contentLandingPage': subset(s.post, {contentLandingPage: plan.creative.landingPageUrl}),
+        'post.content.media.id': subset(s.post, {content: {media: {id: ids.image}}}),
+        'post.content.media.title': subset(s.post, {content: {media: {title: plan.creative.mediaTitle}}}),
+        'campaign.audienceExpansionEnabled': s.campaign.audienceExpansionEnabled === false,
+        'campaign.offsiteDeliveryEnabled': s.campaign.offsiteDeliveryEnabled === false,
+      };
+      const mismatchFields = Object.entries(comparisons).filter(([,matches]) => !matches).map(([field]) => field);
+      if (mismatchFields.length) throw Object.assign(new DomainError("provider_effective_material_mismatch", 409), {
+        providerMaterialDiagnostic: {provider: "linkedin" as const, mismatchFields},
+      });
     }
   }
   private async activationChildren(client: any, g: Grant, ids: Record<string,string>,

@@ -832,6 +832,41 @@ for (const name of ['meta','linkedin'] as const) test(`${name} read-only inspect
   }finally{await t.close();}
 });
 
+test('LinkedIn adoption material diagnostics identify mismatched fields without values or provider writes',async()=>{
+  const t=await native('linkedin');try {
+    eligible(t.c,t.g);
+    const receipt=await t.port.prepare(t.c,t.g,[t.a],'diagnostic-source',()=>{},()=>{});
+    const ids=Object.fromEntries(['group','campaign','creative','image'].map(k=>[k,receipt.ids[k]!]));
+    t.c.material.budget=null;t.c.material.endAt=null;t.c.material.advertisingBudget={daily:{currency:'USD',minor:500}};
+    const campaign=t.state.objects.get(ids.campaign!);
+    delete campaign.runSchedule.end;campaign.dailyBudget={amount:'5.00',currencyCode:'USD'};
+    const writes=t.state.writes;
+    await t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{});
+    const cases:[string,(o:any)=>void,string[]][]=[
+      ['adCampaigns',o=>{o.dailyBudget.amount='6';},['campaign.dailyBudget']],
+      ['adCampaigns',o=>{o.runSchedule.start++;},['campaign.runSchedule']],
+      ['adCampaigns',o=>{o.totalBudget={amount:'50',currencyCode:'USD'};},['campaign.totalBudget']],
+      ['creatives',o=>{o.inlineContent.post.commentary='private diagnostic sentinel';},['post.commentary']],
+      ['creatives',o=>{o.inlineContent.post.contentLandingPage='https://example.invalid/private?token=secret';},['post.contentLandingPage']],
+      ['creatives',o=>{delete o.inlineContent.post.content.media;},['post.content.media.id','post.content.media.title']],
+      ['creatives',o=>{o.inlineContent.post.author='urn:li:organization:999';o.inlineContent.post.content.media.title='private title';},['post.author','post.content.media.title']],
+    ];
+    for(const [kind,mutate,fields] of cases){
+      t.state.drift=(o,k)=>{if(k===kind)mutate(o);};
+      await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),(error:any)=>{
+        assert.equal(error.code,'provider_effective_material_mismatch');
+        assert.deepEqual(error.providerMaterialDiagnostic,{provider:'linkedin',mismatchFields:fields});
+        assert.equal(JSON.stringify(error).includes('private'),false);
+        assert.equal(error.status,409);return true;
+      });
+      assert.equal(t.state.writes,writes);
+    }
+    t.state.drift=null;
+    assert.equal((await t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{})).candidateReceipt.intent,'paused');
+    assert.equal(t.state.writes,writes);
+  }finally{await t.close();}
+});
+
 test('daily-only terms reject missing amounts, mixed currency and conflicting lifetime fields',()=>{
   const {c,g,a}=sample('meta');c.material.budget=null;c.material.endAt=null;
   c.material.advertisingBudget={daily:{currency:'USD',minor:500}};
