@@ -333,7 +333,7 @@ export class MarketingTracking {
         requireThat(!operations.some(o=>o.campaignId===campaign.id&&['queued','running','unknown'].includes(o.state)),
           'tracking_execution_pending');
         const prepared=operations.some(operation=>
-          operation.projectId===project&&operation.campaignId===campaign.id&&operation.kind==='prepare'&&
+          operation.projectId===project&&operation.campaignId===campaign.id&&['prepare','pause'].includes(operation.kind)&&
           operation.campaignRevision===previous.revision&&operation.state==='succeeded'&&
           digest(operation.receipt??null)===digest(campaign.receipt??null));
         requireThat(previous.projectId===project&&campaign.projectId===project&&previous.id===campaign.id&&

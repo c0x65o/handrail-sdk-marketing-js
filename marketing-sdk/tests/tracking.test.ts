@@ -709,10 +709,17 @@ test('campaign tracking binds its exact grant and refreshes custody without chan
     assert.deepEqual(await f.store.get('p','trackingBindingHistory',binding.id+':1'),binding);
     assert.deepEqual(await service.rebindCampaignMaterialTracking(f.p,'p',input),rebound);
     assert.deepEqual(await f.store.list('p','event'),[]);assert.deepEqual(await f.store.list('p','operation'),[]);
+    // A successful SDK stop replaces the receipt while preserving prepared
+    // material. Only its exact immutable operation can qualify that readback.
+    const stopped={...campaign,receipt:{...campaign.receipt!,payloadDigest:'verified-stop',observedAt:new Date().toISOString()}};
+    await f.store.put('p','campaign',campaign.id,stopped);
     action='activate';
     const invocation={...refreshed,revision:3,permissions:['activate','pause','report'],expiresAt:null,lifetime:{kind:'invocation',invocationRef:'current-launch'}};
     await f.store.put('p','grant',grant.id,invocation);
     const launchInput={campaignId:campaign.id,expectedRevision:1,expectedBindingRevision:rebound.revision,requestKey:'launch-refresh'};
+    await assert.rejects(service.refreshCampaignActivationTracking(f.p,'p',launchInput),/tracking_material_revision_mismatch/);
+    await f.store.put('p','operation','verified-stop',{id:'verified-stop',projectId:'p',campaignId:campaign.id,
+      campaignRevision:1,kind:'pause',state:'succeeded',receipt:stopped.receipt});
     custody=false;await assert.rejects(service.refreshCampaignActivationTracking(f.p,'p',launchInput),/invocation custody revoked/);custody=true;
     const launchBinding=await service.refreshCampaignActivationTracking(f.p,'p',launchInput);
     assert.equal(launchBinding.accountDigest,digest(invocation));assert.equal(launchBinding.materialDigest,binding.materialDigest);
@@ -720,7 +727,7 @@ test('campaign tracking binds its exact grant and refreshes custody without chan
     assert.deepEqual(await service.refreshCampaignActivationTracking(f.p,'p',launchInput),launchBinding);
     assert.equal((await service.tracking.campaignConfiguration(f.p,'p',campaign.id)).revision,3);
     custody=false;await assert.rejects(service.tracking.campaignConfiguration(f.p,'p',campaign.id),/invocation custody revoked/);custody=true;
-    assert.deepEqual(await f.store.list('p','event'),[]);assert.deepEqual(await f.store.list('p','operation'),[]);
+    assert.deepEqual(await f.store.list('p','event'),[]);assert.equal((await f.store.list('p','operation')).length,1);
     await f.store.put('p','grant',grant.id,{...invocation,revokedAt:new Date().toISOString()});
     assert.equal((await service.call(f.p,'p','tracking',{owner})).readiness,'stale','A valid unrelated grant cannot mask revocation');
   }finally{await f.close();}
