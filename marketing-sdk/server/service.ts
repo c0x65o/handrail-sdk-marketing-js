@@ -194,7 +194,7 @@ export class MarketingServer {
   ): Promise<Grant> {
     const g = await this.store.get<Grant>(project, "grant", grantId);
     await assertCurrentGrant(g, this.now(), this.options.executionAuthority);
-    requireThat(!g.lifetime || permission === "pause" || permission === "report" || permission === "activate", "invocation_grant_operation_denied", 403);
+    requireThat(!g.lifetime || permission === "pause" || permission === "report" || permission === "activate" || permission === "prepare", "invocation_grant_operation_denied", 403);
     requireThat(
       !permission || g.permissions.includes(permission),
       "grant_permission_denied",

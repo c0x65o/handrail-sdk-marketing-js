@@ -48,6 +48,7 @@ export interface VaultPort {
   /** Current exact host stop/read invocation, never inferred from saved state. */
   assertInvocationGrant?: (grant: Grant) => Promise<void>;
   assertInvocationActivationGrant?: (grant: Grant) => Promise<void>;
+  assertInvocationPreparationGrant?: (grant: Grant) => Promise<void>;
   /** Trusted host custody: inspect the exact grant's current credential/config
    * revision without returning secrets or doing network I/O. Presence selects
    * native prerequisite evidence for every grant, independent of its ID. Throw

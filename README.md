@@ -1029,8 +1029,8 @@ as a public command or a new execution worker.
 
 A trusted host may retain a campaign-scoped grant with `expiresAt: null` and
 `lifetime: { kind: "invocation", invocationRef }` for the exact running native
-action. `pause` and `report` use stop/read custody; `activate` additionally needs
-the dedicated launch-custody port described below. This represents current
+action. `pause` and `report` use stop/read custody; `prepare` and `activate` need
+their separate preparation and launch custody ports described below. This represents current
 host action authority when provider token expiry is unknown; it does not claim
 the provider token never expires. Timestamp grants retain their existing deadline
 checks and cannot silently fall back to invocation access.
@@ -1040,8 +1040,8 @@ Both `ExecutionAuthority.assertInvocationGrant` and the private
 host invocation, principal, project, campaign and retained grant. Missing custody,
 changed identity, revocation or action termination rejects before further effects
 or local receipt commits. Provider transport errors recheck current authority so a
-revocation is not mislabeled as a provider outage. Invocation grants cannot create,
-edit material, approve spending or serve as human approval. Recovery
+revocation is not mislabeled as a provider outage. Stop/read custody alone cannot
+prepare campaigns; invocation grants cannot edit material, approve spending or serve as human approval. Recovery
 preserves original operation/grant revisions; a later host action needs its own
 current grant revision. Ordinary SDK connections, reference provisioning, Studio
 promotion and UI readiness do not infer liveness from a saved invocation reference.
@@ -1071,6 +1071,14 @@ private VaultPort. Each must inspect the exact running action and current launch
 policy for the campaign/material. Generic stop/read callbacks do not authorize
 launch. The SDK still requires its normal current packet approval, tracking,
 spending reservation, complete child inventory and write-boundary checks.
+
+An invocation grant containing `prepare` requires separate
+`assertInvocationPreparationGrant` implementations on ExecutionAuthority and the
+private VaultPort. Each checks the exact current invocation, campaign, material,
+grant and preparation policy. Normal prerequisites, provider capability checks,
+current tracking and original-operation recovery still apply. Preparation grants
+cannot contain `activate`; generic stop/read and launch callbacks cannot substitute
+for preparation custody. An ended invocation is never revived by a saved grant.
 
 Host campaign access may use Infinity only as an ephemeral bound when the grant
 and every current session reference the same invocation. Persisted prerequisite

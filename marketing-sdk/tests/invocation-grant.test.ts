@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {NativeProvider,DomainError,digest} from '../server/index.js';
+import {NativeProvider,DomainError,digest,assertCurrentGrant} from '../server/index.js';
 import type {Campaign,Grant} from '../core/index.js';
 import {nativePreflightFixture} from './preflight-fixture.js';
 
@@ -22,6 +22,14 @@ test('native provider stop/read invocation has no fabricated deadline and is fen
    assert.equal(g.lifetime?.invocationRef,'exact-running-host-action');};
   const use=async<T>(g:Grant,action:(c:typeof credentials)=>Promise<T>)=>{await assertInvocationGrant(g);const result=await action(credentials);await assertInvocationGrant(g);return result;};
   const provider=new NativeProvider('meta',{use,assertInvocationGrant},f.store,f.http.fetch);
+  const preparation={...grant,permissions:['prepare','pause','report'] as Grant['permissions']};
+  await assert.rejects(assertCurrentGrant(preparation,Date.now(),{assertInvocationGrant}),/invalid_invocation_grant/);
+  let preparationChecks=0;
+  const assertInvocationPreparationGrant=async(g:Grant)=>{preparationChecks++;await assertInvocationGrant(g);};
+  await assertCurrentGrant(preparation,Date.now(),{assertInvocationPreparationGrant});
+  assert.equal(preparationChecks,1);
+  await assert.rejects(assertCurrentGrant({...preparation,permissions:['prepare','activate']},Date.now(),
+    {assertInvocationPreparationGrant,assertInvocationActivationGrant:assertInvocationGrant}),/invalid_invocation_grant/);
   const before=f.http.trace.length;
   await assert.rejects(new NativeProvider('meta',{use},f.store,f.http.fetch).pause(campaign,grant,async()=>{}),/invocation_grant_authority_required/);
   await assert.rejects(provider.activate(campaign,grant,async()=>{}),/invocation_grant_operation_denied/);

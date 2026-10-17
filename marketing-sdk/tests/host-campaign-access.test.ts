@@ -12,10 +12,9 @@ async function hostFixture() {
     // Test setup copies synthetic credentials into closure-only host custody,
     // then removes SDK OAuth and vault records. No production import or regrant.
     const credentials=await f.custody.useReadOnly(original,async()=>{},async c=>structuredClone(c));
-    const grant={...original,id:'host-grant',secretRef:'host-vault-reference'};
+    const grant={...original,secretRef:'host-vault-reference'};
     await f.store.put('p','grant',grant.id,grant);
     await f.store.db.prepare('DELETE FROM records WHERE project_id=? AND kind=?').run('p','setup');
-    await f.store.put('p','campaign',f.c.id,{...f.c,grantId:grant.id});
     await f.store.db.prepare('DELETE FROM records WHERE project_id=? AND kind IN (?,?)').run('p','connection','vault');
     let revision=1,denied=false,expiry=credentials.expiresAt,guards=0,held=0;
     let beforeCommit:(()=>Promise<void>)|undefined;
@@ -54,7 +53,16 @@ async function hostFixture() {
     const server=new MarketingServer(f.store,{meta:provider,google:provider,linkedin:provider},f.server.generation,f.server.agent,'fixture',undefined,undefined,
       {campaignAccess:access,studio:{sessions:f.connections.sessionAuthority},tracking:f.source.options});
     const call=<K extends keyof Commands>(command:K,input:Commands[K]['input'])=>server.call(f.principal,'p',command,input);
-    return {...f,server,call,access,vault,grant,provider,guards:()=>guards,
+    const refreshTracking=async()=>{
+      const owner={kind:'campaign' as const,id:f.c.id};
+      const view=await call('tracking',{owner});
+      return call('bindTracking',{owner,expectedRevision:f.c.revision,expectedBindingRevision:view.binding!.revision,
+        sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry',refundTreatment:null,requestKey:`host-tracking:${grant.revision}`});
+    };
+    // This fixture changes the canonical campaign grant. Bind its actual grant,
+    // not the SDK OAuth grant retained by the original promotion fixture.
+    await refreshTracking();
+    return {...f,server,call,access,vault,grant,provider,refreshTracking,guards:()=>guards,
       rotate:()=>{revision++;},revoke:()=>{denied=true;},expire:()=>{expiry=Date.now()-1;},
       beforeCommit:(fn:()=>Promise<void>)=>{beforeCommit=fn;}};
   } catch(error) {await f.close();throw error;}
@@ -73,8 +81,8 @@ test('host custody prepares a paused campaign without SDK OAuth/vault/setup reco
     const op=await f.call('prepare',{campaignId:f.c.id,requestKey:'prepare-host'});
     const result=await f.server.dispatch('p',op.id);assert.equal(result.state,'succeeded',JSON.stringify(result));
     const campaign=await f.store.get<Campaign>('p','campaign',f.c.id);
-    assert.equal(campaign.state,'paused');assert.equal(campaign.grantId,'host-grant');assert.equal(campaign.receipt?.intent,'paused');
-    assert.equal(digest(await f.store.get('p','grant','host-grant')),before);
+    assert.equal(campaign.state,'paused');assert.equal(campaign.grantId,f.grant.id);assert.equal(campaign.receipt?.intent,'paused');
+    assert.equal(digest(await f.store.get('p','grant',f.grant.id)),before);
     assert.deepEqual(await f.store.list('p','vault'),[]);assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
     const writes=f.http.trace.filter(r=>r.method==='POST').length;assert.equal(writes,5);
     assert.deepEqual(await f.server.dispatch('p',op.id),result);assert.equal(f.http.trace.filter(r=>r.method==='POST').length,writes);
@@ -152,6 +160,7 @@ for(const change of ['none','custody-rotated'] as const)test(`activation-only ho
     const preparationProof=await f.call('campaignCheck',{campaignId:f.c.id});assert.equal(preparationProof!.action,'prepare');
     f.grant.revision++;f.grant.permissions=['activate','report'];
     await f.store.put('p','grant',f.grant.id,f.grant);
+    await f.refreshTracking();
     const reads=f.http.trace.length;
     await assert.rejects(f.call('checkCampaign',{...f.check,expectedGrantRevision:f.grant.revision,requestKey:'wrong-action'}),/permission|grant/);
     await assert.rejects(f.call('prepare',{campaignId:f.c.id,requestKey:'never-prepare-again'}),/permission|grant/);
@@ -260,6 +269,9 @@ test(`invocation-scoped native launch ${change} retains unknown expiry and exact
       await assert.rejects(server.checkCampaign(f.principal,'p',input),/invalid_invocation_grant|session_authority_changed/);
       assert.equal(f.http.trace.filter(r=>r.method==='POST').length,before);return;
     }
+    const tracking=await server.tracking.tracking(f.principal,'p',{owner:{kind:'campaign',id:campaign.id}});
+    await server.refreshCampaignActivationTracking(f.principal,'p',{campaignId:campaign.id,expectedRevision:campaign.revision,
+      expectedBindingRevision:tracking.binding!.revision,requestKey:'invocation-launch-tracking'});
     const proof=await server.checkCampaign(f.principal,'p',input);assert.equal(proof.state,'ready',JSON.stringify(proof));
     const record=await f.store.get<import('../server/preflight.js').PrerequisiteRecord>('p','campaignCheck',proof.id);
     assert.equal(record.credentialExpiresAt,null);assert.equal(record.sessions[0]!.expiresAt,null);
@@ -272,6 +284,74 @@ test(`invocation-scoped native launch ${change} retains unknown expiry and exact
     assert.equal(f.http.trace.filter(r=>r.method==='POST').length-before,change==='none'?3:0);
     const {inventoryDigest,...ids}=(await f.store.get<Campaign>('p','campaign',campaign.id)).receipt!.ids;
     assert.deepEqual(ids,originalIds);if(change==='none')assert.match(inventoryDigest!,/^[a-f0-9]{64}$/);
+    assert.equal((await f.store.get<Grant>('p','grant',f.grant.id)).expiresAt,null);
+    assert.deepEqual(await f.store.list('p','decision'),[]);assert.ok(checks>10);
+  }finally{await f.close();}
+});
+
+for(const change of ['none','revoked','foreign-session','missing-preparation-port'] as const)
+test(`invocation-scoped native preparation ${change} retains unknown expiry and exact current authority`,async()=>{
+  const f=await hostFixture();try{
+    assert.equal((await f.call('checkCampaign',f.check)).state,'ready');await f.store.db.acquireExecutor();
+    const prep=await f.call('prepare',{campaignId:f.c.id,requestKey:'prepare-before-invocation'});
+    assert.equal((await f.server.dispatch('p',prep.id)).state,'succeeded');
+    const prepared=await f.store.get<Campaign>('p','campaign',f.c.id);
+    const campaign=await f.server.saveCampaign(f.principal,'p',{id:prepared.id,expectedRevision:prepared.revision,
+      material:prepared.material,grantId:prepared.grantId,requestKey:'new-local-material-revision'});
+    const originalSession=await f.connections.sessionAuthority.inspectSession({
+      ...f.principal.externalIdentity!,userId:f.principal.userId,sessionRef:f.principal.externalSessionRef!},'p');
+    const invocationRef=originalSession.binding.sessionRef;
+    const session:import('../server/index.js').SessionInspection={...originalSession,kind:'agent',expiresAt:null,
+      lifetime:{kind:'invocation',invocationRef:change==='foreign-session'?'foreign':invocationRef}};
+    f.grant.revision++;f.grant.campaignId=campaign.id;f.grant.permissions=['prepare','pause','report'];
+    f.grant.expiresAt=null;f.grant.lifetime={kind:'invocation',invocationRef};
+    await f.store.put('p','grant',f.grant.id,f.grant);
+    let alive=true,checks=0;
+    const current=async()=>{checks++;requireThat(alive,'native_invocation_ended',403);};
+    const exact=async(g:Grant)=>{await current();requireThat(digest(g)===digest(f.grant),'invocation_scope_changed');};
+    const sessions:import('../server/index.js').SessionAuthority={
+      authenticateRequest:async()=>f.principal,
+      inspectSession:async(binding,project)=>{await current();assert.equal(project,'p');assert.deepEqual(binding,session.binding);return structuredClone(session);},
+      withLiveSessions:async(expected,local)=>{await inspectLiveSessions(sessions,expected);const result=await local();await inspectLiveSessions(sessions,expected);return result;},
+    };
+    const vault:VaultPort={...f.vault,assertInvocationGrant:exact,
+      ...(change==='missing-preparation-port'?{}:{assertInvocationPreparationGrant:exact}),
+      useReadOnly:async(g,guard,local)=>f.vault.useReadOnly!(g,guard,c=>local({...c,expiresAt:Infinity})),
+      use:async(g,local)=>f.vault.use(g,c=>{const credentials={...c,expiresAt:Infinity};return local(credentials);}),
+    };
+    const access:CampaignAccess={store:f.store,sessionAuthority:sessions,
+      campaignAuthority:async(p,g)=>{await exact(g);const original=await f.access.campaignAuthority(p,g);return {...original,
+        digest:digest({grant:g,session}),sessions:[session],expiresAt:Infinity,credentialExpiresAt:Infinity};},
+      withCampaignAuthority:async(p,g,expected,local)=>sessions.withLiveSessions(expected.sessions,()=>f.store.transaction(async()=>{
+        await exact(g);assert.deepEqual(await access.campaignAuthority(p,g),expected);const result=await local();await exact(g);return result;})),
+    };
+    const provider=new NativeProvider('meta',vault,f.store,f.http.fetch);
+    const authority:import('../server/index.js').ExecutionAuthority={assertInvocationGrant:exact,
+      ...(change==='missing-preparation-port'?{}:{assertInvocationPreparationGrant:exact}),
+      assertCurrent:current,withCurrent:async(_p,_c,_a,local)=>{await current();const result=await local();await current();return result;},
+      activationApproval:async()=>{await current();return {authorityId:invocationRef,revision:'1',receiptReferences:['current-launch-policy']};}};
+    const server=new MarketingServer(f.store,{meta:provider,linkedin:provider,google:provider},f.server.generation,f.server.agent,'fixture',undefined,undefined,
+      {campaignAccess:access,executionAuthority:authority,studio:{sessions},tracking:f.source.options});
+    const input={...f.check,expectedRevision:campaign.revision,expectedGrantRevision:f.grant.revision,action:'prepare' as const,requestKey:'invocation-check'};
+    const before=f.http.trace.filter(r=>r.method==='POST').length;
+    if(change==='missing-preparation-port'||change==='foreign-session'){
+      await assert.rejects(server.checkCampaign(f.principal,'p',input),/invalid_invocation_grant|session_authority_changed/);
+      assert.equal(f.http.trace.filter(r=>r.method==='POST').length,before);return;
+    }
+    const tracking=await server.tracking.tracking(f.principal,'p',{owner:{kind:'campaign',id:campaign.id}});
+    await server.rebindCampaignMaterialTracking(f.principal,'p',{campaignId:campaign.id,previousRevision:tracking.binding!.ownerRevision,
+      expectedRevision:campaign.revision,expectedBindingRevision:tracking.binding!.revision,requestKey:'invocation-prepare-tracking'});
+    const proof=await server.checkCampaign(f.principal,'p',input);assert.equal(proof.state,'ready',JSON.stringify(proof));
+    const record=await f.store.get<import('../server/preflight.js').PrerequisiteRecord>('p','campaignCheck',proof.id);
+    assert.equal(record.credentialExpiresAt,null);assert.equal(record.sessions[0]!.expiresAt,null);
+    assert.ok(Date.parse(proof.expiresAt!)<=Date.parse(record.createdAt)+120000);
+    const operation=await server.prepare(f.principal,'p',{campaignId:campaign.id,requestKey:'invoke-preparation'});
+    if(change==='revoked')alive=false;
+    const result=await server.dispatch('p',operation.id);
+    assert.equal(result.state,change==='none'?'succeeded':'blocked',JSON.stringify(result));
+    assert.equal(f.http.trace.filter(r=>r.method==='POST').length,before,'Unchanged existing material never recreates ads');
+    if(change==='none')assert.equal(result.receipt?.intent,'paused');
+    assert.deepEqual(await f.store.list('p','advertisingBudgetReservation'),[]);
     assert.equal((await f.store.get<Grant>('p','grant',f.grant.id)).expiresAt,null);
     assert.deepEqual(await f.store.list('p','decision'),[]);assert.ok(checks>10);
   }finally{await f.close();}

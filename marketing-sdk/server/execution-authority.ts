@@ -21,6 +21,9 @@ export interface ExecutionAuthority {
    * host launch policy and exact campaign/material; packet approval and budget
    * checks still apply independently. Generic stop/read custody is insufficient. */
   assertInvocationActivationGrant?(grant: Grant): Promise<void>;
+  /** Exact current paused-preparation custody, with current material and provider
+   * write policy. Cannot authorize activation or revive a previous invocation. */
+  assertInvocationPreparationGrant?(grant: Grant): Promise<void>;
   assertCurrent(principal: Principal, campaign: Campaign, action: ExecutionAction): Promise<void>;
   withCurrent<T>(principal: Principal, campaign: Campaign, action: ExecutionAction, local: () => Promise<T>): Promise<T>;
 }
