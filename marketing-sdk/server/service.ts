@@ -1090,6 +1090,34 @@ export class MarketingServer {
     await inspectLiveSessions(this.campaignAccess.sessionAuthority, proof.sessions);
     return { ...proof, access: context.authority };
   }
+  private async consumePreparationExecutionCheck(p: Principal, c: Campaign, g: Grant, operation: Operation) {
+    try { return await this.consumeCampaignCheck(p, c, g, "prepare"); }
+    catch (error) {
+      if (!(error instanceof DomainError) || error.code !== "campaign_prerequisites_stale") throw error;
+      const pointer = await this.store.get<{id:string}>(c.projectId, "campaignCheckCurrent", c.id);
+      const previous = await this.store.get<PrerequisiteRecord>(c.projectId, "campaignCheck", pointer.id);
+      const current = await this.store.get<Operation>(c.projectId, "operation", operation.id);
+      // Only an admitted, still-running paused preparation can obtain new
+      // observations. Never extend an old proof or renew credentials, session,
+      // grant, approval, initial dispatch or activation authority.
+      requireThat(current.state === "running" && current.kind === "prepare" &&
+        current.campaignId === c.id && current.campaignRevision === c.revision &&
+        current.grantRevision === g.revision && current.accountId === g.accountId &&
+        previous.actorId === p.userId && previous.action === "prepare" && previous.view.state === "ready" &&
+        previous.view.campaignRevision === c.revision && previous.view.grantRevision === g.revision &&
+        Number.isFinite(Date.parse(previous.view.expiresAt ?? "")) && Date.parse(previous.view.expiresAt!) <= this.now(),
+      "campaign_prerequisites_stale");
+      const checked = await this.checkCampaign(p, c.projectId, {campaignId:c.id,action:"prepare",
+        expectedRevision:c.revision,expectedGrantRevision:g.revision,
+        requestKey:`execution-check:${operation.id}:${previous.id}`});
+      requireThat(checked.state === "ready", "campaign_prerequisites_stale");
+      const proof = await this.consumeCampaignCheck(p, c, g, "prepare");
+      await this.store.append(c.projectId, operation.id, "execution.prerequisites_refreshed", {
+        previousCheckId:previous.id,checkId:checked.id,campaignRevision:c.revision,grantRevision:g.revision,
+      });
+      return proof;
+    }
+  }
   async prepare(
     p: Principal,
     project: string,
@@ -1653,7 +1681,8 @@ export class MarketingServer {
     const withWriteAuthority = async <T>(action: () => Promise<T>) => {
       const actor = await currentActor();
       const proof = this.requiresCampaignCheck(g, o.kind)
-        ? await this.consumeCampaignCheck(actor, c, g, o.kind === "activate" ? "activate" : "prepare") : null;
+        ? o.kind === "prepare" ? await this.consumePreparationExecutionCheck(actor, c, g, o)
+          : await this.consumeCampaignCheck(actor, c, g, "activate") : null;
       const local = () => this.store.transaction(async () => {
         await this.store.db.assertExecutionOwner();
         const current = await this.grant(project, g.id, o.kind, c.id);

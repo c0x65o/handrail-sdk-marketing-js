@@ -220,6 +220,16 @@ before provider I/O and rechecks it before effects. Missing, stale or revoked
 proof blocks dispatch even if an old setup record says ready. Hosts must never
 fabricate setup records to connect their existing credential custody.
 
+A still-running paused preparation can refresh an expired ready prerequisite
+check through new read-only provider observations under its original actor,
+campaign/material revision, account and grant revision. The SDK retains the old
+check unchanged and records the replacement check on the same operation before
+continuing. This never replays a provider write, renews credentials or session
+authority, or changes spending permission. Missing/changed authority and denied
+provider access still stop execution. Initial dispatch and activation continue
+to require their existing unexpired checks; this continuation does not resume
+an unknown or terminal operation.
+
 `checkCampaign` accepts `action: "prepare" | "activate"` (omission means preparation).
 The returned `CampaignCheck.action`, private evidence binding and provider write
 checks all retain that action. A ready preparation check cannot authorize launch;

@@ -68,6 +68,39 @@ test("an over-deadline native response stays incomplete and never renews the ori
   } finally { t.mock.timers.reset(); await f.close(); }
 });
 
+for (const change of ["none", "session", "provider-access"] as const)
+test(`running paused preparation refreshes expired observations under unchanged authority: ${change}`, async t => {
+  const f = await nativePreflightFixture(true);
+  try {
+    const checked = await f.call("checkCampaign", f.check);
+    assert.equal(checked.state, "ready");
+    const original = await f.store.get("p", "campaignCheck", checked.id);
+    const grant = await f.store.get<Grant>("p", "grant", f.c.grantId);
+    await f.store.db.acquireExecutor();
+    const operation = await f.call("prepare", {campaignId:f.c.id,requestKey:"long-preparation"});
+    let writes = 0;
+    f.http.boundary = async (_url, init) => {
+      if (init?.method !== "POST" || ++writes !== 1) return;
+      t.mock.timers.enable({apis:["Date"],now:Date.parse(checked.expiresAt!) + 1});
+      if (change === "session") await f.host!.revoke(f.principal.externalSessionRef!);
+      if (change === "provider-access") f.http.override = url => url.pathname.endsWith("/act_2041")
+        ? Response.json({id:"act_2041",currency:"USD",timezone_name:"America/Chicago",account_status:2,disable_reason:1}) : undefined;
+    };
+    const result = await f.server.dispatch("p", operation.id);
+    assert.equal(result.id, operation.id);
+    assert.equal(result.state, change === "none" ? "succeeded" : "unknown");
+    assert.deepEqual(await f.store.get("p", "campaignCheck", checked.id), original, "The original observation is never extended");
+    assert.deepEqual(await f.store.get("p", "grant", grant.id), grant, "Fresh reads create no new grant");
+    assert.deepEqual(await f.store.list("p", "advertisingBudgetReservation"), []);
+    if (change === "none") {
+      const checks = await f.store.list<{id:string;view:{state:string;expiresAt:string}}>("p", "campaignCheck");
+      assert.equal(checks.length, 2);
+      assert.equal(checks.find(row => row.id !== checked.id)?.view.state, "ready");
+      assert.equal(writes, 5, "Each original provider object is created once");
+    } else assert.equal(writes, 1, "Revocation or denied provider access stops subsequent effects");
+  } finally {t.mock.timers.reset();await f.close();}
+});
+
 test("a fresh check cannot lend replacement credentials to an already captured native client", async () => {
   const f = await nativePreflightFixture(true);
   try {
