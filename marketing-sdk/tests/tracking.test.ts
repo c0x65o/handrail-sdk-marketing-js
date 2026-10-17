@@ -657,7 +657,7 @@ test('material tracking carry-forward preserves history, requires host authority
     const actorSession=await f.host.authority.inspectSession(sessionBinding(agent),'p');
     const originalRequest=await f.store.get<{result:unknown}>('p','trackingRequest',digest([actorSession.binding,'rebindCampaignBudget',input.requestKey]));
     assert.deepEqual(originalRequest.result,updated,'Persisted budget request identities survive the API generalization');
-    await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',{...input,expectedRevision:1}),/invalid_material_tracking_revision/);
+    await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',{...input,expectedRevision:0}),/invalid_material_tracking_revision/);
     authorized=false;await assert.rejects(service.rebindCampaignMaterialTracking(agent,'p',input),/budget_authority_revoked/);authorized=true;
     // Multiple local revisions retain the same provider hierarchy. Carrying
     // configuration to targeting/creative/budget material never copies tests.
@@ -677,5 +677,39 @@ test('material tracking carry-forward preserves history, requires host authority
     assert.deepEqual(await f.store.list('p','trackingTest'),tests);
     assert.notEqual((await service.call(agent,'p','tracking',{owner})).readiness,'passed');
     assert.deepEqual(await service.rebindCampaignMaterialTracking(agent,'p',next),rebound);
+  }finally{await f.close();}
+});
+
+test('campaign tracking binds its exact grant and refreshes custody without changing material or copying QA',async()=>{
+  const f=await fixture();try{
+    const unrelated={id:'a-other',projectId:'p',provider:'meta',accountId:'123',revision:1,permissions:['report'],expiresAt:new Date(Date.now()+3600000).toISOString()};
+    const grant={...unrelated,id:'z-campaign',campaignId:'same-revision'};
+    await f.store.put('p','grant',unrelated.id,unrelated);await f.store.put('p','grant',grant.id,grant);
+    const campaign:Campaign={id:'same-revision',projectId:'p',revision:1,grantId:grant.id,creativeSetId:'set',state:'paused',
+      receipt:{ids:{campaignId:'retained'},payloadDigest:'original',intent:'paused',delivery:'unverified',providerRequestId:null,observedAt:new Date().toISOString(),evidence:'fixture'},
+      material:{name:'Existing material',purpose:'acquisition',headline:'Tour',body:'Visit',destination:f.source.source.destinations[0]!.url,destinationDigest:'fixture',assetIds:[],
+        budget:{minor:10000,currency:'USD'},advertisingBudget:{daily:{minor:100,currency:'USD'}},audience:{provider:'meta',locations:[],expansion:false},timezone:'UTC',startAt:new Date().toISOString(),endAt:null,
+        settings:{provider:'meta',accountId:'123'} as NonNullable<Campaign['material']['settings']>}};
+    campaign.preparedMaterial=structuredClone(campaign.material);
+    await f.store.put('p','campaign',campaign.id,campaign);await f.store.put('p','campaignVersion',campaign.id+':1',campaign);
+    const owner={kind:'campaign' as const,id:campaign.id};
+    const binding=await f.service.call(f.p,'p','bindTracking',{owner,expectedRevision:1,expectedBindingRevision:0,sourceId:'site',sourceRevision:'1',destinationId:'tour',outcome:'inquiry',refundTreatment:null,requestKey:'original'});
+    assert.equal(binding.accountDigest,digest(grant),'Another grant on the same account cannot replace campaign custody');
+    const base=f.service;let authorized=true;
+    const check=async()=>{assert.equal(authorized,true,'host preparation authority revoked');};
+    const service=new MarketingServer(f.store,base.providers,base.generation,base.agent,'fixture',undefined,undefined,{studio:{sessions:f.host.authority},tracking:f.source.options,
+      executionAuthority:{assertCurrent:check,withCurrent:async(_p,c,a,local)=>{assert.equal(c.id,campaign.id);assert.equal(a,'prepare');await check();const result=await local();await check();return result;}}});
+    const input={campaignId:campaign.id,previousRevision:1,expectedRevision:1,expectedBindingRevision:binding.revision,requestKey:'refresh'};
+    await assert.rejects(service.rebindCampaignMaterialTracking(f.p,'p',input),/tracking_account_refresh_required/);
+    const refreshed={...grant,revision:2};await f.store.put('p','grant',grant.id,refreshed);
+    authorized=false;await assert.rejects(service.rebindCampaignMaterialTracking(f.p,'p',input),/host preparation authority revoked/);authorized=true;
+    const rebound=await service.rebindCampaignMaterialTracking(f.p,'p',input);
+    assert.equal(rebound.accountDigest,digest(refreshed));assert.equal(rebound.ownerRevision,1);assert.equal(rebound.revision,2);
+    assert.equal(rebound.materialDigest,binding.materialDigest);assert.deepEqual(await f.store.get('p','campaign',campaign.id),campaign);
+    assert.deepEqual(await f.store.get('p','trackingBindingHistory',binding.id+':1'),binding);
+    assert.deepEqual(await service.rebindCampaignMaterialTracking(f.p,'p',input),rebound);
+    assert.deepEqual(await f.store.list('p','event'),[]);assert.deepEqual(await f.store.list('p','operation'),[]);
+    await f.store.put('p','grant',grant.id,{...refreshed,revokedAt:new Date().toISOString()});
+    assert.equal((await service.call(f.p,'p','tracking',{owner})).readiness,'stale','A valid unrelated grant cannot mask revocation');
   }finally{await f.close();}
 });

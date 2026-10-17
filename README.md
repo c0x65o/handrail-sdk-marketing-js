@@ -1198,3 +1198,9 @@ identity for attribution and exact-approval evidence. The helper verifies both
 original bindings and any separate continuation record. It grants no authority
 by itself. A new review, approval, provider retry or cost settlement is never
 implied. The original `draftMediaRequest` remains a read only.
+
+The host may also refresh tracking custody at the same campaign revision when
+its exact current grant changed. This preserves material and configuration,
+requires the same guarded preparation authority, and grants no passing QA.
+Campaign tracking resolves its own grant ID; another valid grant on the same
+provider account cannot mask expired or revoked campaign custody.

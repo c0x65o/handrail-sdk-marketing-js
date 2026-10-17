@@ -184,7 +184,9 @@ export class MarketingTracking {
     this.ownerKey(owner);
     const record=await this.store.get<CampaignDraft | Campaign>(project,owner.kind==='draft'?'campaignDraft':'campaign',owner.id);
     const accountId=record.material.settings?.accountId;
-    const grant=accountId?(await this.store.list<import('../core/index.js').Grant>(project,'grant')).find(g=>g.accountId===accountId && g.provider===record.material.settings?.provider && !g.revokedAt && Date.parse(g.expiresAt ?? "")>this.now()):null;
+    const grant=accountId?(await this.store.list<import('../core/index.js').Grant>(project,'grant')).find(g=>
+      (owner.kind==='draft'||g.id===(record as Campaign).grantId)&&g.accountId===accountId &&
+      g.provider===record.material.settings?.provider && !g.revokedAt && Date.parse(g.expiresAt ?? "")>this.now()):null;
     return { revision:record.revision, material:record.material, purpose:record.material.purpose??'acquisition', digest:digest(record.material), accountDigest:grant?digest(grant):null };
   }
   private async binding(project: string, owner: TrackingOwner) { return (await this.store.list<TrackingBinding>(project,'trackingBinding')).find(b=>b.id===this.ownerKey(owner))??null; }
@@ -310,7 +312,7 @@ export class MarketingTracking {
     text(input.campaignId,160);text(input.requestKey,160);
     requireThat(typeof withHostMaterialAuthority==='function','host_execution_authority_required',403);
     requireThat(Number.isSafeInteger(input.previousRevision)&&input.previousRevision>0&&
-      Number.isSafeInteger(input.expectedRevision)&&input.expectedRevision>input.previousRevision&&Number.isSafeInteger(input.expectedBindingRevision)&&input.expectedBindingRevision>0,
+      Number.isSafeInteger(input.expectedRevision)&&input.expectedRevision>=input.previousRevision&&Number.isSafeInteger(input.expectedBindingRevision)&&input.expectedBindingRevision>0,
       'invalid_material_tracking_revision',422);
     const session=await this.inspection(p,project),owner:TrackingOwner={kind:'campaign',id:input.campaignId};
     const old=await this.store.get<TrackingBinding>(project,'trackingBindingHistory',`${this.ownerKey(owner)}:${input.expectedBindingRevision}`);
@@ -355,6 +357,8 @@ export class MarketingTracking {
         const current=await this.binding(project,owner),facts=await this.owner(project,owner);
         requireThat(current?.revision===old.revision&&digest(current)===digest(old)&&
           facts.material.destination===old.destination&&facts.purpose===old.purpose,'tracking_material_or_binding_changed');
+        if(input.expectedRevision===input.previousRevision)requireThat(facts.accountDigest!==null&&facts.accountDigest!==old.accountDigest,
+          'tracking_account_refresh_required');
         const binding:TrackingBinding={...old,revision:old.revision+1,ownerRevision:facts.revision,
           materialDigest:facts.digest,accountDigest:facts.accountDigest,createdAt:new Date(this.now()).toISOString()};
         await this.store.put(project,'trackingBinding',binding.id,binding,old.revision);
