@@ -170,6 +170,10 @@ export class NativeTextPlanning {
     const inputHash = digest(i);
     const old = (await this.store.list<ReviewRecord & { inputHash:string }>(project,'textPlanningReview')).find(r=>r.review.id===reviewId);
     if (old) { requireThat(old.inputHash===inputHash,'request_key_payload_conflict'); return this.guard(old,async()=>old.review); }
+    // A host quote may call a provider token meter. Reject known unresolved
+    // exposure before that external work; the guarded check below still closes
+    // a concurrent approval race before retaining a new review.
+    await this.noExposure(project,d.id);
     const body: ReviewRecord['body'] = { model:a.connection.model,input:[{role:'system',content:PLANNING_PROMPT},{role:'user',content:JSON.stringify(d.studio.brief)}],max_output_tokens:i.maxOutputTokens,store:false,background:false,stream:true,...(a.connection.provider==='openai'?{service_tier:'default' as const}:{}),text:{format:{type:'json_schema',name:PLANNING_VERSION.replaceAll('-','_'),strict:true,schema:CAMPAIGN_OPTIONS_SCHEMA}} };
     const requestDigest = digest(body), connectionDigest = digest(a), signal = AbortSignal.timeout(this.timeoutMs);
     requireThat(Buffer.byteLength(JSON.stringify(body))<=256*1024,'planning_request_size_limit');

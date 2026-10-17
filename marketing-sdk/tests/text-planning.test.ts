@@ -17,6 +17,19 @@ async function fixture(transport?:typeof fetch){
  const approve=async()=>{const q=await review();return studio.approveTextPlan(p,'p',{reviewId:q.id,reviewDigest:q.reviewDigest,requestKey:'approve'});};
  return {...f,dir,store,hostStore,host,session,p,studio,d,input,review,approve,close:async()=>{await store.close();await hostStore.close();}};
 }
+for(const state of ['queued','unknown','succeeded-unsettled'] as const)test('unresolved '+state+' exposure rejects before another external quote',async()=>{
+ const f=await fixture();try{
+  let quotes=0;const quote=f.billing.quote;f.billing.quote=async(...args)=>{quotes++;return quote(...args);};
+  f.billing.measure=async()=>null;
+  const request=await f.approve();
+  if(state==='succeeded-unsettled')await f.studio.dispatchPlanning('p',request.id);
+  if(state==='unknown')await f.store.put('p','planningRequest',request.id,{...request,state:'unknown'});
+  assert.equal(quotes,1);
+  await assert.rejects(f.studio.reviewTextPlan(f.p,'p',{...f.input,requestKey:'another-review'}),/planning_unresolved_exposure_check_original/);
+  assert.equal(quotes,1,'No host quote/token-count operation after known unresolved exposure');
+  assert.equal((await f.review()).id,request.id,'Original review remains readable');
+ }finally{await f.close();}
+});
 for(const mode of ['reported','zero','absent','invalid','inconsistent'] as const)test('text usage retains '+mode+' token dimensions without inventing billing facts',async()=>{
  const f=await fixture();try{
   const usage:any=f.raw.usage;

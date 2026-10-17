@@ -1150,4 +1150,8 @@ actual reported tier is separately retained as `PlanningUsage.serviceTier`,
 with absent/unrecognized values left unknown. A host must not price a differing
 or unknown reported tier as standard service. See the [Responses request contract](https://developers.openai.com/api/reference/resources/responses/methods/create).
 
+Known queued, uncertain or unsettled planning exposure prevents another host
+quote before any external token metering. The original review remains readable;
+the guarded exposure check also runs before a new review is retained.
+
 
