@@ -175,12 +175,28 @@ test('draft-owned generation reserves exact current cost, retains bytes without 
   let d=await studio.saveCampaignOption(f.p,'p',{draftId:f.d.id,expectedRevision:1,requestKey:'option',value:approach});d=await studio.selectCampaignOption(f.p,'p',{draftId:d.id,expectedRevision:d.revision,requestKey:'select',optionId:d.studio.options[0]!.id,optionRevision:1,variant:0});
   const input={draftId:d.id,expectedRevision:d.revision,requestKey:'gen',grantId:'image',prompt:'A studio building',rightsReceipt:'I own the concept',quoteReceipt:quote.receipt};
   const j=await studio.generateDraftMedia(f.p,'p',input);assert.equal((await f.store.list('p','campaign')).length,0);
+  assert.equal((await studio.draftMediaRequest(f.p,'p',{generationRequestKey:'gen'},input))?.result.state,'queued');
+  assert.equal(await studio.draftMediaRequest(f.p,'p',{generationRequestKey:'missing'}),null);
+  await assert.rejects(studio.draftMediaRequest(f.p,'p',{generationRequestKey:'brief'}),/request_key_payload_conflict/);
+  await assert.rejects(studio.draftMediaRequest(f.p,'p',{generationRequestKey:'gen'},{...input,prompt:'Changed'}),/request_key_payload_conflict/);
   assert.deepEqual(await studio.generateDraftMedia(f.p,'p',input),j);assert.equal((await f.store.list('p','generationCostReservation')).length,1);
   await assert.rejects(studio.generateDraftMedia(f.p,'p',{...input,requestKey:'duplicate'}),/pending/);
   const out=await studio.dispatchDraftMedia('p',j.id);assert.equal(out.state,'retained');assert.ok(out.assetId);await studio.dispatchDraftMedia('p',j.id);assert.equal(submits,1);
   assert.deepEqual((await studio.studio(f.p,'p',{draftId:d.id})).draft.studio.assetIds,[]);
   await studio.selectStudioMedia(f.p,'p',{draftId:d.id,expectedRevision:d.revision,requestKey:'media',assetIds:[out.assetId!]});
   const retained=await studio.media(f.p,'p',out.assetId!);assert.deepEqual(retained.bytes,bytes);assert.equal(retained.asset.source,'fixture');
+  const grant=await f.store.get<import('../core/index.js').GenerationGrant>('p','generationGrant','image');
+  await f.store.put('p','generationGrant','image',{...grant,revokedAt:new Date().toISOString()});
+  await f.host.revoke(f.session.sessionRef);
+  const next=await f.host.login(),current=await f.host.principal(next.token);
+  const reopened=new CampaignStudio(f.store,{sessions:f.host.authority},'fixture');
+  assert.deepEqual((await reopened.draftMediaRequest(current,'p',{generationRequestKey:'gen'}))?.result,out);
+  const other=await f.host.principal((await f.host.login('bob')).token);
+  assert.equal(await reopened.draftMediaRequest(other,'p',{generationRequestKey:'gen'}),null);
+  await f.host.principal(next.token,'other');
+  assert.equal(await reopened.draftMediaRequest(current,'other',{generationRequestKey:'gen'}),null);
+  await assert.rejects(reopened.draftMediaRequest(f.p,'p',{generationRequestKey:'gen'}),/session|authentication/);
+  assert.equal(submits,1);assert.equal((await f.store.list('p','generationCostReservation')).length,1);
  }finally{await f.store.close();}
 });
 

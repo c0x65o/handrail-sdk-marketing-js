@@ -24,10 +24,12 @@ const draftProperties={...partial(material.properties) as Record<string,unknown>
   settings:partial(material.properties.settings),audience:partial(material.properties.audience),
   budget:{anyOf:[partial(material.properties.budget),{type:'null'}]},
   advertisingBudget:partial(material.properties.advertisingBudget),endAt:{type:['string','null']}};
-/** Local Studio edits, shared with human clients. No approval, credentials,
- * paid generation, provider dispatch, tracking evidence fabrication or deletion. */
+/** Shared Studio workflow. Generation consumes separate exact host authority;
+ * no tool creates approval, credentials, tracking evidence or ad publication. */
 export const marketingStudioToolSchemas = [
   {command:'studio',description:'Read the current SDK draft, options, assets and checks.',inputSchema:object({draftId:id})},
+  {command:'generateDraftMedia',description:'Request one image/media attempt against an existing exact generation grant and quote. Host approval, current policy, material and cost controls apply. A saved request is not proof of success; inspect its job state. Never replace an uncertain request or retry with a new key.',inputSchema:object({...change,grantId:id,prompt:str(6000,1),rightsReceipt:str(200,1),quoteReceipt:id})},
+  {command:'draftMediaRequest',description:'Read the original generation admission receipt and current job using its original request key. Missing is unknown. No dispatch, provider retry, reservation release or settlement inference; remains readable after original grant/session expiry.',inputSchema:object({generationRequestKey:id})},
   {command:'listCampaigns',description:'Read the SDK campaign/draft library. Follow nextCursor.',inputSchema:object({query:str(200),kind:source.kind,lifecycle:{enum:['active','archived','trash']},cursor:id,limit:{type:'integer',minimum:1,maximum:50}},[])},
   {command:'saveBrief',description:'Create or revise a local SDK campaign brief. For a revision supply id and expectedRevision. Preserve acquisition/recruitment intent and factual sources. This creates no ad or spending authority.',inputSchema:object({id,expectedRevision:revision,requestKey:id,brief},['requestKey','brief'])},
   {command:'saveCampaignOption',description:'Save a campaign option using actual brief facts; distinguish audience hypotheses and unknowns. This is an authored proposal, not a provider observation.',inputSchema:object({...change,optionId:id,value:option},[...Object.keys(change),'value'])},

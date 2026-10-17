@@ -16,6 +16,7 @@ export const studioCommandFields: Record<keyof StudioCommands,string[]> = {
   studioImportStatus:['requestKey'],
   reviewStudioDeletion:['draftId','expectedRevision'],
   generateDraftMedia:['draftId','expectedRevision','requestKey','grantId','prompt','rightsReceipt','quoteReceipt'],
+  draftMediaRequest:['generationRequestKey'],
   reconcileDraftMedia:['jobId'],
   promoteStudio:['draftId','expectedRevision','grantId','expectedGrantRevision','requestKey'],
   studio:['draftId'], saveBrief:['id','expectedRevision','requestKey','brief'],
@@ -70,6 +71,26 @@ export class CampaignStudio {
       if(!row)return null;
       requireThat(row.kind==='studioWrite'&&row.digest===digest({command,input}),'request_key_payload_conflict');
       return this.store.get<StudioWriteReceipt<K>>(project,'studioWrite',String(row.record_id));
+    });
+  }
+  /** The immutable admission receipt identifies the original job. Reading its
+   * current state needs current project access, not the expired original session
+   * or grant. It never dispatches, reconciles, releases funds or infers failure. */
+  async draftMediaRequest(p:Principal,project:string,i:StudioCommands['draftMediaRequest']['input'],expected?:StudioCommands['generateDraftMedia']['input']) {
+    text(i.generationRequestKey,160);
+    return this.guarded(p,project,false,async()=>{
+      const row=await this.store.db.prepare('SELECT * FROM requests WHERE project_id=? AND request_key=?').get(project,`studio:${digest([p.userId,i.generationRequestKey])}`);
+      if(!row)return null;
+      requireThat(row.kind==='studioWrite','request_key_payload_conflict');
+      if(expected)requireThat(expected.requestKey===i.generationRequestKey&&row.digest===digest({command:'generateDraftMedia',input:expected}),'request_key_payload_conflict');
+      const receipt=await this.store.get<{id:string;result:DraftGenerationJob}>(project,'studioWrite',String(row.record_id));
+      const admitted=receipt.result;
+      requireThat(admitted.version===2&&admitted.owner?.kind==='draft'&&admitted.projectId===project&&typeof admitted.grantId==='string','request_key_payload_conflict');
+      const actor=await this.store.get<Principal>(project,'draftJobActor',admitted.id);
+      requireThat(actor.userId===p.userId,'forbidden',403);
+      const result=await this.store.get<DraftGenerationJob>(project,'draftJob',admitted.id);
+      requireThat(result.projectId===project&&result.id===admitted.id&&result.grantId===admitted.grantId&&result.owner.draftId===admitted.owner.draftId,'generation_receipt_changed');
+      return {id:receipt.id,result};
     });
   }
   private state(d:CampaignDraft):StudioState {

@@ -93,6 +93,7 @@ export interface StudioCommands extends importTextPlanningCommands {
   studioImportStatus:{input:{requestKey:string};output:{asset:StudioAsset|null}};
   reviewStudioDeletion: { input:{draftId:string;expectedRevision:number};output:{draftId:string;revision:number;eligible:false;reason:string;retained:{assets:number;revisions:number;planningRequests:number;mediaJobs:number};confirmationPolicy:string;recovery:'restore';providerDeletion:'unavailable'} };
   generateDraftMedia: { input: { draftId:string;expectedRevision:number;requestKey:string;grantId:string;prompt:string;rightsReceipt:string;quoteReceipt:string }; output:DraftGenerationJob };
+  draftMediaRequest: { input:{generationRequestKey:string};output:{id:string;result:DraftGenerationJob}|null };
   reconcileDraftMedia: { input:{jobId:string};output:DraftGenerationJob };
   promoteStudio: { input: { draftId: string; expectedRevision: number; grantId: string; expectedGrantRevision: number; requestKey: string }; output: import("./index.js").Campaign };
   studio: { input: { draftId: string }; output: StudioView };
