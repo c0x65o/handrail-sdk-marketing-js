@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import pg, { type PoolConfig, type PoolClient } from "pg";
 import mysql, {
@@ -13,6 +13,10 @@ import mysql, {
 export type PostgresStoreOptions = PoolConfig & { schema?: string };
 export const POSTGRES_SCHEMA_VERSION = 2;
 type Row = Record<string, unknown>;
+type LocalQueue = { tail: Promise<unknown>; users: number };
+// DatabaseSync cannot wait for another connection in this event loop to commit.
+// Share admission ordering for the same file; SQLite still guards other processes.
+const localQueues = new Map<string, LocalQueue>();
 type Context = {
   connection?: PoolConnection;
   postgres?: PoolClient;
@@ -23,6 +27,8 @@ type Context = {
  * database guard row. Async context pins every statement to its transaction. */
 export class Database {
   private local?: DatabaseSync;
+  private localQueue?: LocalQueue;
+  private localPath?: string;
   private pool?: Pool;
   private postgres?: pg.Pool;
   private postgresExecutor?: PoolClient;
@@ -63,6 +69,13 @@ export class Database {
       this.local.close();
       throw error;
     }
+    this.joinLocalQueue(path);
+  }
+  private joinLocalQueue(path: string) {
+    this.localPath = realpathSync(path);
+    this.localQueue = localQueues.get(this.localPath) ?? {tail: Promise.resolve(), users: 0};
+    this.localQueue.users++;
+    localQueues.set(this.localPath, this.localQueue);
   }
   static async maria(options: PoolOptions): Promise<Database> {
     const db = Object.create(Database.prototype) as Database;
@@ -336,6 +349,7 @@ export class Database {
         postgres,
         active: true,
       };
+      let begun = false;
       try {
         if (connection) {
           await connection.beginTransaction();
@@ -346,6 +360,7 @@ export class Database {
           await postgres.query("BEGIN ISOLATION LEVEL READ COMMITTED");
           await postgres.query("SELECT id FROM transaction_guard WHERE id=1 FOR UPDATE");
         } else this.local!.exec("BEGIN IMMEDIATE");
+        begun = true;
         const result = await this.context.run(ctx, fn);
         if (ctx.failed) throw new Error("transaction_aborted");
         await this.assertExecutor();
@@ -356,7 +371,7 @@ export class Database {
       } catch (error) {
         if (connection) await connection.rollback().catch(() => {});
         else if (postgres) await postgres.query("ROLLBACK").catch(() => {});
-        else this.local!.exec("ROLLBACK");
+        else if (begun) this.local!.exec("ROLLBACK");
         throw error;
       } finally {
         ctx.active = false;
@@ -365,8 +380,9 @@ export class Database {
       }
     };
     if (this.pool || this.postgres) return execute();
-    const pending = this.tail.then(execute);
+    const pending = this.localQueue!.tail.then(execute);
     this.tail = pending.catch(() => {});
+    this.localQueue!.tail = this.tail;
     return pending;
   }
   /** Connection-owned server lock. Never reconnect/reacquire after losing it.
@@ -471,5 +487,7 @@ export class Database {
     this.pool = undefined;
     this.local?.close();
     this.local = undefined;
+    if (this.localQueue && --this.localQueue.users === 0) localQueues.delete(this.localPath!);
+    this.localQueue = undefined;
   }
 }

@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { fixtureSettings, fixtureEligibility } from "./capability-fixtures.js";
 import { testStore } from "./datastore.js";
 import { test } from "node:test";
@@ -99,7 +100,9 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
   const requests: {path:string;method:string;body?:unknown}[]=[];
   let writes = 0,
     nextId = 100,
-    loseAdRead = true, loseBudgetAcknowledgment = false;
+    loseAdRead = true, loseBudgetAcknowledgment = false, loseCreativeAcknowledgment=false,loseAssociationAcknowledgment=false;
+  let imageUploads=0;const imageHashes=new Set<string>();
+  let corruptNewCreative=false;
   let retained: Record<string, string> = {};
   let checks = 0;
   const fetcher: typeof fetch = async (raw, init) => {
@@ -122,17 +125,13 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
         : row.adset_id && objects.get(row.adset_id)?.campaign_id === parent)
         .map(row => ({...row, campaign_id: row.campaign_id ?? objects.get(row.adset_id)?.campaign_id, effective_status: heldAd && row.adset_id ? "WITH_ISSUES" : row.status}))});
     }
-    if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [{ hash: "provider-image-hash", status: "ACTIVE" }] });
+    if (init?.method !== "POST" && last === "adimages") return Response.json({ data: [...imageHashes].map(hash=>({hash,status:"ACTIVE"})) });
     if (init?.method === "POST") {
       writes++;
-      if (last === "adimages")
-        return Response.json({
-          images: {
-            "file.png": {
-              hash: "provider-image-hash",
-            },
-          },
-        });
+      if(last==='adimages'){
+        const hash=++imageUploads===1?'provider-image-hash':`replacement-image-${imageUploads}`;imageHashes.add(hash);
+        return Response.json({images:{'file.png':{hash}}});
+      }
       const body =
         typeof init.body === "string"
           ? JSON.parse(init.body)
@@ -150,10 +149,12 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
       if(last==='adsets'){assert.equal(body.status,'PAUSED');assert.equal(body.optimization_goal,'LINK_CLICKS');assert.equal(body[budgetField],initialBudget);assert.equal(body[daily?'lifetime_budget':'daily_budget'],undefined);}
       if(last==='ads')assert.equal(body.status,'PAUSED');
       if (objects.has(last)) {
+        if(body.creative)body.creative={id:String(body.creative.creative_id)};
         objects.set(last, {
           ...(await objects.get(last)),
           ...body,
         });
+        if(loseAssociationAcknowledgment&&body.creative){loseAssociationAcknowledgment=false;throw Error('lost association response');}
         if (loseBudgetAcknowledgment && body[budgetField]) { loseBudgetAcknowledgment = false; throw Error("lost budget response"); }
         return Response.json({
           success: true,
@@ -171,6 +172,8 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
         id: key,
         account_id: "123",
       });
+      if(last==='adcreatives'&&corruptNewCreative){objects.get(key).account_id='999';corruptNewCreative=false;}
+      if(last==='adcreatives'&&loseCreativeAcknowledgment){loseCreativeAcknowledgment=false;throw Error('lost creative response');}
       return Response.json({
         id: key,
       });
@@ -297,7 +300,7 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
     const desired = digest(provider.plan(edited, grant, [asset]));
     // A pre-write crash must not reconcile the old budget as the edited budget.
     assert.equal(await provider.reconcile(edited, grant, { kind: "prepare", payloadDigest: desired, receipt: null }), null);
-    const changed = { ...edited, material: { ...edited.material, headline: "Unqualified creative replacement" } };
+    const changed = { ...edited, material: { ...edited.material, name: "Unqualified campaign rename" } };
     await assert.rejects(provider.update(changed, grant, [asset], () => {}, () => {}), /existing_campaign_edit_unqualified/);
     assert.equal(writes, beforeUpdate);
     const modeChanged = structuredClone(edited);
@@ -405,6 +408,95 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
     const nextReceipt=await provider.update(next,grant,[asset],()=>{},()=>{});
     assert.equal(nextReceipt.intent,"paused");assert.equal(objects.get(nextReceipt.ids.adset!).end_time,scheduled.material.endAt);
     assert.equal(combinedReceipt.intent,"paused");assert.equal(combinedReceipt.delivery,"unverified");
+    const creativeEdit=structuredClone(next);creativeEdit.revision++;creativeEdit.receipt=nextReceipt;
+    creativeEdit.preparedMaterial=structuredClone(next.material);
+    creativeEdit.material.headline='Updated original ad';creativeEdit.material.body='A revised proposal';
+    creativeEdit.material.destination='https://example.com/revised';creativeEdit.material.destinationDigest='b'.repeat(64);
+    fixtureEligibility(creativeEdit,grant);
+    const creativeBefore=writes,originalAd=nextReceipt.ids.ad!,originalCreative=nextReceipt.ids.creative!;
+    const oldCreative=structuredClone(objects.get(originalCreative));
+    const creativeReceipt=await provider.update(creativeEdit,grant,[asset],v=>{retained={...v};},()=>{});
+    assert.equal(writes,creativeBefore+2,'One creative creation and original-ad association only');
+    assert.equal(creativeReceipt.ids.ad,originalAd);assert.notEqual(creativeReceipt.ids.creative,originalCreative);
+    assert.equal(creativeReceipt.ids.image,nextReceipt.ids.image);assert.equal(objects.get(originalAd).status,'PAUSED');
+    assert.deepEqual(objects.get(originalCreative),oldCreative,'Shared original creative is never changed');
+    assert.equal(creativeReceipt.metaCreativeTransition?.from.receiptDigest,digest(nextReceipt));
+    assert.deepEqual(creativeReceipt.metaCreativeTransition?.to.ids,creativeReceipt.ids);
+    assert.equal(creativeReceipt.ids.metaCreativeUpdate,undefined);
+    assert.equal(requests.filter(r=>r.method==='POST'&&r.path.endsWith('/ads')).length,1,'Never create a replacement ad');
+
+    const replacementBytes=await sharp(bytes).flop().png().toBuffer(),replacementHash=byteDigest(replacementBytes);
+    assert.notEqual(replacementHash,asset.digest);
+    await store.db.prepare('INSERT INTO blobs VALUES(?,?,?)').run('p',replacementHash,replacementBytes);
+    const replacement:Asset={...asset,id:'a2',digest:replacementHash,rightsReceipt:'Owned replacement fixture'};
+    await store.put('p','asset',replacement.id,replacement);
+    const mediaEdit=structuredClone(creativeEdit);mediaEdit.revision++;mediaEdit.receipt=creativeReceipt;
+    mediaEdit.preparedMaterial=structuredClone(creativeEdit.material);mediaEdit.material.assetIds=[replacement.id];fixtureEligibility(mediaEdit,grant);
+    const mediaBefore=writes;
+    await assert.rejects(provider.update(mediaEdit,grant,[replacement],()=>{},()=>{}),/prepared_asset_binding_changed/);
+    assert.equal(writes,mediaBefore);
+    const mediaReceipt=await provider.update(mediaEdit,grant,[replacement],v=>{retained={...v};},()=>{},()=>{},[asset]);
+    assert.equal(writes,mediaBefore+3);assert.equal(mediaReceipt.ids.ad,originalAd);assert.notEqual(mediaReceipt.ids.image,creativeReceipt.ids.image);
+    assert.equal(mediaReceipt.metaCreativeTransition?.from.assetDigest,asset.digest);
+    assert.equal(mediaReceipt.metaCreativeTransition?.to.assetDigest,replacement.digest);
+    assert.equal(objects.get(originalAd).creative.id,mediaReceipt.ids.creative);
+
+    const lost=structuredClone(mediaEdit);lost.revision++;lost.receipt=mediaReceipt;lost.preparedMaterial=structuredClone(mediaEdit.material);
+    lost.material.body='Lost acknowledgement, same original ad';fixtureEligibility(lost,grant);
+    const lostBefore=writes;loseAssociationAcknowledgment=true;
+    await assert.rejects(provider.update(lost,grant,[replacement],v=>{retained={...v};},()=>{},()=>{},[replacement]));
+    assert.equal(writes,lostBefore+2);
+    const lostOperation={kind:'prepare' as const,payloadDigest:digest(provider.plan(lost,grant,[replacement])),
+      receipt:{...mediaReceipt,ids:structuredClone(retained),payloadDigest:digest(provider.plan(lost,grant,[replacement]))}};
+    const recoveredCreative=await provider.reconcile(lost,grant,lostOperation);
+    assert.ok(recoveredCreative);assert.equal(writes,lostBefore+2,'Reconciliation never replays association or creates another artifact');
+    assert.equal(recoveredCreative.ids.ad,originalAd);assert.equal(recoveredCreative.metaCreativeTransition?.from.receiptDigest,digest(mediaReceipt));
+    assert.equal(recoveredCreative.ids.metaCreativeUpdate,undefined);
+    const malformed=structuredClone(lostOperation);malformed.receipt.ids.metaCreativeUpdate='{}';
+    assert.equal(await provider.reconcile(lost,grant,malformed),null);assert.equal(writes,lostBefore+2);
+
+    const safetyEdit=structuredClone(lost);safetyEdit.revision++;safetyEdit.receipt=recoveredCreative;
+    safetyEdit.preparedMaterial=structuredClone(lost.material);safetyEdit.material.body='Authority and partial failure checks';fixtureEligibility(safetyEdit,grant);
+    const safetyOperation=()=>({kind:'prepare' as const,payloadDigest:digest(provider.plan(safetyEdit,grant,[replacement])),
+      receipt:{...recoveredCreative,ids:structuredClone(retained)}});
+    let safetyBefore=writes;
+    await assert.rejects(provider.update(safetyEdit,grant,[replacement],v=>{retained={...v};},()=>{
+      if(writes>safetyBefore)throw new DomainError('creative_authority_revoked',403);
+    }),/creative_authority_revoked/);
+    assert.equal(writes,safetyBefore+1,'Revocation after creation prevents original-ad reassociation');
+    assert.equal(objects.get(originalAd).creative.id,recoveredCreative.ids.creative);
+    assert.equal(await provider.reconcile(safetyEdit,grant,safetyOperation()),null);
+    assert.equal(writes,safetyBefore+1);
+
+    safetyBefore=writes;corruptNewCreative=true;
+    await assert.rejects(provider.update(safetyEdit,grant,[replacement],v=>{retained={...v};},()=>{}),/meta_creative_update_artifact_mismatch/);
+    assert.equal(writes,safetyBefore+1);assert.equal(objects.get(originalAd).creative.id,recoveredCreative.ids.creative);
+
+    const savedAd=structuredClone(objects.get(originalAd));
+    objects.set('9999',{...savedAd,id:'9999'});safetyBefore=writes;
+    await assert.rejects(provider.update(safetyEdit,grant,[replacement],()=>{},()=>{}),/existing_campaign_children_mismatch/);
+    assert.equal(writes,safetyBefore,'Extra campaign children prevent all creative writes');objects.delete('9999');
+
+    // The ad-set write can succeed while its response is lost. Until the new
+    // creative is observed on the original ad, the combined operation is unknown.
+    const savedAdset=structuredClone(objects.get(recoveredCreative.ids.adset!));
+    if(daily)safetyEdit.material.advertisingBudget!.daily!.minor+=25;else safetyEdit.material.budget!.minor+=25;
+    fixtureEligibility(safetyEdit,grant);safetyBefore=writes;loseBudgetAcknowledgment=true;
+    await assert.rejects(provider.update(safetyEdit,grant,[replacement],v=>{retained={...v};},()=>{}));
+    assert.equal(writes,safetyBefore+2);assert.equal(objects.get(originalAd).creative.id,recoveredCreative.ids.creative);
+    assert.equal(await provider.reconcile(safetyEdit,grant,safetyOperation()),null);assert.equal(writes,safetyBefore+2);
+    objects.set(recoveredCreative.ids.adset!,savedAdset);
+
+    // A lost create acknowledgment has no trustworthy new identity. Keep it
+    // unresolved; no observed old ad or absent log may turn it into success.
+    const orphan=structuredClone(lost);orphan.revision++;orphan.receipt=recoveredCreative;orphan.preparedMaterial=structuredClone(lost.material);
+    orphan.material.body='Creation acknowledgment lost';fixtureEligibility(orphan,grant);
+    const orphanBefore=writes;loseCreativeAcknowledgment=true;
+    await assert.rejects(provider.update(orphan,grant,[replacement],v=>{retained={...v};},()=>{},()=>{},[replacement]));
+    assert.equal(writes,orphanBefore+1);assert.equal(objects.get(originalAd).creative.id,recoveredCreative.ids.creative);
+    assert.equal(await provider.reconcile(orphan,grant,{kind:'prepare',payloadDigest:digest(provider.plan(orphan,grant,[replacement])),
+      receipt:{...recoveredCreative,ids:retained}}),null);assert.equal(writes,orphanBefore+1);
+
   } finally {
     await store.close();
     if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, {

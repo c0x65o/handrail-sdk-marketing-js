@@ -1,3 +1,4 @@
+import {updateMetaOriginalAdCreative,readMetaCreativeUpdateIntent,metaCreativeTargetIds,metaCreativeTransition,META_CREATIVE_UPDATE_KEY,metaCreativeBody} from './meta-creative-update.js';
 import {inspectLinkedInPostOwnership} from "./linkedin-post-ownership.js";
 import {compareLinkedInCommentaryUrls} from "../support/owner-marketing/linkedin-commentary-links.js";
 import { assertCurrentGrant } from "./grant-authority.js";
@@ -945,12 +946,14 @@ export class NativeProvider implements ProviderPort {
   plan(c: Campaign, g: Grant, assets: Asset[]) {
     return providerPlan(c, g, assets);
   }
-  validateUpdate(c: Campaign, g: Grant, assets: Asset[]) {
+  validateUpdate(c: Campaign, g: Grant, assets: Asset[], previousAssets: Asset[] = assets) {
     requireThat(this.name === "meta" || this.name === "linkedin", "existing_campaign_update_unavailable");
     requireThat(c.receipt?.intent === "paused" && c.receipt.ids.readbackDigest && c.preparedMaterial,
       "paused_verified_material_required");
     const previous = c.preparedMaterial;
-    const oldPlan = this.plan({ ...c, material: previous }, g, assets);
+    requireThat(digest(previousAssets.map(a=>a.id))===digest(previous.assetIds)&&
+      previousAssets.every(a=>a.projectId===c.projectId&&a.campaignId===c.id&&a.rightsReceipt),"prepared_asset_binding_changed");
+    const oldPlan = this.plan({ ...c, material: previous }, g, previousAssets);
     requireThat(digest(oldPlan) === c.receipt.payloadDigest, "prepared_material_binding_changed");
     const normalized = structuredClone(c.material);
     // Existing object updates preserve creative, identity and shared group
@@ -995,7 +998,11 @@ export class NativeProvider implements ProviderPort {
         "linkedin_explicit_daily_budget_required");
       normalized.advertisingBudget.daily.minor = previous.advertisingBudget.daily.minor;
     }
-    if(this.name === "linkedin") {
+    if(this.name === "meta") {
+      normalized.headline=previous.headline;
+      normalized.assetIds=[...previous.assetIds];
+    }
+    if(this.name === "linkedin" || this.name === "meta") {
       normalized.body=previous.body;
       normalized.destination=previous.destination;
       normalized.destinationDigest=previous.destinationDigest;
@@ -1005,18 +1012,18 @@ export class NativeProvider implements ProviderPort {
   }
   async update(c: Campaign, g: Grant, assets: Asset[],
     retain: (ids: Record<string, string>) => void | Promise<void>, beforeWrite: () => void | Promise<void>,
-    beforeRead: () => void | Promise<void> = beforeWrite) {
-    this.validateUpdate(c, g, assets);
+    beforeRead: () => void | Promise<void> = beforeWrite, previousAssets: Asset[] = assets) {
+    this.validateUpdate(c, g, assets, previousAssets);
     const plan: any = this.plan(c, g, assets);
-    const oldPlan: any = this.plan({ ...c, material: c.preparedMaterial! }, g, assets);
-    const scope = digest({ c, g, assets });
+    const oldPlan: any = this.plan({ ...c, material: c.preparedMaterial! }, g, previousAssets);
+    const scope = digest({ c, g, assets, previousAssets });
     const readGuard = async () => {
       await beforeRead();
-      requireThat(digest({ c, g, assets }) === scope, "provider_scope_changed");
+      requireThat(digest({ c, g, assets, previousAssets }) === scope, "provider_scope_changed");
     };
     const guard = async () => {
       await beforeWrite();
-      requireThat(digest({ c, g, assets }) === scope, "provider_scope_changed");
+      requireThat(digest({ c, g, assets, previousAssets }) === scope, "provider_scope_changed");
       await this.prerequisite(c, g);
     };
     await guard();
@@ -1048,6 +1055,19 @@ export class NativeProvider implements ProviderPort {
       requireThat(before.paused, "existing_campaign_not_paused");
       requireThat(digest(before.material) === previousDigest, "external_material_changed");
       await this.verifySnapshot(client,g,ids,before,oldPlan,proofGuard);
+      if(this.name==='meta'&&(digest(plan.creative)!==digest(oldPlan.creative)||plan.imageDigest!==oldPlan.imageDigest)){
+        const field=c.material.advertisingBudget?.daily?'daily_budget':'lifetime_budget';
+        const adsetFields={
+          ...(plan.adset[field]!==oldPlan.adset[field]?{[field]:plan.adset[field]}:{}),
+          ...(digest(plan.adset.targeting)!==digest(oldPlan.adset.targeting)?{targeting:plan.adset.targeting}:{}),
+          ...(plan.adset.start_time!==oldPlan.adset.start_time?{start_time:plan.adset.start_time}:{}),
+          ...(plan.adset.end_time!==oldPlan.adset.end_time?{end_time:plan.adset.end_time}:{}),
+        };
+        const result=await updateMetaOriginalAdCreative({client,c,g,assets,plan,oldPlan,guard,readGuard:proofGuard,
+          snapshot:ids=>this.snapshot(client,g,ids),verify:(ids,snapshot,expected)=>this.verifySnapshot(client,g,ids,snapshot,expected,proofGuard),
+          bytes:asset=>this.bytes(c.projectId,asset),retain,adsetFields});
+        return {...this.receipt(result.ids,digest(plan),'paused'),metaCreativeTransition:result.transition,providerRequestId:client.lastRequestId||null};
+      }
       if(postChanged){
         const postId=before.material.creative.content?.reference;
         requireThat(typeof postId==='string'&&(!ids.post||ids.post===postId),'linkedin_post_identity_unverified');
@@ -1226,28 +1246,7 @@ export class NativeProvider implements ProviderPort {
         await beforeWrite();
         const creative = await client.request(`${accountPath(g.accountId)}/adcreatives`, {
           method: "POST",
-          body: {
-            name: c.material.name,
-            ...(plan.creative.url_tags !== undefined ? {url_tags:plan.creative.url_tags} : {}),
-            ...(plan.creative.degrees_of_freedom_spec ? {degrees_of_freedom_spec:plan.creative.degrees_of_freedom_spec} : {}),
-            object_story_spec: {
-              page_id: plan.creative.pageId,
-              ...(plan.creative.instagramUserId ? { instagram_user_id: plan.creative.instagramUserId } : {}),
-              link_data: {
-                image_hash: ids.image,
-                link: plan.creative.link,
-                message: plan.creative.message,
-                name: plan.creative.name,
-                ...(plan.creative.description !== undefined ? {description:plan.creative.description} : {}),
-                call_to_action: {
-                  type: "LEARN_MORE",
-                  value: {
-                    link: plan.creative.link,
-                  },
-                },
-              },
-            },
-          },
+          body:metaCreativeBody(plan,ids.image!,c.material.name),
         });
         ids.creative = creative.id;
         await retain(ids);
@@ -1925,6 +1924,24 @@ export class NativeProvider implements ProviderPort {
     const receipt = o.receipt || c.receipt;
     if (!receipt?.ids.campaign) return null; // incomplete writes need specific native repair, never replay.
     return await this.use(g, async (client,custodyGuard) => {
+      if(this.name==='meta'&&receipt.ids[META_CREATIVE_UPDATE_KEY]){
+        if(o.kind!=='prepare'||!c.receipt||!c.preparedMaterial)return null;
+        try{
+          const assets=await Promise.all(c.material.assetIds.map(id=>this.store.get<Asset>(c.projectId,'asset',id)));
+          const previousAssets=await Promise.all(c.preparedMaterial.assetIds.map(id=>this.store.get<Asset>(c.projectId,'asset',id)));
+          this.validateUpdate(c,g,assets,previousAssets);
+          const plan:any=this.plan(c,g,assets),oldPlan:any=this.plan({...c,material:c.preparedMaterial},g,previousAssets);
+          const intent=readMetaCreativeUpdateIntent(c,plan,oldPlan,receipt.ids);
+          if(!intent?.creative||!intent.image||digest(plan)!==o.payloadDigest)return null;
+          const ids=metaCreativeTargetIds(c,intent),observed=await this.snapshot(client,g,ids);
+          requireThat(observed.paused,'existing_campaign_not_paused');
+          await this.verifySnapshot(client,g,ids,observed,plan,custodyGuard);
+          const inventory=await existingMetaAdoptionChildren(client,g.accountId,
+            {campaign:ids.campaign!,adset:ids.adset!,ad:ids.ad!,creative:ids.creative!},custodyGuard);
+          await custodyGuard();ids.readbackDigest=digest(observed.material);ids.inventoryDigest=digest(inventory);
+          return {...this.receipt(ids,o.payloadDigest,'paused'),metaCreativeTransition:metaCreativeTransition(c,g,intent,ids,inventory)};
+        }catch{return null;}
+      }
       let s, inventory,postOwnershipEvidence:Receipt['postOwnershipEvidence'];
       try {
         if(o.kind==='prepare'&&this.name==='linkedin'&&receipt.ids.post)

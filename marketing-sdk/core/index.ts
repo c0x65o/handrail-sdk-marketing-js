@@ -120,6 +120,17 @@ export interface CampaignDraft {
   receipt: null;
   material: DraftMaterial;
 }
+export interface MetaCreativeTransition {
+  version: 1;
+  provider: "meta";
+  projectId: string;
+  campaignId: string;
+  accountId: string;
+  from: {receiptDigest:string;ids:Record<string,string>;materialDigest:string;assetDigest:string};
+  to: {ids:Record<string,string>;materialDigest:string;assetDigest:string;payloadDigest:string};
+  inventoryDigest: string;
+  observedAt: string;
+}
 export interface Receipt {
   ids: Record<string, string>;
   payloadDigest: string;
@@ -128,6 +139,8 @@ export interface Receipt {
   providerRequestId: string | null;
   observedAt: string;
   evidence: "fixture" | "provider";
+  /** Original ad retained while a separately created creative is associated. */
+  metaCreativeTransition?: MetaCreativeTransition;
   /** Fresh unauthenticated URL proof; original material/readback bytes stay intact. */
   postOwnershipEvidence?: {postId:string;inventoryDigest:string;observedAt:string};
   commentaryUrlEvidence?: {

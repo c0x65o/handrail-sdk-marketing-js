@@ -756,7 +756,7 @@ export class MarketingServer {
     if (kind === "prepare" && c.receipt) {
       const provider = this.providers[g.provider];
       requireThat(provider.update && provider.validateUpdate, "existing_campaign_update_unavailable");
-      provider.validateUpdate(c, g, a);
+      provider.validateUpdate(c, g, a, await this.assets({...c, material:c.preparedMaterial ?? c.material},false));
     }
     if (kind !== "pause" && g.provider !== "google") requireThat(c.material.settings, "explicit_provider_settings_required", 422);
     // A safety pause binds the observed receipt, including legacy provider plans.
@@ -1515,7 +1515,7 @@ export class MarketingServer {
       if (o.kind === "prepare" && c.receipt) {
         const provider = this.providers[g.provider];
         requireThat(provider.update && provider.validateUpdate, "existing_campaign_update_unavailable");
-        provider.validateUpdate(c, g, await this.assets(c));
+        provider.validateUpdate(c, g, await this.assets(c), await this.assets({...c, material:c.preparedMaterial ?? c.material}));
       }
       if (o.packetId) await this.approved(await currentActor(), project, o.packetId);
       requireThat(
@@ -1719,7 +1719,8 @@ export class MarketingServer {
             };
             if (c.receipt) {
               requireThat(provider.update, "existing_campaign_update_unavailable");
-              return provider.update(c, g, await this.assets(c), retain, beforeWrite, beforeRead);
+              return provider.update(c, g, await this.assets(c), retain, beforeWrite, beforeRead,
+                await this.assets({...c, material:c.preparedMaterial ?? c.material}));
             }
             return provider.prepare(
               c,

@@ -1278,3 +1278,30 @@ and media replacement remain unsupported by this in-place contract.
 
 Provider contract: [LinkedIn Posts API, September 2026](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api?view=li-lms-2026-09),
 “Update Posts.” Fixture checks do not establish live provider qualification.
+
+
+### Meta original-ad creative updates
+
+An existing paused Meta ad can receive revised headline, copy, destination and
+an owned image through the shared preparation/update workflow. Meta creative
+content is immutable, so the SDK creates a creative and associates it with the
+original ad. It preserves the campaign, ad set, ad and old creative. The original
+prepared assets and proposed assets are validated separately; hosts calling
+`validateUpdate` or `update` directly must supply the original asset set when it
+changes. All material, credential, policy and spending checks remain required.
+
+Every attempted upload, creative creation, ad-set change and reassociation is
+retained before the effect. The final `metaCreativeTransition` receipt binds the
+previous receipt and material, both asset digests, new provider IDs and complete
+campaign child inventory. Hosts must require the exact successful SDK operation
+before accepting the new media identity. Recovery only reads the original ad:
+a lost reassociation response can settle when the full new plan is observed;
+a lost creation response without its ID, or partial ad-set-only update, stays
+unknown. It never recreates an ad or retries an uncertain write. Fixture transport
+verification is not live provider delivery qualification.
+
+SQLite connections in the same process serialize transactions for the same
+canonical database file, so a synchronous lock wait cannot block the connection
+that must commit first. A failed `BEGIN` is not followed by a rollback of a
+transaction that never started. SQLite still enforces cross-process locking;
+PostgreSQL and MariaDB retain their transaction-guard row behavior.
