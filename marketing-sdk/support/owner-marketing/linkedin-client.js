@@ -553,6 +553,14 @@ export class LinkedInMarketingClient {
     return this.updateCampaign(adAccountId, campaignId, { dailyBudget: moneyFromCents(dailyBudgetCents, currencyCode) });
   }
 
+  updateCampaignTargeting(adAccountId, campaignId, targetingCriteria, dailyBudgetCents = undefined, currencyCode = "USD") {
+    if (!targetingCriteria?.include) throw new LinkedInMarketingError("LinkedIn targeting criteria are required", { code: "invalid_configuration", status: 400 });
+    // One partial update retains one uncertain outcome when targeting and budget
+    // change together. Never edit the campaign group or recreate a creative.
+    return this.updateCampaign(adAccountId, campaignId, { targetingCriteria,
+      ...(dailyBudgetCents === undefined ? {} : { dailyBudget: moneyFromCents(dailyBudgetCents, currencyCode) }) });
+  }
+
   listConversions(adAccountId, { start = 0, count = 100 } = {}) {
     return this.request("conversions", { query: { q: "account", account: `urn:li:sponsoredAccount:${accountId(adAccountId)}`, start, count } });
   }

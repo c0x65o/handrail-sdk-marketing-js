@@ -669,10 +669,20 @@ creates execution authority or transfers campaign ownership.
 Editing a prepared campaign retains its provider receipt and the last verified
 `preparedMaterial`. Preparing that edited revision invokes the provider's update
 contract; an unavailable update never falls back to creating replacement objects.
-The qualified update fields are Meta lifetime or daily budget and LinkedIn campaign daily
-budget, while all owned objects are stopped. LinkedIn group budgets/status and
-original campaign/ad/creative/image identities remain unchanged. Other edits are
-retained locally but cannot be prepared until their update behavior is qualified.
+The update contract covers Meta lifetime or daily budget, audience and placements,
+and LinkedIn campaign daily budget and targeting criteria, while all owned objects
+are stopped. Exact current account/material eligibility is required. Changes to
+budget and targeting are sent together in one existing-object request; unknown
+outcomes are read back without replay. LinkedIn group budgets/status and original
+campaign/ad/creative/image identities remain unchanged. Creative, destination,
+schedule, identity and Meta expansion-policy field changes remain outside this
+contract until their update behavior is qualified. Synthetic HTTP tests verify
+these updates and recovery; this is not live provider delivery qualification.
+Native consumers must supply their current exact material authority; budget-only
+host authority does not authorize targeting changes.
+Provider request shapes follow [LinkedIn campaign partial updates](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaigns?view=li-lms-2026-03#update-a-campaign)
+and [Meta's maintained AdSet client](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/adset.py),
+checked on 2026-10-17. These sources establish request representation, not account eligibility.
 Meta daily updates use the same 175% exposure check and read-only lost-response
 recovery as preparation. Changing budget mode or ceilings is outside this contract.
 

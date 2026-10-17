@@ -338,6 +338,44 @@ for (const budgetMode of ["lifetime", "daily"] as const) test(`native Meta ${bud
     assert.ok(recovered); assert.equal(writes, afterLost); assert.equal(objects.size, objectCount);
     assert.equal(recovered.ids.adset, stopped.ids.adset);
     assert.equal(objects.get(recovered.ids.adset!)[budgetField], String(recoveredBudget));
+    // Update the same ad set's audience and placements; preserve every provider
+    // object and the creative. Combined budget/targeting changes are one POST.
+    const targeted = structuredClone(second);
+    targeted.revision++; targeted.receipt = recovered; targeted.preparedMaterial = structuredClone(second.material);
+    targeted.material.audience.ageMin = 30;
+    if (targeted.material.settings?.provider === "meta") targeted.material.settings.placements = ["facebook_feed", "facebook_reels"];
+    fixtureEligibility(targeted, grant);
+    const targetWrites = writes;
+    const expansionChanged=structuredClone(targeted);
+    if(expansionChanged.material.settings?.provider==="meta") expansionChanged.material.settings.targeting.expansion={detailedTargeting:0,lookalike:0};
+    await assert.rejects(provider.update(expansionChanged,grant,[asset],()=>{},()=>{}),/existing_campaign_edit_unqualified/);
+    const oldTargeting = structuredClone(objects.get(recovered.ids.adset!).targeting);
+    objects.get(recovered.ids.adset!).targeting.age_min = 40;
+    await assert.rejects(provider.update(targeted, grant, [asset], () => {}, () => {}), /external_material_changed/);
+    assert.equal(writes, targetWrites); objects.get(recovered.ids.adset!).targeting = oldTargeting;
+    await assert.rejects(provider.update(targeted, grant, [asset], () => {}, () => {throw Error("targeting-authority-revoked");}), /targeting-authority-revoked/);
+    assert.equal(writes, targetWrites);
+    const targetReceipt = await provider.update(targeted, grant, [asset], () => {}, () => {});
+    assert.equal(writes, targetWrites + 1); assert.equal(objects.size, objectCount);
+    assert.deepEqual(requests.filter(r=>r.method==='POST').at(-1)?.body, {targeting:(provider.plan(targeted,grant,[asset]) as any).adset.targeting});
+    assert.equal(objects.get(targetReceipt.ids.adset!).targeting.age_min, 30);
+    assert.deepEqual(objects.get(targetReceipt.ids.adset!).targeting.facebook_positions, ["feed", "facebook_reels"]);
+    for(const key of ["campaign","adset","ad","creative","image"]) assert.equal(targetReceipt.ids[key],recovered.ids[key]);
+    const combined = structuredClone(targeted);
+    combined.revision++; combined.receipt=targetReceipt; combined.preparedMaterial=structuredClone(targeted.material);
+    combined.material.audience.ageMin=32;
+    if(daily) combined.material.advertisingBudget!.daily!.minor=recoveredBudget+50;
+    else combined.material.budget!.minor=recoveredBudget+50;
+    fixtureEligibility(combined,grant); loseBudgetAcknowledgment=true;
+    const combinedBefore=writes; let combinedIds:Record<string,string>={};
+    await assert.rejects(provider.update(combined,grant,[asset],v=>{combinedIds={...v};},()=>{}));
+    assert.equal(writes,combinedBefore+1);
+    const combinedPlan=provider.plan(combined,grant,[asset]) as any;
+    assert.deepEqual(requests.filter(r=>r.method==='POST').at(-1)?.body,{[budgetField]:String(recoveredBudget+50),targeting:combinedPlan.adset.targeting});
+    const combinedReceipt=await provider.reconcile(combined,grant,{kind:"prepare",payloadDigest:digest(combinedPlan),
+      receipt:{...targetReceipt,ids:combinedIds,payloadDigest:digest(combinedPlan)}});
+    assert.ok(combinedReceipt);assert.equal(writes,combinedBefore+1);assert.equal(objects.size,objectCount);
+    assert.equal(combinedReceipt.intent,"paused");assert.equal(combinedReceipt.delivery,"unverified");
   } finally {
     await store.close();
     if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, {
@@ -396,7 +434,7 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       if (path === "/rest/campaignConversions") return Response.json({ elements: [] });
       if (path === "/rest/adAccounts/123") return Response.json({ id: 123, currency: "USD", status: "ACTIVE", servingStatuses: ["RUNNABLE"], reference: "urn:li:organization:42" });
       if (path.includes("/images/")) return Response.json({ id: "urn:li:image:fixture", owner: "urn:li:organization:42", status: "AVAILABLE" });
-      if (path.includes("/adTargetingEntities")) return Response.json({ elements: [{ urn: "urn:li:geo:1", name: "United States" }] });
+      if (path.includes("/adTargetingEntities")) return Response.json({ elements: [{ urn: "urn:li:geo:1", name: "United States" }, { urn: "urn:li:geo:2", name: "Canada" }] });
       if (loseRead && last === "urn:li:sponsoredCreative:103") { loseRead = false; throw new Error("lost acknowledgment fixture"); }
       assert.ok(objects.has(last), `Unexpected fixture request ${path}`);
       return Response.json(objects.get(last));
@@ -557,6 +595,36 @@ test("LinkedIn fixture transport verifies initial daily budget, bid, objective/t
       receipt: { ...updated, ids: retainedUpdate, payloadDigest: digest(provider.plan(second, grant, [asset])) } });
     assert.ok(recovered); assert.equal(writes, afterLost); assert.equal(objects.get("102").dailyBudget.amount, "32.00");
     assert.deepEqual(objects.get("101"), groupBefore); assert.equal(objects.size, countBefore);
+    grant.targetingOptions!.push({kind:"locations",id:"urn:li:geo:2",label:"Canada"});
+    const targeted = structuredClone(second);
+    targeted.revision++;targeted.receipt=recovered;targeted.preparedMaterial=structuredClone(second.material);
+    targeted.material.audience.locations=["urn:li:geo:2"];
+    fixtureEligibility(targeted,grant);
+    const targetBefore=writes,oldTargeting=structuredClone(objects.get("102").targetingCriteria);
+    objects.get("102").targetingCriteria={include:{and:[]}};
+    await assert.rejects(provider.update(targeted,grant,[asset],()=>{},()=>{}),/external_material_changed/);
+    objects.get("102").targetingCriteria=oldTargeting;assert.equal(writes,targetBefore);
+    await assert.rejects(provider.update(targeted,grant,[asset],()=>{},()=>{throw Error("targeting-authority-revoked");}),/targeting-authority-revoked/);
+    assert.equal(writes,targetBefore);
+    const targetReceipt=await provider.update(targeted,grant,[asset],()=>{},()=>{});
+    assert.equal(writes,targetBefore+1);assert.equal(objects.size,countBefore);
+    assert.deepEqual(objects.get("102").targetingCriteria,(provider.plan(targeted,grant,[asset]) as any).campaign.targetingCriteria);
+    assert.deepEqual(objects.get("101"),groupBefore);
+    for(const key of ["group","campaign","creative","image"])assert.equal(targetReceipt.ids[key],recovered.ids[key]);
+    const combined=structuredClone(targeted);
+    combined.revision++;combined.receipt=targetReceipt;combined.preparedMaterial=structuredClone(targeted.material);
+    combined.material.audience.locations=["urn:li:geo:1","urn:li:geo:2"];
+    combined.material.advertisingBudget!.daily!.minor=3300;
+    fixtureEligibility(combined,grant);let combinedIds:Record<string,string>={};const combinedBefore=writes;
+    await assert.rejects(provider.update(combined,grant,[asset],v=>{combinedIds={...v};loseRead=true;},()=>{}));
+    assert.equal(writes,combinedBefore+1);
+    const combinedPlan=provider.plan(combined,grant,[asset]);
+    const combinedReceipt=await provider.reconcile(combined,grant,{kind:"prepare",payloadDigest:digest(combinedPlan),
+      receipt:{...targetReceipt,ids:combinedIds,payloadDigest:digest(combinedPlan)}});
+    assert.ok(combinedReceipt);assert.equal(writes,combinedBefore+1);assert.equal(objects.size,countBefore);
+    assert.equal(objects.get("102").dailyBudget.amount,"33.00");
+    assert.deepEqual(objects.get("101"),groupBefore);assert.equal(objects.get("unrelated").status,"ACTIVE");
+    assert.equal(combinedReceipt.intent,"paused");assert.equal(combinedReceipt.delivery,"unverified");
 
   } finally { await store.close(); if(process.env.MARKETING_TEST_RETAIN!=="1")rmSync(dir, { recursive: true, force: true }); }
 });

@@ -935,8 +935,24 @@ export class NativeProvider implements ProviderPort {
     const oldPlan = this.plan({ ...c, material: previous }, g, assets);
     requireThat(digest(oldPlan) === c.receipt.payloadDigest, "prepared_material_binding_changed");
     const normalized = structuredClone(c.material);
-    // Only qualified budget fields are mutable in this update contract. Shared
-    // group budgets, creatives, targeting and schedules cannot be recreated.
+    // Existing object updates preserve creative, schedule, identity and shared
+    // group terms. Audience and placement changes use the same exact capability,
+    // drift, authority and readback guards as budget changes; never recreation.
+    requireThat(previous.settings?.provider === this.name && normalized.settings?.provider === this.name &&
+      previous.audience.provider === normalized.audience.provider, "existing_campaign_edit_unqualified");
+    if (previous.settings!.provider === "meta" && c.material.settings!.provider === "meta") {
+      // This provider field sits outside `targeting`; changing or clearing it
+      // needs its own qualified write/readback contract, not an omitted field.
+      requireThat(digest(previous.settings!.targeting.expansion ?? null) === digest(c.material.settings!.targeting.expansion ?? null),
+        "existing_campaign_edit_unqualified");
+    }
+    normalized.audience = structuredClone(previous.audience);
+    normalized.settings!.targeting = structuredClone(previous.settings!.targeting);
+    normalized.settings!.placements = structuredClone(previous.settings!.placements);
+    if (previous.settings!.provider === "meta" && normalized.settings!.provider === "meta") {
+      if (previous.settings!.placementMode === undefined) delete normalized.settings!.placementMode;
+      else normalized.settings!.placementMode = previous.settings!.placementMode;
+    }
     if (this.name === "meta") {
       requireThat(Boolean(previous.advertisingBudget?.daily) === Boolean(normalized.advertisingBudget?.daily),
         "existing_campaign_budget_mode_changed");
@@ -961,6 +977,7 @@ export class NativeProvider implements ProviderPort {
     beforeRead: () => void | Promise<void> = beforeWrite) {
     this.validateUpdate(c, g, assets);
     const plan: any = this.plan(c, g, assets);
+    const oldPlan: any = this.plan({ ...c, material: c.preparedMaterial! }, g, assets);
     const scope = digest({ c, g, assets });
     const readGuard = async () => {
       await beforeRead();
@@ -987,11 +1004,19 @@ export class NativeProvider implements ProviderPort {
       await retain({ ...ids });
       await guard();
       if (c.receipt!.payloadDigest !== digest(plan)) {
-        if (this.name === "meta") await client.request(ids.adset, {
-          method: "POST", body: c.material.advertisingBudget?.daily
-            ? { daily_budget: plan.adset.daily_budget } : { lifetime_budget: plan.adset.lifetime_budget },
-        });
-        else await client.updateCampaignBudget(g.accountId, ids.campaign, plan.campaign.dailyBudgetCents, g.currency);
+        if (this.name === "meta") {
+          const field = c.material.advertisingBudget?.daily ? "daily_budget" : "lifetime_budget";
+          const body = {
+            ...(plan.adset[field] !== oldPlan.adset[field] ? { [field]: plan.adset[field] } : {}),
+            ...(digest(plan.adset.targeting) !== digest(oldPlan.adset.targeting) ? { targeting: plan.adset.targeting } : {}),
+          };
+          if (Object.keys(body).length) await client.request(ids.adset, { method: "POST", body });
+        } else if (digest(plan.campaign.targetingCriteria) !== digest(oldPlan.campaign.targetingCriteria)) {
+          await client.updateCampaignTargeting(g.accountId, ids.campaign, plan.campaign.targetingCriteria,
+            plan.campaign.dailyBudgetCents !== oldPlan.campaign.dailyBudgetCents ? plan.campaign.dailyBudgetCents : undefined, g.currency);
+        } else if (plan.campaign.dailyBudgetCents !== oldPlan.campaign.dailyBudgetCents) {
+          await client.updateCampaignBudget(g.accountId, ids.campaign, plan.campaign.dailyBudgetCents, g.currency);
+        }
       }
       const after = await this.snapshot(client, g, ids);
       requireThat(after.paused, "existing_campaign_not_paused");
