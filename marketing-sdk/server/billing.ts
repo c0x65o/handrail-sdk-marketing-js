@@ -71,6 +71,10 @@ export interface GenerationBinding {
   grantId: string;
   provider: "openai" | "xai";
   model: string;
+  kind: GenerationGrant["kind"];
+  size: string;
+  quality?: GenerationGrant["quality"];
+  maxSeconds: number;
   capabilityRef: string;
   /** Legacy mounted credential. Omit when using CreativeConnections.credentials. */
   apiKey?: string;
@@ -92,7 +96,7 @@ export class BoundGenerationBilling implements BillingPort {
       const reservation=await this.store.get<{jobId:string;grantId:string}>(g.projectId,'generationCostReservation',job.id);
       requireThat(reservation.jobId===job.id&&reservation.grantId===g.id,'generation_usage_reservation_missing');
       const {observedAt:_at,...fact}=observation;
-      const identity={projectId:g.projectId,jobId:job.id,grantId:g.id,provider:g.provider,model:g.model,kind:g.kind};
+      const identity={projectId:g.projectId,jobId:job.id,grantId:g.id,provider:g.provider,model:g.model,kind:g.kind,size:g.size,quality:g.quality??null,maxSeconds:g.maxSeconds};
       const id=`${generationUsagePrefix(g.projectId,job.id)}${digest({identity,fact})}`;
       if(!await this.store.db.prepare("SELECT id FROM records WHERE project_id=? AND kind='generationUsageEvidence' AND id=?").get(g.projectId,id))
         await this.store.put(g.projectId,'generationUsageEvidence',id,{id,...identity,observation});
@@ -109,6 +113,8 @@ export class BoundGenerationBilling implements BillingPort {
         b.grantId === g.id &&
         b.provider === g.provider &&
         b.model === g.model &&
+        b.kind === g.kind && b.size === g.size && b.maxSeconds === g.maxSeconds &&
+        b.quality === g.quality && (g.kind !== "image" || typeof g.quality === "string") &&
         b.capabilityRef === g.billingCapabilityRef,
     );
     requireThat(matches.length === 1, "generation_billing_binding_mismatch");

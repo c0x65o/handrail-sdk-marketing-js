@@ -35,7 +35,7 @@ async function fixture(provider: CreativeProvider = "openai") {
   const startInput = (extra = {}) => ({ requestKey: randomUUID(), model: policy.models[0]!, expiresAt: new Date(Date.now() + 1800000).toISOString(), sourceId: "", grantId: "", ...extra });
   const start = async (extra = {}) => { const input = startInput(extra), response = await req(base, input); assert.equal(response.status, 303); const path = response.headers.get("location")!; return { path, input, cid: path.split("/").at(-1)! }; };
   const approve = async (path: string) => { const html = await (await req(path)).text(), input = { ...fields(html, "approve"), consent: "approved", apiKey: secret }; const response = await req(path, input); assert.equal(response.status, 303); return input; };
-  const grant = async (grantId = "independent") => { const g: GenerationGrant = { id: grantId, projectId: "p", provider, model: policy.models[0]!, kind: provider === "openai" ? "image" : "video", maxJobs: 2, usedJobs: 0, maxSeconds: 5, size: "1024x1024", expiresAt: new Date(Date.now() + 7200000).toISOString(), revokedAt: null, ceiling: { minor: 100, currency: "USD" }, billingCapabilityRef: "separate-billing" }; await store.put("p", "generationGrant", g.id, g); policy.grantIds.push(g.id); return g; };
+  const grant = async (grantId = "independent") => { const g: GenerationGrant = { id: grantId, projectId: "p", provider, model: policy.models[0]!, kind: provider === "openai" ? "image" : "video", quality: provider === "openai" ? "medium" : undefined, maxJobs: 2, usedJobs: 0, maxSeconds: 5, size: "1024x1024", expiresAt: new Date(Date.now() + 7200000).toISOString(), revokedAt: null, ceiling: { minor: 100, currency: "USD" }, billingCapabilityRef: "separate-billing" }; await store.put("p", "generationGrant", g.id, g); policy.grantIds.push(g.id); return g; };
   return { store, creative, custody, principal, origin, base, req, start, approve, startInput, grant, token, otherToken, dir, decryptions: () => decryptions, policy: () => policy, changePolicy: (p: CreativeAccessPolicy) => { policy = p; }, policyHook: (h: (() => Promise<void>) | null) => { policyHook = h; }, billingHook: (h: (() => Promise<void>) | null) => { billingHook = h; }, close: async () => { await store.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 for (const provider of ["openai", "xai"] as const) test(`creative ${provider}: zero grants, isolated secure entry, harmless status, lost ack and local disconnect`, async () => {
@@ -159,7 +159,7 @@ test("BoundGenerationBilling harmless synthetic metadata inspection keeps exact 
   const f = await fixture();
   try {
     const g = await f.grant(), path = join(f.dir, "synthetic-binding.json");
-    await writeFile(path, JSON.stringify([{ projectId: "p", grantId: g.id, provider: g.provider, model: g.model, capabilityRef: g.billingCapabilityRef, apiKey: secret, expiresAt: g.expiresAt, currency: "USD", maxUnitMinor: 30, quoteReceipt: "SYNTHETIC_QUOTE" }]));
+    await writeFile(path, JSON.stringify([{ projectId: "p", grantId: g.id, provider: g.provider, model: g.model, kind: g.kind, size: g.size, quality: g.quality, maxSeconds: g.maxSeconds, capabilityRef: g.billingCapabilityRef, apiKey: secret, expiresAt: g.expiresAt, currency: "USD", maxUnitMinor: 30, quoteReceipt: "SYNTHETIC_QUOTE" }]));
     const billing = new BoundGenerationBilling(f.store, path);
     const safe = await billing.inspect(g); assert.equal(safe.state, "configured"); assert.ok(!JSON.stringify(safe).includes(secret));
     for (const changed of [{ ...g, projectId: "q" }, { ...g, id: "wrong" }, { ...g, provider: "xai" as const }, { ...g, model: "wrong" }, { ...g, billingCapabilityRef: "wrong" }, { ...g, ceiling: { minor: 100, currency: "EUR" } }, { ...g, revokedAt: new Date().toISOString() }]) assert.equal((await billing.inspect(changed)).state, "unavailable");
@@ -204,7 +204,7 @@ test("billing metadata can be configured independently of mounted API keys", asy
   const f = await fixture();
   try {
     const g = await f.grant(), path = join(f.dir, "metadata-only.json");
-    await writeFile(path, JSON.stringify([{ projectId: "p", grantId: g.id, provider: g.provider, model: g.model, capabilityRef: g.billingCapabilityRef, expiresAt: g.expiresAt, currency: "USD", maxUnitMinor: 10, quoteReceipt: "SYNTHETIC_QUOTE" }]));
+    await writeFile(path, JSON.stringify([{ projectId: "p", grantId: g.id, provider: g.provider, model: g.model, kind: g.kind, size: g.size, quality: g.quality, maxSeconds: g.maxSeconds, capabilityRef: g.billingCapabilityRef, expiresAt: g.expiresAt, currency: "USD", maxUnitMinor: 10, quoteReceipt: "SYNTHETIC_QUOTE" }]));
     const billing = new BoundGenerationBilling(f.store, path);
     assert.equal((await billing.inspect(g)).state, "configured");
     await assert.rejects(billing.credentials("openai", "p", g.id), /generation_credential_binding_missing/);
@@ -344,7 +344,7 @@ test(`review: ${provider} ${change} during executor await fences credential use 
     const s = await f.start({ grantId: g.id }); await f.approve(s.path);
     const disconnect = { ...fields(await (await f.req(s.path)).text(), "disconnect"), consent: "approved" };
     const path = join(f.dir, "billing.json");
-    await writeFile(path, JSON.stringify([{ projectId: "p", grantId: g.id, provider, model: g.model, capabilityRef: g.billingCapabilityRef, expiresAt: g.expiresAt, currency: "USD", maxUnitMinor: 10, quoteReceipt: "SYNTHETIC_QUOTE" }]));
+    await writeFile(path, JSON.stringify([{ projectId: "p", grantId: g.id, provider, model: g.model, kind: g.kind, size: g.size, quality: g.quality, maxSeconds: g.maxSeconds, capabilityRef: g.billingCapabilityRef, expiresAt: g.expiresAt, currency: "USD", maxUnitMinor: 10, quoteReceipt: "SYNTHETIC_QUOTE" }]));
     let providerCalls = 0, credentialCalls = 0;
     const generation = new NativeGeneration(async (...args) => { credentialCalls++; return f.creative.credentials(...args); }, new BoundGenerationBilling(f.store, path),
       async () => { providerCalls++; throw Error("Provider transport forbidden"); },

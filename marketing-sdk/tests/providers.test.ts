@@ -42,6 +42,7 @@ test("native image transport retains request and byte identities without retryin
     usedJobs: 0,
     maxSeconds: 0,
     size: "1024x1024",
+    quality: "medium",
     expiresAt: "2099-01-01T00:00:00Z",
     revokedAt: null,
     ceiling: {
@@ -80,7 +81,10 @@ test("native image transport retains request and byte identities without retryin
     async (url, init) => {
       calls++;
       assert.equal(String(url), "https://api.openai.com/v1/images/generations");
-      assert.equal(JSON.parse(String(init?.body)).model, grant.model);
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        model: grant.model, prompt: job.prompt, n: 1, size: grant.size,
+        quality: grant.quality, output_format: "png",
+      });
       return Response.json(
         {
           data: [
@@ -97,6 +101,23 @@ test("native image transport retains request and byte identities without retryin
       );
     },
   );
+  for (const quality of ["low", "medium", "high", "xhigh", "max"] as const) {
+    grant.quality = quality;
+    await adapter.submit(job, grant, () => {});
+  }
+  assert.equal(calls, 5);
+  calls = 0;
+  let credentialReads = 0, admissions = 0;
+  const rejectInvalid = new NativeGeneration(async () => { credentialReads++; return "fixture"; }, {
+    authorize: async () => { admissions++; }, observe: async () => {},
+  }, async () => { throw Error("Invalid quality must not reach provider"); });
+  for (const invalid of [
+    { ...grant, quality: undefined }, { ...grant, quality: "auto" },
+    { ...grant, model: "gpt-image-2", quality: "xhigh" },
+    { ...grant, model: "gpt-image-1", quality: "max" },
+    { ...grant, model: "gpt-image-2.5-unknown", quality: "max" },
+  ]) await assert.rejects(rejectInvalid.submit(job, invalid as GenerationGrant, () => {}), /generation_quality_unsupported/);
+  assert.equal(credentialReads, 0); assert.equal(admissions, 0);
   const output = await adapter.submit(job, grant, (id) => {
     retained = id;
   });
@@ -652,6 +673,7 @@ test("billing authority separate from advertising, atomic ceiling reservation an
     usedJobs: 0,
     maxSeconds: 0,
     size: "1024x1024",
+    quality: "medium",
     expiresAt: "2099-01-01T00:00:00Z",
     revokedAt: null,
     ceiling: {
@@ -670,6 +692,7 @@ test("billing authority separate from advertising, atomic ceiling reservation an
         grantId: "g",
         provider: "openai",
         model: grant.model,
+        kind: grant.kind, size: grant.size, quality: grant.quality, maxSeconds: grant.maxSeconds,
         capabilityRef: grant.billingCapabilityRef,
         apiKey: "test-secret",
         expiresAt: grant.expiresAt,
@@ -684,6 +707,14 @@ test("billing authority separate from advertising, atomic ceiling reservation an
   );
   try {
     const billing = new BoundGenerationBilling(store, path);
+    const originalQuote = await billing.quote(grant);
+    for (const changed of [
+      { ...grant, size: "1536x1024" }, { ...grant, quality: "high" as const },
+      { ...grant, quality: undefined }, { ...grant, maxSeconds: 5 },
+      { ...grant, kind: "video" as const },
+    ]) await assert.rejects(billing.quote(changed), /generation_billing_binding_mismatch/);
+    assert.deepEqual(await store.list("p", "generationCostReservation"), []);
+    assert.deepEqual(await billing.quote(grant), originalQuote);
     await billing.authorize(grant, {
       id: "j",
     } as GenerationJob);

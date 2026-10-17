@@ -127,6 +127,14 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
     );
     requireThat(
       g.kind === "image"
+        ? typeof g.quality === "string" && ["low", "medium", "high", "xhigh", "max"].includes(g.quality) &&
+          (!["xhigh", "max"].includes(g.quality) || ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-flare-2026-09-08", "gpt-image-2.5-sunburst-2026-09-08"].includes(g.model))
+        : g.quality === undefined,
+      "generation_quality_unsupported",
+    );
+    requireThat(
+      g.kind === "image"
         ? g.model.startsWith("gpt-image-")
         : g.model === "grok-imagine-video-1.5",
       "generation_model_unsupported",
@@ -167,14 +175,17 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           timeout: 120000,
         });
         attempted=true;
-        const { data, request_id, response } = await client.images
-          .generate({
+        // The documented API supports 2.5 xhigh/max before the generated Images
+        // types do. The SDK's typed raw transport preserves retry/timeout policy.
+        const { data, request_id, response } = await client
+          .post<OpenAI.Images.ImagesResponse>("/images/generations", { body: {
             model: g.model,
             prompt: job.prompt,
             n: 1,
-            size: g.size as "1024x1024",
+            size: g.size,
+            quality: g.quality,
             output_format: "png",
-          })
+          } })
           .withResponse();
         responseStatus=response.status;responseId=generationRequestId(request_id);
         try {if (request_id) await retain(request_id);} finally {await observe('response',data.usage);}

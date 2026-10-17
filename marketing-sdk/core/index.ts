@@ -223,6 +223,7 @@ export interface Operation {
   receipt: Receipt | null;
   createdAt: string;
 }
+export type ImageGenerationQuality = "low" | "medium" | "high" | "xhigh" | "max";
 export interface GenerationGrant {
   id: string;
   projectId: string;
@@ -233,6 +234,8 @@ export interface GenerationGrant {
   usedJobs: number;
   maxSeconds: number;
   size: string;
+  /** Required for native image submission. Absent historical grants remain readable, not executable. */
+  quality?: ImageGenerationQuality;
   expiresAt: string;
   revokedAt: string | null;
   /** Enforced by host billing capability, independent from ad budget. */

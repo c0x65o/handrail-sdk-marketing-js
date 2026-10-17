@@ -1092,3 +1092,12 @@ excluded from AdSet creation requests: it is a returned field, not a writable
 creation parameter. Exact account/material eligibility and complete matching
 readback remain prerequisites; the representable contract does not promise that
 Meta will accept or deliver a new campaign with those settings.
+
+Native paid image generation requires an explicit `GenerationGrant.quality`
+(`low`, `medium`, `high`, or GPT Image 2.5 Flare/Sunburst `xhigh`/`max`).
+Missing or automatic quality is not executable authority. Historical grants
+remain readable. `GenerationBinding` quotes must match the grant's kind, size,
+quality and maximum seconds as well as project, grant, provider, model and
+billing capability. New usage observations retain those request settings;
+quotes remain reservations, not measured costs. This contract does not issue a
+grant, infer a price, or enable a host's unbound generation workflow.

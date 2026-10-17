@@ -24,9 +24,9 @@ test('real image transport retains immutable usage after revocation and malforme
   try{
     await store.db.prepare("INSERT INTO projects(id,name) VALUES('p','Fixture')").run();
     const g:GenerationGrant={id:'g',projectId:'p',provider:'openai',model:'gpt-image-1',kind:'image',maxJobs:5,usedJobs:0,
-      maxSeconds:0,size:'1024x1024',expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,ceiling:{currency:'USD',minor:100},billingCapabilityRef:'fixture'};
+      maxSeconds:0,size:'1024x1024',quality:'medium',expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,ceiling:{currency:'USD',minor:100},billingCapabilityRef:'fixture'};
     await store.put('p','generationGrant','g',g);
-    const path=join(dir,'billing.json');writeFileSync(path,JSON.stringify([{projectId:'p',grantId:'g',provider:'openai',model:g.model,
+    const path=join(dir,'billing.json');writeFileSync(path,JSON.stringify([{projectId:'p',grantId:'g',provider:'openai',model:g.model,kind:g.kind,size:g.size,quality:g.quality,maxSeconds:g.maxSeconds,
       capabilityRef:'fixture',expiresAt:g.expiresAt,currency:'USD',maxUnitMinor:7,quoteReceipt:'q'}]));
     const billing=new BoundGenerationBilling(store,path);
     const j:GenerationJob={id:'j',projectId:'p',campaignId:'c',grantId:'g',kind:'image',prompt:'private prompt',promptDigest:'digest',
@@ -40,7 +40,8 @@ test('real image transport retains immutable usage after revocation and malforme
     await assert.rejects(native.submit(j,g,id=>{retained=id;}),/invalid_image_bytes/);
     assert.equal(calls,1);assert.equal(retained,'req_original');
     const rows=await store.list<any>('p','generationUsageEvidence');assert.equal(rows.length,1);
-    const original=rows[0];assert.equal(original.observation.usage.totalTokens,13);assert.equal(original.observation.measuredCost,null);
+    const original=rows[0];assert.equal(original.size,g.size);assert.equal(original.quality,g.quality);assert.equal(original.maxSeconds,g.maxSeconds);
+    assert.equal(original.observation.usage.totalTokens,13);assert.equal(original.observation.measuredCost,null);
     assert.doesNotMatch(JSON.stringify(original),/private-key|private prompt|bm90IGFu/);
     await billing.observe(g,j,{...original.observation,observedAt:'2098-01-01T00:00:00Z'});
     assert.deepEqual(await store.get('p','generationUsageEvidence',original.id),original,'duplicate reads cannot overwrite collection time');
@@ -60,7 +61,7 @@ test('real image transport retains immutable usage after revocation and malforme
 
 test('failed provider attempts and metering failures retain unknown usage without retries or private errors',async()=>{
   const g:GenerationGrant={id:'g',projectId:'p',provider:'openai',model:'gpt-image-1',kind:'image',maxJobs:5,usedJobs:0,maxSeconds:0,
-    size:'1024x1024',expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,ceiling:{currency:'USD',minor:100},billingCapabilityRef:'fixture'};
+    size:'1024x1024',quality:'medium',expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,ceiling:{currency:'USD',minor:100},billingCapabilityRef:'fixture'};
   const j:GenerationJob={id:'j',projectId:'p',campaignId:'c',grantId:'g',kind:'image',prompt:'private',promptDigest:'digest',parentAssetIds:[],
     rightsReceipt:'rights',state:'running',providerRequestId:null,assetId:null,reason:null,createdAt:new Date().toISOString()};
   for(const mode of ['http','network','metering'] as const){

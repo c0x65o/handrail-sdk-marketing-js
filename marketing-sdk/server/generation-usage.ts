@@ -21,6 +21,8 @@ export interface GenerationUsageObservation {
 
 export interface GenerationUsageEvidence {
   id:string;projectId:string;jobId:string;grantId:string;provider:string;model:string;kind:'image'|'video';
+  /** Present on new observations; historical facts are not backfilled. */
+  size?:string;quality?:import("../core/index.js").ImageGenerationQuality|null;maxSeconds?:number;
   observation:GenerationUsageObservation;
 }
 export const generationUsagePrefix=(project:string,jobId:string)=>`generation_usage_${digest([project,jobId])}_`;
