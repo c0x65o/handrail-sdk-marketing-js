@@ -319,6 +319,21 @@ export class MetaMarketingClient {
     return this.request("search", { params: { type, q, limit: 100 } });
   }
 
+  /** Provider language labels for planning; no campaign eligibility or write authority. */
+  async listTargetingLanguages({ assertCurrent = () => {} } = {}) {
+    const result = await this.readAllPages("search", { type: "adlocale", limit: 100 }, assertCurrent);
+    const seen = new Set();
+    const options = result.data.map(row => {
+      const id = String(row?.key ?? ""), label = typeof row?.name === "string" ? row.name.trim() : "";
+      if (!/^\d+$/.test(id) || !label || seen.has(id)) {
+        throw new MetaMarketingError("Meta returned an invalid language catalogue", { code: "provider_targeting_catalogue_invalid" });
+      }
+      seen.add(id);
+      return { kind: "languages", id, label };
+    });
+    return { options, observedAt: new Date().toISOString(), source: "provider" };
+  }
+
   readAudienceAccount(adAccountId) {
     return this.request(accountPath(adAccountId), { params: { fields: "id,account_status,disable_reason,currency" } });
   }

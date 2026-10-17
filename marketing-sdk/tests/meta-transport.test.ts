@@ -4,6 +4,25 @@ import crypto from 'node:crypto';
 import {MetaMarketingClient,MetaMarketingError,withMarketingCredentialCoverage,projectMarketingCredentialEvidence} from '../server/index.js';
 import {safeMarketingEvidence} from '../support/owner-marketing/evidence-projection.js';
 
+test('language catalogue follows guarded cursors on the trusted endpoint and rejects ambiguous labels',async()=>{
+  const urls:URL[]=[];let guards=0;
+  const client=new MetaMarketingClient({accessToken:'private-token',fetchImpl:async(input,init)=>{
+    const url=new URL(String(input));urls.push(url);assert.equal(init?.method,'GET');
+    assert.equal(url.pathname,'/v26.0/search');assert.equal(url.searchParams.get('type'),'adlocale');
+    assert.equal(url.searchParams.has('q'),false);
+    return Response.json(urls.length===1?{data:[{key:6,name:'English (US)'}],paging:{next:'https://attacker.invalid/',cursors:{after:'second'}}}:{data:[{key:1000,name:'English (All)'}]});
+  }});
+  const result=await client.listTargetingLanguages({assertCurrent:()=>{guards++;}});
+  assert.deepEqual(result.options,[{kind:'languages',id:'6',label:'English (US)'},{kind:'languages',id:'1000',label:'English (All)'}]);
+  assert.equal(result.source,'provider');assert.ok(Number.isFinite(Date.parse(result.observedAt)));
+  assert.equal(guards,4);assert.ok(urls.every(u=>u.origin==='https://graph.facebook.com'));assert.equal(urls[1]!.searchParams.get('after'),'second');
+  await assert.rejects(()=>client.listTargetingLanguages({assertCurrent:()=>{throw Error('revoked');}}),/revoked/);assert.equal(urls.length,2);
+  for(const data of [[{key:6,name:''}],[{key:'unknown',name:'Unresolved'}],[{key:6,name:'English'},{key:6,name:'Other'}]]){
+    client.fetchImpl=async()=>Response.json({data});
+    await assert.rejects(()=>client.listTargetingLanguages(),{code:'provider_targeting_catalogue_invalid'});
+  }
+});
+
 test('bounded Meta reads cancel oversized bodies and retain HTTP throttle evidence without a raw body',async()=>{
   let cancelled=false,calls=0;
   const client=new MetaMarketingClient({accessToken:'private-token',fetchImpl:async(_url,init)=>{

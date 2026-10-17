@@ -1,5 +1,12 @@
 # @handrail/marketing
 
+`MetaMarketingClient.listTargetingLanguages({assertCurrent})` reads Meta's
+language catalogue through the existing guarded pagination transport. It retains
+provider IDs, labels and observation time and rejects incomplete or ambiguous
+rows. Hosts can supply these options to permissionless planning accounts; the
+catalogue grants no provider execution or campaign eligibility. A numeric ID used
+as an old display label is not a resolved current label.
+
 `@handrail/marketing/agent` exports `marketingStudioToolSchemas` for the same
 local Studio brief, option, material, media-selection, library, check and promotion
 commands used by React. `agentTools` dispatches their exact names through the
