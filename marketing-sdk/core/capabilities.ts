@@ -229,7 +229,8 @@ export function capabilityStructureBlockers(m: Pick<Material, "settings" | "purp
     if (s.objective === "WEBSITE_CONVERSION") {
       check(only(s.conversion, ["id", "type", "event"]) && /^urn:lla:llaPartnerConversion:\d+$/.test(s.conversion?.id || "") &&
         (m.purpose === "recruitment" ? s.conversion?.type === "OTHER" && s.conversion.event === "ApplicantRequestMOU" : (s.conversion?.type === "LEAD" && s.conversion.event === "Lead" || s.conversion?.type === "PURCHASE" && s.conversion.event === "Purchase")), "exact_conversion_binding_required");
-    } else check(s.conversion === undefined && m.purpose === "acquisition", "purpose_conversion_mismatch");
+    } else check(s.conversion === undefined && (m.purpose === "acquisition" ||
+      m.purpose === "recruitment" && s.objective === "WEBSITE_VISIT"), "purpose_conversion_mismatch");
   } else check(false, "unsupported_provider_settings");
   if (g && !errors.length) {
     for (const [kind, option] of selectedOptions(m.audience, s)) check(g.targetingOptions?.some(x => x.kind === kind && x.id === option.id && (kind === "locations" ? nonempty(x.label) : x.label === option.label)), "unresolved_targeting_option");

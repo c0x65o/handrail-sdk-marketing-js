@@ -481,6 +481,15 @@ when a host reads existing evidence later; a new host observation time cannot
 renew stale provider data. The host must still prove the campaign inventory and
 current policy under its original authority guard.
 
+## Recruitment website-visit material
+
+LinkedIn `WEBSITE_VISIT` material can retain the explicit recruitment purpose and
+`ApplicantRequestMOU` outcome without a provider conversion binding. This models
+traffic delivery, not verified applicant measurement. The applicant meaning stays
+mandatory, conversion-objective campaigns still require their exact conversion,
+and adoption verifies the complete provider conversion-association inventory is
+empty. Account eligibility, authorization and spending controls remain separate.
+
 ## Original source and provider upload media
 
 `prepareMetaImageUpload` owns Meta's encoding: JPEG/PNG bytes stay unchanged;

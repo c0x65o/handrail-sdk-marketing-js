@@ -1013,3 +1013,15 @@ for (const provider of ["meta","linkedin"] as const) test(`${provider} activatio
     assert.equal(inventories,2);assert.equal(t.state.writes,writes);
   }finally{await t.close();}
 });
+
+test('recruitment website visits do not imply account eligibility or conversion authority',()=>{
+  const {c,g,a}=sample('linkedin');
+  c.material.purpose='recruitment';
+  c.material.applicantGoal={event:'ApplicantRequestMOU',meaning:'completed_mou_request'};
+  assert.equal(capabilityStatus(c.material,g).accountVerified,false);
+  const plan=providerPlan(c,g,[a]);
+  assert.equal(plan.provider,'linkedin');
+  assert.equal('conversion' in plan?plan.conversion:undefined,undefined);
+  delete c.material.applicantGoal;
+  assert.throws(()=>providerPlan(c,g,[a]),{code:'applicant_goal_required'});
+});

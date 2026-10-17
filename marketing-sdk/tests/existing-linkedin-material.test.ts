@@ -96,3 +96,26 @@ for(const scenario of ['complete','extra_child','partial','cycle','active','dupl
   if(scenario==='complete')assert.deepEqual(await read(),[{id:'333',campaign:child.campaign,intendedStatus:'PAUSED'}]);
   else await assert.rejects(read());assert.equal(calls,2);
 });
+
+test('recruitment website-visit capture preserves its applicant outcome without inventing provider conversion readiness',async()=>{
+  const f=fixture();
+  f.source.purpose='recruitment';
+  f.source.applicantGoal={event:'ApplicantRequestMOU',meaning:'completed_mou_request'};
+  delete f.source.conversion;
+  f.campaign.objectiveType='WEBSITE_VISIT';
+  f.source.retainedProviderTerms.objectiveType='WEBSITE_VISIT';
+  const captured=await f.capture();
+  assert.equal(captured.material.purpose,'recruitment');
+  assert.deepEqual(captured.material.applicantGoal,f.source.applicantGoal);
+  assert.equal(captured.material.settings?.conversion,undefined);
+  assert.equal(captured.executionReady,false);
+  assert.deepEqual(f.grant.permissions,['pause','report']);
+  delete f.source.applicantGoal;
+  await assert.rejects(f.capture(),{code:'applicant_goal_required'});
+  f.source.applicantGoal={event:'ApplicantRequestMOU',meaning:'completed_mou_request'};
+  f.source.conversion={id:'urn:lla:llaPartnerConversion:789',type:'OTHER',event:'ApplicantRequestMOU'};
+  await assert.rejects(f.capture(),{code:'purpose_conversion_mismatch'});
+  delete f.source.conversion;
+  f.campaign.objectiveType='WEBSITE_CONVERSION';f.source.retainedProviderTerms.objectiveType='WEBSITE_CONVERSION';
+  await assert.rejects(f.capture(),{code:'exact_conversion_binding_required'});
+});
