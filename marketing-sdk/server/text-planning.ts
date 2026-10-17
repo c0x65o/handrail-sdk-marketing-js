@@ -60,7 +60,7 @@ export interface NativeTextPlanningOptions {
   timeoutMs?: number;
   connections?: CreativeConnections;
 }
-interface ReviewRecord { review: TextPlanningReview; actor: Principal; session: SessionInspection; access: Awaited<ReturnType<TextPlanningAccess['inspect']>> & { custodyDigest: string }; body: PlanningResponsesBody & { stream: true }; }
+interface ReviewRecord { review: TextPlanningReview; actor: Principal; session: SessionInspection; access: Awaited<ReturnType<TextPlanningAccess['inspect']>> & { custodyDigest: string }; body: PlanningResponsesBody & { stream: true; service_tier?:'default' }; }
 const capabilities = new WeakSet<object>();
 const endpoints = { openai: 'https://api.openai.com/v1/responses', xai: 'https://api.x.ai/v1/responses' };
 const finite = (v: unknown, max: number) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= max;
@@ -170,7 +170,7 @@ export class NativeTextPlanning {
     const inputHash = digest(i);
     const old = (await this.store.list<ReviewRecord & { inputHash:string }>(project,'textPlanningReview')).find(r=>r.review.id===reviewId);
     if (old) { requireThat(old.inputHash===inputHash,'request_key_payload_conflict'); return this.guard(old,async()=>old.review); }
-    const body: ReviewRecord['body'] = { model:a.connection.model,input:[{role:'system',content:PLANNING_PROMPT},{role:'user',content:JSON.stringify(d.studio.brief)}],max_output_tokens:i.maxOutputTokens,store:false,background:false,stream:true,text:{format:{type:'json_schema',name:PLANNING_VERSION.replaceAll('-','_'),strict:true,schema:CAMPAIGN_OPTIONS_SCHEMA}} };
+    const body: ReviewRecord['body'] = { model:a.connection.model,input:[{role:'system',content:PLANNING_PROMPT},{role:'user',content:JSON.stringify(d.studio.brief)}],max_output_tokens:i.maxOutputTokens,store:false,background:false,stream:true,...(a.connection.provider==='openai'?{service_tier:'default' as const}:{}),text:{format:{type:'json_schema',name:PLANNING_VERSION.replaceAll('-','_'),strict:true,schema:CAMPAIGN_OPTIONS_SCHEMA}} };
     const requestDigest = digest(body), connectionDigest = digest(a), signal = AbortSignal.timeout(this.timeoutMs);
     requireThat(Buffer.byteLength(JSON.stringify(body))<=256*1024,'planning_request_size_limit');
     // Host quote/meter resolution is outside both SQL and revocation guards.
@@ -201,6 +201,7 @@ export class NativeTextPlanning {
       const latest=await this.store.get<ReviewRecord>(project,'textPlanningReview',i.reviewId);
       if(latest.review.state==='accepted')return this.store.get<PlanningRequest>(project,'planningRequest',i.reviewId);
       requireThat(latest.review.state==='review','planning_review_cancelled');
+      requireThat(record.access.connection.provider!=='openai'||record.body.service_tier==='default','planning_service_tier_not_bound');
       const v=record.review,d=await this.draft(project,v.draftId,v.draftRevision);await this.noExposure(project,d.id);
       const r:PlanningRequest={id:v.id,projectId:project,draftId:d.id,draftRevision:d.revision,briefDigest:d.studio.briefDigest,inputDigest:v.requestDigest,brief:d.studio.brief,model:v.connection.model,provider:v.connection.provider,promptVersion:PLANNING_VERSION,schemaVersion:PLANNING_VERSION,authorityId:v.connection.id,authorityDigest:digest(record.access),state:'queued',providerResponseId:null,options:[],reason:'Accepted. One bounded request is reserved.',usage:unknownUsage(),outputDigest:null,createdAt:new Date().toISOString(),textReceipt:{evidence:this.evidence,reviewId:v.id,reviewDigest:v.reviewDigest,attemptId:null,dispatchedAt:null,diagnosticRequestId:null,settlement:'reserved',settledMinor:null,currency:v.quote.currency}};
       await this.billing.reserve(r,v.quote);
@@ -221,6 +222,7 @@ export class NativeTextPlanning {
       const claim=await this.guard(record,async()=>{
         await this.store.db.assertExecutionOwner();const r=await this.store.get<PlanningRequest>(project,'planningRequest',requestId);
         if(r.state!=='queued')return null;
+        requireThat(record.access.connection.provider!=='openai'||record.body.service_tier==='default','planning_service_tier_not_bound');
         await this.draft(project,r.draftId,r.draftRevision);r.state='running';r.reason='Preparing the one admitted request.';await this.store.put(project,'planningRequest',r.id,r);return r;
       });
       if(!claim)return this.store.get<PlanningRequest>(project,'planningRequest',requestId);
@@ -324,9 +326,26 @@ export class NativeTextPlanning {
 
 function parseUsage(raw:any,provider:'openai'|'xai'):PlanningUsage {
   const u=raw.usage, input=finite(u?.input_tokens,Number.MAX_SAFE_INTEGER)?u.input_tokens:null, output=finite(u?.output_tokens,Number.MAX_SAFE_INTEGER)?u.output_tokens:null;
+  const issues:NonNullable<PlanningUsage['tokenDetails']>['issues']=[];
+  const count=(value:unknown,field:typeof issues[number]):number|null=>{
+    if(value==null)return null;
+    if(!finite(value,Number.MAX_SAFE_INTEGER)){issues.push(field);return null;}
+    return value as number;
+  };
+  count(u?.input_tokens,'input_tokens');count(u?.output_tokens,'output_tokens');
+  const cachedInputTokens=count(u?.input_tokens_details?.cached_tokens,'cached_input_tokens'),
+    cacheWriteInputTokens=count(u?.input_tokens_details?.cache_write_tokens,'cache_write_input_tokens'),
+    reasoningTokens=count(u?.output_tokens_details?.reasoning_tokens,'reasoning_tokens'),totalTokens=count(u?.total_tokens,'total_tokens');
+  if(cachedInputTokens!==null&&input!==null&&cachedInputTokens>input)issues.push('cached_input_tokens');
+  if(cacheWriteInputTokens!==null&&input!==null&&(cacheWriteInputTokens>input||cachedInputTokens!==null&&BigInt(cacheWriteInputTokens)+BigInt(cachedInputTokens)>BigInt(input)))issues.push('cache_write_input_tokens');
+  if(reasoningTokens!==null&&output!==null&&reasoningTokens>output)issues.push('reasoning_tokens');
+  // OpenAI includes reasoning in output_tokens. Preserve its original total;
+  // never synthesize missing details or treat a contradictory total as settled.
+  if(provider==='openai'&&totalTokens!==null&&input!==null&&output!==null&&BigInt(totalTokens)!==BigInt(input)+BigInt(output))issues.push('total_tokens');
   const ticks=u?.cost_in_usd_ticks;
   const cost=provider==='xai'&&((typeof ticks==='string'&&/^\d{1,20}$/.test(ticks))||finite(ticks,Number.MAX_SAFE_INTEGER))?{value:String(ticks),unit:'usd_ticks_1e10',currency:'USD'}:null;
-  return {inputTokens:input,outputTokens:output,cost,unavailableReason:cost?null:'Measured provider cost requires the billing owner receipt.'};
+  const serviceTier:PlanningUsage['serviceTier']=['default','priority','flex','ultrafast'].includes(raw.service_tier)?raw.service_tier:null;
+  return {inputTokens:input,outputTokens:output,tokenDetails:{cachedInputTokens,cacheWriteInputTokens,reasoningTokens,totalTokens,issues},serviceTier,cost,unavailableReason:cost?null:'Measured provider cost requires the billing owner receipt.'};
 }
 
 async function bounded<T>(work:Promise<T>,signal:AbortSignal):Promise<T> {

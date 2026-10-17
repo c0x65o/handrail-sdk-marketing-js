@@ -17,6 +17,51 @@ async function fixture(transport?:typeof fetch){
  const approve=async()=>{const q=await review();return studio.approveTextPlan(p,'p',{reviewId:q.id,reviewDigest:q.reviewDigest,requestKey:'approve'});};
  return {...f,dir,store,hostStore,host,session,p,studio,d,input,review,approve,close:async()=>{await store.close();await hostStore.close();}};
 }
+for(const mode of ['reported','zero','absent','invalid','inconsistent'] as const)test('text usage retains '+mode+' token dimensions without inventing billing facts',async()=>{
+ const f=await fixture();try{
+  const usage:any=f.raw.usage;
+  if(mode==='reported'){usage.input_tokens_details={cached_tokens:123,cache_write_tokens:40,untrusted:'secret-never-retain'};usage.output_tokens_details={reasoning_tokens:100};}
+  if(mode==='zero'){usage.input_tokens_details={cached_tokens:0,cache_write_tokens:0};usage.output_tokens_details={reasoning_tokens:0};}
+  if(mode==='absent')delete usage.total_tokens;
+  if(mode==='invalid'){usage.input_tokens_details={cached_tokens:-1,cache_write_tokens:-2};usage.output_tokens_details={reasoning_tokens:'100'};usage.total_tokens=Number.MAX_SAFE_INTEGER+1;}
+  if(mode==='inconsistent'){usage.input_tokens_details={cached_tokens:351,cache_write_tokens:1};usage.output_tokens_details={reasoning_tokens:201};usage.total_tokens=551;}
+  // This fixture has no factual final-charge receipt. Token retention alone
+  // must leave the original reservation held, even for valid selectable text.
+  f.billing.measure=async()=>null;
+  const request=await f.approve(),done=await f.studio.dispatchPlanning('p',request.id),details=done.usage.tokenDetails!;
+  assert.equal(done.usage.inputTokens,350);assert.equal(done.usage.outputTokens,200);
+  assert.equal(details.cachedInputTokens,mode==='reported'?123:mode==='zero'?0:mode==='inconsistent'?351:null);
+  assert.equal(details.cacheWriteInputTokens,mode==='reported'?40:mode==='zero'?0:mode==='inconsistent'?1:null);
+  assert.equal(details.reasoningTokens,mode==='reported'?100:mode==='zero'?0:mode==='inconsistent'?201:null);
+  assert.equal(details.totalTokens,['absent','invalid'].includes(mode)?null:mode==='inconsistent'?551:550);
+  assert.deepEqual(details.issues,['invalid','inconsistent'].includes(mode)?['cached_input_tokens','cache_write_input_tokens','reasoning_tokens','total_tokens']:[]);
+  assert.equal(done.textReceipt!.settlement,'unknown');assert.equal(f.calls.settle,0);
+  assert.doesNotMatch(JSON.stringify(done),/secret-never-retain/);
+  assert.deepEqual((await f.store.get<any>('p','planningRequest',request.id)).usage,done.usage);
+  await f.studio.reconcilePlanning(f.p,'p',{requestId:request.id});assert.equal(f.calls.dispatch,1);
+ }finally{await f.close();}
+});
+test('OpenAI text review binds standard service tier and retains a differing reported tier as evidence',async()=>{
+ const f=await fixture();try{
+  const q=await f.review();assert.equal((q.requestBody as any).service_tier,'default');
+  (f.raw as any).service_tier='priority';f.billing.measure=async()=>null;
+  const r=await f.approve(),done=await f.studio.dispatchPlanning('p',r.id);
+  assert.equal(done.usage.serviceTier,'priority');assert.equal(done.textReceipt!.settlement,'unknown');
+  await f.studio.dispatchPlanning('p',r.id);assert.equal(f.calls.dispatch,1);
+ }finally{await f.close();}
+});
+test('historical text review without a bound tier remains readable and cancellable but cannot authorize new spend',async()=>{
+ const f=await fixture();try{
+  const q=await f.review(),record=await f.store.get<any>('p','textPlanningReview',q.id);
+  delete record.body.service_tier;record.review.requestBody=structuredClone(record.body);record.review.requestDigest=digest(record.body);
+  record.review.quote.requestDigest=record.review.requestDigest;record.review.reviewDigest='';record.review.reviewDigest=digest(record.review);
+  await f.store.put('p','textPlanningReview',q.id,record);
+  const input={reviewId:q.id,reviewDigest:record.review.reviewDigest};
+  await assert.rejects(f.studio.approveTextPlan(f.p,'p',{...input,requestKey:'old-approve'}),/planning_service_tier_not_bound/);
+  assert.equal((await f.studio.cancelTextPlan(f.p,'p',input)).state,'cancelled');
+  assert.equal(f.calls.admit,0);assert.equal(f.calls.dispatch,0);
+ }finally{await f.close();}
+});
 for(const mode of ['current','rotated','routing-invalid','missing-revision'] as const)test('host text custody '+mode+' keeps keys outside the SDK store and fences exact routing',async()=>{
  const f=await fixture();try{
   await f.store.db.prepare("DELETE FROM records WHERE project_id=? AND kind='vault'").run('p');

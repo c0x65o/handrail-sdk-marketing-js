@@ -1136,4 +1136,18 @@ Missing current permission, custody revision, exact quote or human approval
 still prevents a paid request. This port creates no permission or billing
 authority, and does not retry uncertain requests.
 
+Native text planning retains reported cache-read, cache-write, reasoning and
+total-token dimensions in `PlanningUsage.tokenDetails`. Missing dimensions are
+`null`; older records without this field have unknown detail. Invalid or
+contradictory counts carry explicit `issues`, and unrelated provider fields are
+not retained. Hosts must qualify these facts before pricing or settling them;
+token retention is not a measured charge receipt. Cache writes and reads have
+different billing treatment in the [official prompt caching contract](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+OpenAI text reviews bind `service_tier: "default"` in the exact request body.
+Older reviews without a bound tier require a fresh review before dispatch. The
+actual reported tier is separately retained as `PlanningUsage.serviceTier`,
+with absent/unrecognized values left unknown. A host must not price a differing
+or unknown reported tier as standard service. See the [Responses request contract](https://developers.openai.com/api/reference/resources/responses/methods/create).
+
 

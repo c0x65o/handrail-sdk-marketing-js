@@ -54,6 +54,14 @@ export interface StudioReport {
 }
 export interface PlanningUsage {
   inputTokens: number | null; outputTokens: number | null;
+  /** Original reported dimensions. Absent on older records means unknown, not
+   * zero. Invalid/inconsistent dimensions remain explicit accounting evidence. */
+  tokenDetails?: {
+    cachedInputTokens:number|null; cacheWriteInputTokens:number|null; reasoningTokens:number|null; totalTokens:number|null;
+    issues:('input_tokens'|'output_tokens'|'cached_input_tokens'|'cache_write_input_tokens'|'reasoning_tokens'|'total_tokens')[];
+  };
+  /** Reported processing tier, never inferred from the request. */
+  serviceTier?:'default'|'priority'|'flex'|'ultrafast'|null;
   cost: { value: string; unit: string; currency: string } | null;
   unavailableReason: string | null;
 }
