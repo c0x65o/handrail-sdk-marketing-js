@@ -60,7 +60,7 @@ import {
   DomainError,
 } from "./store.js";
 import { draftMaterial, instant, keys, material, text } from "./validation.js";
-import { capturePublicDestination, destinationSnapshot, destinationContentDigest, retainDestinationSnapshot } from "./destination.js";
+import { capturePublicDestination, type DestinationRedirect, destinationSnapshot, destinationContentDigest, retainDestinationSnapshot } from "./destination.js";
 import { AdvertisingBudgets } from "./budgets.js";
 import { providerDayWindow } from "./reporting.js";
 import { inspectMedia } from "./generation.js";
@@ -399,11 +399,12 @@ export class MarketingServer {
       "https_destination_required",
       422,
     );
+    const redirects: DestinationRedirect[]=[];
     const bytes =
       this.mode === "fixture"
         ? Buffer.from(`Synthetic destination descriptor only: ${input.url}`)
-        : await this.readDestination(input.url);
-    const snapshot=destinationSnapshot(input.url,bytes,this.mode==='fixture'?'fixture':'public_https',new Date(this.now()).toISOString());
+        : await this.readDestination(input.url,hop=>redirects.push(hop));
+    const snapshot=destinationSnapshot(input.url,bytes,this.mode==='fixture'?'fixture':'public_https',new Date(this.now()).toISOString(),redirects);
     return this.reportGuard(p,session,true,()=>retainDestinationSnapshot(this.store,project,snapshot,bytes));
   }
   // Preserve trusted server-only legacy principals; browser/external sessions

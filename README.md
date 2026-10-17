@@ -790,6 +790,18 @@ expansion is not required for custody. If no Page name is supplied, the original
 organization identity remains visible with an explicitly unavailable name; Page
 permissions still require the existing independent role checks.
 
+## Destination redirects and retained evidence
+
+Public destination capture follows up to five same-origin HTTPS redirects, with
+fresh DNS resolution and public-address pinning for every request. Credentials,
+cross-origin redirects, private addresses, loops and non-HTML terminal responses
+are rejected. Native callers collect the `capturePublicDestination` redirect
+callback and pass those hops to `destinationSnapshot`; SDK Studio does this itself.
+A redirected capture uses version 3, binding the exact original campaign URL,
+ordered status/from/to hops and final HTML content digest. Direct captures and
+historical snapshots retain their existing immutable identities. A redirect
+receipt does not prove tracking, conversion readiness or advertising authority.
+
 ## Exact campaign destinations in Tracking
 
 Destination captures use a version-2 identity containing the exact URL, HTML

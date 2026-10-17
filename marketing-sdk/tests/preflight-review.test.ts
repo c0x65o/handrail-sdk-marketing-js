@@ -10,7 +10,7 @@ test('destination captures preserve distinct URLs with identical bytes and immut
   try {
     let bytes=Buffer.from('<!doctype html><p>The same offer</p>');
     const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'live',undefined,
-      async()=>bytes,{connections:f.connections,studio:{sessions:f.connections.sessionAuthority}});
+      async(url,onRedirect)=>{if(url.includes('/Careers'))onRedirect?.({from:url,to:url.replace('/Careers','/careers'),status:308});return bytes;},{connections:f.connections,studio:{sessions:f.connections.sessionAuthority}});
     const a=await server.call(f.principal,'p','captureDestination',{url:'https://example.com/?campaign=a'});
     const b=await server.call(f.principal,'p','captureDestination',{url:'https://example.com/?campaign=b'});
     assert.notEqual(a.digest,b.digest);assert.equal(a.contentDigest,b.contentDigest);
@@ -18,6 +18,11 @@ test('destination captures preserve distinct URLs with identical bytes and immut
     assert.deepEqual(await f.store.get('p','destination',a.digest),a);
     assert.deepEqual(await f.store.get('p','destination',b.digest),b);
     assert.deepEqual(await server.call(f.principal,'p','captureDestination',{url:a.url}),a,'same source content reuses the original immutable observation');
+    const redirected=await server.call(f.principal,'p','captureDestination',{url:'https://example.com/Careers?campaign=a'});
+    assert.equal(redirected.version,3);assert.equal(redirected.url,'https://example.com/Careers?campaign=a');
+    assert.deepEqual(redirected.redirects,[{from:redirected.url,to:'https://example.com/careers?campaign=a',status:308}]);
+    assert.deepEqual(await f.store.get('p','destination',redirected.digest),redirected);
+    assert.equal(destinationContentDigest(redirected,redirected.digest,redirected.url),byteDigest(bytes));
     const old={url:a.url,source:'public_https',digest:byteDigest(bytes),observedAt:'2026-01-01T00:00:00.000Z'};
     await f.store.put('p','destination',old.digest,old);
     assert.equal(destinationContentDigest(old,old.digest,a.url),old.digest,'original byte-addressed evidence remains readable');

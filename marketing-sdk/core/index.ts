@@ -405,19 +405,18 @@ export interface PlanningWrite {
   result: Campaign | CampaignDraft;
   acknowledged: boolean;
 }
+export interface DestinationRedirect { from: string; to: string; status: 301 | 302 | 303 | 307 | 308 }
+export interface DestinationSnapshot {
+  version: 2 | 3; digest: string; contentDigest: string; url: string;
+  source: 'fixture' | 'public_https'; observedAt: string; redirects?: DestinationRedirect[];
+}
+
 export interface Commands extends AudienceCommands, ConnectionCommands, StudioCommands, TrackingCommands, CampaignCheckCommands {
   planningWrite: { input: PlanningInput & { requestKey: string; scope: string }; output: PlanningWrite };
   acknowledgePlanningWrite: { input: { id: string }; output: PlanningWrite };
   captureDestination: {
     input: { url: string };
-    output: {
-      version: 2;
-      digest: string;
-      contentDigest: string;
-      url: string;
-      source: "fixture" | "public_https";
-      observedAt: string;
-    };
+    output: DestinationSnapshot;
   };
   workspace: { input: Record<string, never>; output: Workspace };
   setup: { input: { grantId: string; requestKey: string }; output: Setup };
