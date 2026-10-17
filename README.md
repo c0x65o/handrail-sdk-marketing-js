@@ -1101,3 +1101,8 @@ quality and maximum seconds as well as project, grant, provider, model and
 billing capability. New usage observations retain those request settings;
 quotes remain reservations, not measured costs. This contract does not issue a
 grant, infer a price, or enable a host's unbound generation workflow.
+
+Native generation custody can return `{apiKey, organization, project}` to bind
+OpenAI billing routing explicitly. Null organization/project suppress ambient
+OpenAI SDK environment routing. Bare-key integrations remain valid for provider
+default accounts. Routing is carried only to the SDK transport, not receipts.

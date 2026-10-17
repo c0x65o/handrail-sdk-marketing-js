@@ -69,10 +69,11 @@ test("native image transport retains request and byte identities without retryin
   };
   let calls = 0,
     retained = "";
+  const routing:{apiKey:string;organization:string|null;project:string|null}={apiKey:"fixture-secret",organization:"org-fixture",project:"proj-fixture"};
   const adapter = new NativeGeneration(
     async (_provider, _project, id) => {
       assert.equal(id, grant.id);
-      return "fixture-secret";
+      return routing;
     },
     {
       observe: async () => {},
@@ -81,6 +82,8 @@ test("native image transport retains request and byte identities without retryin
     async (url, init) => {
       calls++;
       assert.equal(String(url), "https://api.openai.com/v1/images/generations");
+      assert.equal(new Headers(init?.headers).get('openai-organization'),routing.organization);
+      assert.equal(new Headers(init?.headers).get('openai-project'),routing.project);
       assert.deepEqual(JSON.parse(String(init?.body)), {
         model: grant.model, prompt: job.prompt, n: 1, size: grant.size,
         quality: grant.quality, output_format: "png",
@@ -106,6 +109,17 @@ test("native image transport retains request and byte identities without retryin
     await adapter.submit(job, grant, () => {});
   }
   assert.equal(calls, 5);
+  const oldOrg=process.env.OPENAI_ORG_ID,oldProject=process.env.OPENAI_PROJECT_ID;
+  try {
+    process.env.OPENAI_ORG_ID='ambient-org-must-not-route';process.env.OPENAI_PROJECT_ID='ambient-project-must-not-route';
+    routing.organization=null;routing.project=null;
+    await adapter.submit(job,grant,()=>{});
+    assert.equal(calls,6);
+  } finally {
+    if(oldOrg===undefined)delete process.env.OPENAI_ORG_ID;else process.env.OPENAI_ORG_ID=oldOrg;
+    if(oldProject===undefined)delete process.env.OPENAI_PROJECT_ID;else process.env.OPENAI_PROJECT_ID=oldProject;
+    routing.organization='org-fixture';routing.project='proj-fixture';
+  }
   calls = 0;
   let credentialReads = 0, admissions = 0;
   const rejectInvalid = new NativeGeneration(async () => { credentialReads++; return "fixture"; }, {

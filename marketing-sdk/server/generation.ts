@@ -90,6 +90,10 @@ export async function inspectMedia(bytes: Uint8Array, kind: "image" | "video", e
     });
   }
 }
+/** Existing bare-key providers may use their default account. Native custody
+ * can explicitly bind OpenAI organization/project, including null to suppress
+ * ambient SDK environment routing. No arbitrary provider URL is accepted. */
+export type NativeGenerationCredential = string | {apiKey:string;organization:string|null;project:string|null};
 export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = GenerationJob> {
   readonly evidence = "generated" as const;
   constructor(
@@ -97,7 +101,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
       provider: "openai" | "xai",
       project: string,
       grantId: string,
-    ) => Promise<string>,
+    ) => Promise<NativeGenerationCredential>,
     private billing: Omit<BillingPort, "authorize"> & { authorize(grant: GenerationGrant, job: J): Promise<void> },
     private fetcher: typeof fetch = fetch,
     /** Optional custody-use fence after awaited executor authorization. Existing
@@ -169,7 +173,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
       await this.beforeCredentialUse?.(g.provider as "openai" | "xai", job.projectId, g.id);
       if (job.kind === "image") {
         const client = new OpenAI({
-          apiKey: key,
+          ...(typeof key==='string'?{apiKey:key}:{apiKey:key.apiKey,organization:key.organization,project:key.project}),
           fetch: this.fetcher,
           maxRetries: 0,
           timeout: 120000,
@@ -207,7 +211,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
           redirect: "error",
           signal: AbortSignal.timeout(30000),
           headers: {
-            authorization: `Bearer ${key}`,
+            authorization: `Bearer ${typeof key==='string'?key:key.apiKey}`,
             "content-type": "application/json",
           },
           body: JSON.stringify({
@@ -275,7 +279,7 @@ export class NativeGeneration<J extends Omit<GenerationJob, "campaignId"> = Gene
         `https://api.x.ai/v1/videos/${job.providerRequestId}`,
         {
           headers: {
-            authorization: `Bearer ${key}`,
+            authorization: `Bearer ${typeof key==='string'?key:key.apiKey}`,
           },
           redirect: "error",
           signal: AbortSignal.timeout(20000),
