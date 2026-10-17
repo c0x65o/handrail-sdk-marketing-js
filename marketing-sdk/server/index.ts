@@ -73,3 +73,5 @@ export {LinkedInMarketingClient,LinkedInMarketingError,linkedInObjectName,linked
 
 export {createCampaignImageGenerator,CampaignImageError} from '../support/owner-marketing/campaign-images.js';
 export type {CampaignImagePorts,CampaignImageInput,CampaignImage,CampaignImageSpec,CampaignImageContract} from './campaign-images-types.js';
+
+export * from "./studio-media-authority.js";

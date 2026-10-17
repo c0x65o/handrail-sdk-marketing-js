@@ -1155,3 +1155,29 @@ quote before any external token metering. The original review remains readable;
 the guarded exposure check also runs before a new review is retained.
 
 
+
+## Original queued media continuation
+
+`continueDraftMedia({generationRequestKey})` addresses the immutable original
+Studio generation receipt. It requires a current authenticated actor with the
+same host identity and an explicit `StudioOptions.withMediaContinuation` port.
+The port must authorize the original Task/action and exact human approval, hold
+native authority through the local commit, support nested guards, and recheck
+current controller/lease/permission on every use. This is current continuation
+authority, never a reconstruction of an expired invocation.
+
+The SDK retains the original job actor, session inspection, material, grant,
+quote, request identity and cost reservation. It stores the current dispatch
+actor/inspection separately and records a continuation audit event. The original
+admission digest must still match. Only queued jobs without provider response,
+asset or usage evidence may continue under the executor lease. Running, unknown,
+processing and terminal jobs cannot be reset or replayed. Revocation, session,
+material, grant and quote checks still apply before provider dispatch and media
+retention; the continuation port is required again after reopening the store.
+
+Native generation billing/custody adapters use `readDraftMediaAuthority` for the
+current execution actor and inspection, while retaining original admission
+identity for attribution and exact-approval evidence. The helper verifies both
+original bindings and any separate continuation record. It grants no authority
+by itself. A new review, approval, provider retry or cost settlement is never
+implied. The original `draftMediaRequest` remains a read only.

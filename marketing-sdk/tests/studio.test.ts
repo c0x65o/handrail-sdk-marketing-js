@@ -441,3 +441,71 @@ test('natural external-session expiry at the last local save await rolls back th
   assert.deepEqual(await f.store.get('p','campaignDraft',f.d.id),f.d);assert.equal((await f.store.list('p','studioRevision')).length,1);
  }finally{await f.store.close();}
 });
+
+for(const mode of ['continue','invocation','lost-ack','changed-job','missing-host','host-denied','different-human','running','unknown','provider-id','usage-evidence','revoked-grant','changed-grant','changed-draft','expired-quote','revoked-current','revoked-before-dispatch','changed-origin'])
+test(`draft media continuation ${mode} preserves the original admission and permits no uncertain replay`,async()=>{
+ const f=await fixture();try{
+  const bytes=await sharp({create:{width:300,height:200,channels:3,background:'#222266'}}).png().toBuffer();
+  let submits=0,allow=true,depth=0,lost=false;let expectedActor:typeof f.p|undefined;
+  const sessions:import('../server/index.js').SessionAuthority=mode!=='invocation'?f.host.authority:{
+    authenticateRequest:request=>f.host.authority.authenticateRequest(request),
+    async inspectSession(binding,projectId){const value=await f.host.authority.inspectSession(binding,projectId);return {...value,kind:'agent',expiresAt:null,lifetime:{kind:'invocation',invocationRef:binding.sessionRef}};},
+    async withLiveSessions(expected,local){return f.store.transaction(async()=>{const {inspectLiveSessions}=await import('../server/index.js');await inspectLiveSessions(sessions,expected);const result=await local();await inspectLiveSessions(sessions,expected);return result;});},
+  };
+  const quote={receipt:'continuation-quote',currency:'USD',maxUnitMinor:7,expiresAt:new Date(Date.now()+3600000).toISOString()};
+  const generation:import('../server/index.js').DraftGenerationPort={version:2,evidence:'fixture',validate:()=>{},quote:async()=>quote,
+    async submit(j,_g,retain,before){
+      if(mode==='revoked-before-dispatch')allow=false;
+      await before();
+      const current=await (await import('../server/index.js')).readDraftMediaAuthority(f.store,'p',j);
+      assert.deepEqual(current.actor,expectedActor);submits++;
+      await retain('original-media-response');return {state:'retained',requestId:'original-media-response',bytes,mime:'image/png'};
+    },async reconcile(){throw Error('No provider retry');}};
+  const studio=new CampaignStudio(f.store,{sessions,generation},'fixture');
+  await f.store.put('p','generationGrant','image',{id:'image',projectId:'p',provider:'fixture',model:'fixture-image',kind:'image',maxJobs:1,usedJobs:0,maxSeconds:0,size:'300x200',expiresAt:quote.expiresAt,revokedAt:null,ceiling:{currency:'USD',minor:7},billingCapabilityRef:'fixture-billing'});
+  let d=await studio.saveCampaignOption(f.p,'p',{draftId:f.d.id,expectedRevision:1,requestKey:'option',value:approach});
+  d=await studio.selectCampaignOption(f.p,'p',{draftId:d.id,expectedRevision:d.revision,requestKey:'select',optionId:d.studio.options[0]!.id,optionRevision:1,variant:0});
+  const input={draftId:d.id,expectedRevision:d.revision,requestKey:'gen',grantId:'image',prompt:'A studio building',rightsReceipt:'I own the concept',quoteReceipt:quote.receipt};
+  const job=await studio.generateDraftMedia(f.p,'p',input),originalActor=await f.store.get('p','draftJobActor',job.id),originalSession=await f.store.get('p','draftJobSession',job.id);
+  const reservation=await f.store.get('p','generationCostReservation',job.id),grant=await f.store.get<import('../core/index.js').GenerationGrant>('p','generationGrant','image');
+  await f.host.revoke(f.session.sessionRef);
+  const next=await f.host.login(mode==='different-human'?'bob':'alice'),actor=await f.host.principal(next.token);expectedActor=actor;
+  const options:import('../server/index.js').StudioOptions={sessions,generation};
+  if(mode!=='missing-host')options.withMediaContinuation=async(p,project,candidate,original,local)=>{
+    assert.equal(project,'p');assert.equal(candidate.id,job.id);assert.deepEqual(original,originalActor);
+    assert.deepEqual(p,actor);assert.equal(allow&&mode!=='host-denied',true,'host denied exact original work');
+    depth++;try{const result=await local();if(mode==='lost-ack'&&depth===1&&!lost){lost=true;throw Error('synthetic lost continuation commit reply');}return result;}finally{depth--;}
+  };
+  const resumed=new CampaignStudio(f.store,options,'fixture',()=>Date.now()+(mode==='expired-quote'?7200000:0));
+  if(['running','unknown'].includes(mode))await f.store.put('p','draftJob',job.id,{...job,state:mode});
+  if(mode==='provider-id')await f.store.put('p','draftJob',job.id,{...job,providerRequestId:'already-attempted'});
+  if(mode==='usage-evidence')await f.store.put('p','generationUsageEvidence','original-evidence',{jobId:job.id,observation:{outcome:'unknown'}});
+  if(mode==='revoked-grant')await f.store.put('p','generationGrant','image',{...grant,revokedAt:new Date().toISOString()});
+  if(mode==='changed-grant')await f.store.put('p','generationGrant','image',{...grant,ceiling:{currency:'USD',minor:8}});
+  if(mode==='changed-draft')await resumed.saveBrief(actor,'p',{id:d.id,expectedRevision:d.revision,requestKey:'edit',brief:{...f.brief,offer:'Changed'}});
+  if(mode==='revoked-current')await f.host.revoke(next.sessionRef);
+  if(mode==='changed-job')await f.store.put('p','draftJob',job.id,{...job,prompt:'Changed original prompt'});
+  if(mode==='changed-origin')await f.store.put('p','draftJobActor',job.id,{...(originalActor as any),externalSessionRef:'different'});
+  if(['continue','invocation','lost-ack'].includes(mode)){
+    await assert.rejects(resumed.continueDraftMedia(actor,'p',{generationRequestKey:'missing'}),/original_generation_request_required/);
+    if(mode==='lost-ack'){await assert.rejects(resumed.continueDraftMedia(actor,'p',{generationRequestKey:'gen'}),/synthetic lost/);assert.equal(submits,0);assert.equal((await f.store.get<import('../core/index.js').DraftGenerationJob>('p','draftJob',job.id)).state,'queued');}
+    if(mode==='invocation'){const retained=originalSession as {inspection:import('../server/index.js').SessionInspection};assert.equal(retained.inspection.expiresAt,null);assert.equal(retained.inspection.lifetime?.kind,'invocation');}
+    const out=await resumed.continueDraftMedia(actor,'p',{generationRequestKey:'gen'});assert.equal(out.state,'retained');assert.equal(submits,1);
+    assert.deepEqual(await resumed.dispatchDraftMedia('p',job.id),out);
+    await assert.rejects(resumed.continueDraftMedia(actor,'p',{generationRequestKey:'gen'}),/generation_not_queued/);
+    assert.equal(submits,1);
+    assert.deepEqual(await f.store.get('p','draftJobActor',job.id),originalActor);
+    assert.deepEqual(await f.store.get('p','draftJobSession',job.id),originalSession);
+    assert.equal(out.sessionDigest,job.sessionDigest);assert.equal(out.grantDigest,job.grantDigest);
+    assert.deepEqual((await resumed.draftMediaRequest(actor,'p',{generationRequestKey:'gen'},input))?.result,out);
+  }else if(mode==='revoked-before-dispatch'){
+    assert.equal((await resumed.continueDraftMedia(actor,'p',{generationRequestKey:'gen'})).state,'unknown');assert.equal(submits,0);
+  }else{
+    await assert.rejects(resumed.continueDraftMedia(actor,'p',{generationRequestKey:'gen'}));assert.equal(submits,0);
+    assert.equal((await f.store.list('p','draftMediaDispatchAuthority')).length,0);
+  }
+  assert.deepEqual(await f.store.get('p','generationCostReservation',job.id),reservation);
+  assert.equal((await f.store.get<import('../core/index.js').GenerationGrant>('p','generationGrant','image')).usedJobs,1);
+  assert.equal((await f.store.list('p','campaign')).length,0);
+ }finally{await f.store.close();}
+});

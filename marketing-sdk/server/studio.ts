@@ -1,3 +1,4 @@
+import {readDraftMediaAuthority,draftMediaMaterialDigest,type DraftMediaDispatchAuthority} from './studio-media-authority.js';
 import { STUDIO_WRITE_COMMANDS, type StudioWriteCommand, type StudioWriteReceipt, materialCurrency } from "../core/index.js";
 import { assertTextPlanningCapability, type NativeTextPlanning } from './text-planning.js';
 import type { DraftGenerationPort } from "./studio-generation.js";
@@ -16,7 +17,7 @@ export const studioCommandFields: Record<keyof StudioCommands,string[]> = {
   studioImportStatus:['requestKey'],
   reviewStudioDeletion:['draftId','expectedRevision'],
   generateDraftMedia:['draftId','expectedRevision','requestKey','grantId','prompt','rightsReceipt','quoteReceipt'],
-  draftMediaRequest:['generationRequestKey'],
+  draftMediaRequest:['generationRequestKey'], continueDraftMedia:['generationRequestKey'],
   reconcileDraftMedia:['jobId'],
   promoteStudio:['draftId','expectedRevision','grantId','expectedGrantRevision','requestKey'],
   studio:['draftId'], saveBrief:['id','expectedRevision','requestKey','brief'],
@@ -29,7 +30,11 @@ export const studioCommandFields: Record<keyof StudioCommands,string[]> = {
   checkStudio:['draftId','expectedRevision','grantId'], requestPlan:['draftId','expectedRevision','authorityId','requestKey'],
   planningRequest:['requestId'], reconcilePlanning:['requestId'], applyPlanningOption:['draftId','expectedRevision','requestKey','requestId','optionIndex'],
 };
-export interface StudioOptions { withPromotion?: <T>(p:Principal,project:string,draftId:string,local:(retain:(campaign:Campaign)=>Promise<void>)=>Promise<T>)=>Promise<T>; textPlanning?: NativeTextPlanning; withTracking?: <T>(p:Principal,project:string,view:import('../core/index.js').TrackingView,local:()=>Promise<T>)=>Promise<T>; tracking?: (p:Principal,project:string,owner:import('../core/index.js').TrackingOwner)=>Promise<import('../core/index.js').TrackingView>; sessions?: SessionAuthority; planning?: PlanningPort; generation?: DraftGenerationPort }
+export interface StudioOptions {
+  /** Current host authorization for the same original work and exact approval.
+   * The callback must hold its native authority through the local commit. */
+  withMediaContinuation?: <T>(actor:Principal,project:string,job:DraftGenerationJob,original:Principal,local:()=>Promise<T>)=>Promise<T>;
+ withPromotion?: <T>(p:Principal,project:string,draftId:string,local:(retain:(campaign:Campaign)=>Promise<void>)=>Promise<T>)=>Promise<T>; textPlanning?: NativeTextPlanning; withTracking?: <T>(p:Principal,project:string,view:import('../core/index.js').TrackingView,local:()=>Promise<T>)=>Promise<T>; tracking?: (p:Principal,project:string,owner:import('../core/index.js').TrackingOwner)=>Promise<import('../core/index.js').TrackingView>; sessions?: SessionAuthority; planning?: PlanningPort; generation?: DraftGenerationPort }
 type Change = { draftId:string; expectedRevision:number; requestKey:string };
 export class CampaignStudio {
   readonly sessions: SessionAuthority;
@@ -355,10 +360,15 @@ export class CampaignStudio {
   }
   private async mediaAuthority(p:Principal,project:string,j:DraftGenerationJob) {
     requireThat(this.options.generation?.version===2,'draft_generation_configuration_unavailable');
-    const {inspection:expected}=await this.store.get<{inspection:SessionInspection}>(project,'draftJobSession',j.id);
+    const {actor,inspection:expected,original,continuation}=await readDraftMediaAuthority(this.store,project,j);
+    if(continuation){
+      requireThat(this.options.withMediaContinuation,'host_media_continuation_required',403);
+      await this.options.withMediaContinuation(p,project,j,original,async()=>{});
+    }
+    requireThat(digest(actor)===digest(p),'session_authority_changed',401);
     requireThat(digest(expected)===digest(await this.inspection(p,project)),'session_authority_changed',401);
     const g=await this.store.get<GenerationGrant>(project,'generationGrant',j.grantId);
-    requireThat(g.projectId===project&&!g.revokedAt&&Date.parse(g.expiresAt)>this.now()&&digest(sessionBinding(p))===j.sessionDigest&&g.billingCapabilityRef&&g.ceiling.currency===j.quote.currency,'generation_grant_unavailable');
+    requireThat(g.projectId===project&&!g.revokedAt&&Date.parse(g.expiresAt)>this.now()&&g.billingCapabilityRef&&g.ceiling.currency===j.quote.currency,'generation_grant_unavailable');
     requireThat(digest({...g,usedJobs:0})===j.grantDigest,'generation_grant_changed');
     this.options.generation.validate(g);
     const q=j.quote;
@@ -390,21 +400,63 @@ export class CampaignStudio {
       requireThat(q.receipt===i.quoteReceipt,'generation_quote_changed');
       const j:DraftGenerationJob={id:id(),projectId:project,version:2,owner:{kind:'draft',draftId:d.id},creativeSetId:d.studio.creativeSetId,draftRevision:d.revision,sessionDigest:digest(sessionBinding(p)),grantDigest:digest({...g,usedJobs:0}),quote:q,grantId:g.id,kind:g.kind,prompt:i.prompt,promptDigest:digest(i.prompt),rightsReceipt:i.rightsReceipt,parentAssetIds:[],state:'queued',providerRequestId:null,assetId:null,reason:null,createdAt:new Date(this.now()).toISOString()};
       await this.store.put(project,'draftJobSession',j.id,{inspection});
+      await this.store.put(project,'draftJobActor',j.id,p);
       await this.mediaAuthority(p,project,j);requireThat(g.usedJobs<g.maxJobs,'generation_attempt_limit');
       requireThat(!(await this.store.list<DraftGenerationJob>(project,'draftJob')).some(x=>x.owner.draftId===d.id&&['queued','running','processing','unknown'].includes(x.state)),'generation_pending_reconcile_before_resubmit');
       const reservations=await this.store.list<{grantId:string;minor:number}>(project,'generationCostReservation');
       requireThat(reservations.filter(r=>r.grantId===g.id).reduce((n,r)=>n+r.minor,0)+q.maxUnitMinor<=g.ceiling.minor,'generation_budget_exceeded');
       await this.store.put(project,'generationCostReservation',j.id,{jobId:j.id,grantId:g.id,minor:q.maxUnitMinor,currency:q.currency,quoteReceipt:q.receipt});
       await this.store.put(project,'generationGrant',g.id,{...g,usedJobs:g.usedJobs+1});
-      await this.store.put(project,'draftJob',j.id,j);await this.store.put(project,'draftJobActor',j.id,p);return j;
+      await this.store.put(project,'draftJob',j.id,j);return j;
     }),inspection);
   }
+  /** Explicit continuation of a never-attempted original job. A current host
+   * invocation is required; no expired invocation is reauthenticated. */
+  async continueDraftMedia(p:Principal,project:string,i:{generationRequestKey:string}) {
+    requireThat(this.options.withMediaContinuation,'host_media_continuation_required',403);
+    await this.store.db.assertExecutionOwner();
+    const receipt=await this.draftMediaRequest(p,project,i);
+    requireThat(receipt,'original_generation_request_required');
+    const candidate=receipt.result;
+    const admission=await this.store.get<{result:DraftGenerationJob}>(project,'studioWrite',receipt.id);
+    requireThat(draftMediaMaterialDigest(admission.result)===draftMediaMaterialDigest(candidate),'generation_admission_changed');
+    const {original}=await readDraftMediaAuthority(this.store,project,candidate);
+    requireThat(p.userId===original.userId&&digest(p.externalIdentity??null)===digest(original.externalIdentity??null),'generation_continuation_identity_changed',403);
+    await this.options.withMediaContinuation(p,project,candidate,original,()=>this.guarded(p,project,true,async()=>{
+      await this.store.db.assertExecutionOwner();
+      const job=await this.store.get<DraftGenerationJob>(project,'draftJob',candidate.id);
+      requireThat(digest(await this.store.get(project,'studioWrite',receipt.id))===digest(admission),'generation_admission_changed');
+      await this.assertUnattemptedMedia(project,job);
+      requireThat(digest(job)===digest(candidate),'generation_continuation_changed');
+      const retained=await readDraftMediaAuthority(this.store,project,job);
+      await this.draft(project,job.owner.draftId,job.draftRevision,true);
+      const inspection=await this.inspection(p,project);
+      const authority:DraftMediaDispatchAuthority={jobId:job.id,materialDigest:draftMediaMaterialDigest(job),
+        originalActorDigest:digest(retained.original),originalSessionDigest:digest(retained.admitted),actor:structuredClone(p),inspection};
+      await this.store.put(project,'draftMediaDispatchAuthority',job.id,authority);
+      await this.mediaAuthority(p,project,job);
+      await this.store.append(project,job.id,'studio.media_continued',{
+        originalActor:{userId:original.userId,hostSessionRef:original.externalSessionRef??null},
+        actor:{userId:p.userId,hostSessionRef:p.externalSessionRef??null},materialDigest:authority.materialDigest});
+    }));
+    return this.dispatchDraftMedia(project,candidate.id);
+  }
+  private async assertUnattemptedMedia(project:string,job:DraftGenerationJob) {
+    requireThat(job.state==='queued'&&!job.providerRequestId&&!job.assetId,'generation_not_queued');
+    // Existing provider evidence must never be erased or replayed even if a
+    // damaged/incomplete state transition left the job marked queued.
+    requireThat(!(await this.store.list<{jobId:string}>(project,'generationUsageEvidence')).some(e=>e.jobId===job.id),
+      'queued_generation_has_provider_evidence');
+  }
   async dispatchDraftMedia(project:string,jobId:string) {
-    await this.store.db.assertExecutionOwner();const p=await this.store.get<Principal>(project,'draftJobActor',jobId);
+    await this.store.db.assertExecutionOwner();
+    const saved=await this.store.get<DraftGenerationJob>(project,'draftJob',jobId);
+    const {actor:p}=await readDraftMediaAuthority(this.store,project,saved);
     const candidate=await this.guarded(p,project,true,()=>this.store.get<DraftGenerationJob>(project,'draftJob',jobId));
     if(candidate.state!=='queued')return candidate;
+    await this.assertUnattemptedMedia(project,candidate);
     await this.quotedMedia(p,project,candidate);
-    const job=await this.guarded(p,project,true,async()=>{await this.store.db.assertExecutionOwner();const j=await this.store.get<DraftGenerationJob>(project,'draftJob',jobId);if(j.state!=='queued')return null;await this.mediaAuthority(p,project,j);await this.draft(project,j.owner.draftId,j.draftRevision,true);j.state='running';await this.store.put(project,'draftJob',j.id,j);return j;});
+    const job=await this.guarded(p,project,true,async()=>{await this.store.db.assertExecutionOwner();const j=await this.store.get<DraftGenerationJob>(project,'draftJob',jobId);if(j.state!=='queued')return null;await this.assertUnattemptedMedia(project,j);await this.mediaAuthority(p,project,j);await this.draft(project,j.owner.draftId,j.draftRevision,true);j.state='running';await this.store.put(project,'draftJob',j.id,j);return j;});
     if(!job)return this.store.get<DraftGenerationJob>(project,'draftJob',jobId);
     const fence=async()=>{await this.quotedMedia(p,project,job);await this.guarded(p,project,true,async()=>{await this.store.db.assertExecutionOwner();await this.mediaAuthority(p,project,job);await this.draft(project,job.owner.draftId,job.draftRevision,true);});};
     try{
