@@ -1305,3 +1305,12 @@ canonical database file, so a synchronous lock wait cannot block the connection
 that must commit first. A failed `BEGIN` is not followed by a rollback of a
 transaction that never started. SQLite still enforces cross-process locking;
 PostgreSQL and MariaDB retain their transaction-guard row behavior.
+
+### Retained campaign artwork
+
+`CampaignMedia` is the shared retained-artwork picker used by the campaign
+workspace and host material editors. Its `onSelect` callback supplies an existing
+campaign asset ID; it performs no save, generation or provider operation. Hosts
+pass current edit eligibility and provider update availability. Material reviews
+render only `material.assetIds`, and identify a missing selected asset explicitly;
+older retained artwork is never substituted into the approval preview.

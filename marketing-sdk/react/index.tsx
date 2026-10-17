@@ -1,3 +1,5 @@
+import {CampaignMedia} from './campaign-media.js';
+export {CampaignMedia} from './campaign-media.js';
 import { materialCurrency } from "../core/index.js";
 import { AudienceClientContext } from "./audience.js";
 import { CampaignPrerequisites } from "./preflight.js";
@@ -55,7 +57,7 @@ export function MaterialReview({
   return (
     <div className="material-review">
       <div className="creative-preview">
-        {assets.map((a) => (
+        {assets.filter(a=>material.assetIds.includes(a.id)).map((a) => (
           <figure key={a.id}>
             {a.kind === "video" ? (
               <video controls preload="metadata" src={client.assetUrl(a.id)} />
@@ -69,6 +71,7 @@ export function MaterialReview({
             </figcaption>
           </figure>
         ))}
+        {material.assetIds.some(id=>!assets.some(a=>a.id===id))&&<p role="status">Selected artwork is unavailable.</p>}
       </div>
       <h3>{material.headline}</h3>
       <p>{material.body}</p>
@@ -670,58 +673,10 @@ function WorkspaceContent({ client }: { client: MarketingClient }) {
                   </button>
                 </section>
               </div>
-              <div className="grid assets">
-                {assets.map((a) => (
-                  <section className="card" key={a.id}>
-                    <div className="eyebrow">
-                      {a.source} · {a.kind}
-                    </div>
-                    {a.kind === "video" ? (
-                      <video
-                        controls
-                        preload="metadata"
-                        src={client.assetUrl(a.id)}
-                      />
-                    ) : a.kind === "image" ? (
-                      <img
-                        src={client.assetUrl(a.id)}
-                        alt="Retained campaign creative"
-                      />
-                    ) : (
-                      <a href={client.assetUrl(a.id)}>Read storyboard</a>
-                    )}
-                    <p>
-                      {a.width && `${a.width} × ${a.height}`}{" "}
-                      {a.seconds && `${a.seconds}s`} · v{a.version}
-                    </p>
-                    {a.kind === "image" && (
-                      <button
-                        className="secondary"
-                        disabled={
-                          busy ||
-                          !canEdit ||
-                          campaign.material.assetIds.includes(a.id)
-                        }
-                        onClick={() =>
-                          void act(() =>
-                            save({ ...campaign.material, assetIds: [a.id] }),
-                          )
-                        }
-                      >
-                        {campaign.material.assetIds.includes(a.id)
-                          ? "Selected for campaign"
-                          : "Use this image"}
-                      </button>
-                    )}
-                    {a.kind === "video" && (
-                      <p className="muted">
-                        Playable retained output. Video ad placement is not
-                        supported by the initial single-image/Search mappings.
-                      </p>
-                    )}
-                  </section>
-                ))}
-              </div>
+              <CampaignMedia assets={assets} assetIds={campaign.material.assetIds} client={client}
+                disabled={busy||!canEdit}
+                selectionUnavailable={campaign.receipt&&selectedGrant?.provider==='linkedin'?'Image replacement is unavailable for this existing LinkedIn creative.':undefined}
+                onSelect={assetId=>void act(()=>save({...campaign.material,assetIds:[assetId]}))}/>
               <section className="card">
                 <h2>Generation journal</h2>
                 {data.jobs
