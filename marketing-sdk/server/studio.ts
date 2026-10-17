@@ -286,7 +286,7 @@ export class CampaignStudio {
       add('checks','destination',dest&&(dest as {url:string}).url===d.material.destination?'pass':'blocked','Capture matching destination evidence explicitly; checking never fetches a URL.');
       if(g){try{material(d.material as Material,g.provider);const blockers=capabilityBlockers(d.material as Material,g);for(const code of blockers)add('checks',code,'blocked',code.replaceAll('_',' '));if(!blockers.length)add('checks','material','pass','Local field and provider capability constraints pass.');}catch(e){add('checks','material','blocked',(e as Error).message.replaceAll('_',' '));}
         add('checks','account_eligibility',capabilityStatus(d.material as Material,g).accountVerified?'pass':'unknown','Current exact account eligibility evidence is separate from local format validity.','provider');
-        if(g.currency!==d.material.budget?.currency||g.timezone!==d.material.timezone)add('checks','account_budget_schedule','blocked','Review account currency and timezone.');
+        if(g.currency!==materialCurrency(d.material as Material)||g.timezone!==d.material.timezone)add('checks','account_budget_schedule','blocked','Review account currency and timezone.');
       }
       const provider=d.material.audience?.provider;
       add('media','format',provider==='google'?assets.length===0?'pass':'blocked':assets.length===1&&assets[0]?.kind==='image'?'pass':'blocked',provider==='google'?'Google Search is text only.':'Current Meta/LinkedIn adapters require one retained image. Video and storyboards cannot launch.');

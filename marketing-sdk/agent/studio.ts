@@ -18,7 +18,7 @@ const source={id,kind:{enum:['draft','campaign']},expectedRevision:revision,requ
 const partial=(schema:unknown):unknown=>{
   if(!schema||typeof schema!=='object')return schema;
   if(Array.isArray(schema))return schema.map(partial);
-  return Object.fromEntries(Object.entries(schema).filter(([key])=>!['required','minLength'].includes(key)).map(([key,value])=>[key==='oneOf'?'anyOf':key,partial(value)]));
+  return Object.fromEntries(Object.entries(schema).filter(([key])=>!['required','minLength'].includes(key)).map(([key,value])=>[key==='oneOf'?'anyOf':key,key==='if'?value:partial(value)]));
 };
 const draftProperties={...partial(material.properties) as Record<string,unknown>,name:str(100,1),
   settings:partial(material.properties.settings),audience:partial(material.properties.audience),

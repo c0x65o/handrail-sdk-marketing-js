@@ -1343,3 +1343,11 @@ asset IDs through the existing `reviseCampaignMaterial` workflow. Both Studio
 promotion and retention share the same media conversion. Hosts must apply their
 own native action, exclusion and policy guards and preserve the exact request
 across an uncertain response. Browser/agent JSON cannot supply authority ports.
+
+
+Native material schemas preserve the same current Meta and LinkedIn settings as
+Studio, including explicit expansion/attribution/creative fields, locale facets,
+open schedules and daily budgets. An unknown historical acknowledgement remains
+unknown in a local draft; execution still requires current acknowledgement,
+account eligibility, exact approval and spending authority. Studio account
+currency checks use the current material budget representation.

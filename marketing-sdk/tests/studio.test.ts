@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import sharp, { type Sharp } from 'sharp';
 import { CampaignStudio, ResponsesPlanningAdapter, planningInputDigest, digest, sessionBinding, type PlanningPort } from '../server/index.js';
-import { emptyBrief, type PlanningAuthority, type CampaignOption } from '../core/index.js';
+import { CAPABILITY_VERSION, emptyBrief, type PlanningAuthority, type CampaignOption } from '../core/index.js';
 import { testStore } from './datastore.js';
 import { externalSessionFixture } from './external-session-fixture.js';
 import {MarketingServer} from '../server/index.js';
@@ -507,5 +507,28 @@ test(`draft media continuation ${mode} preserves the original admission and perm
   assert.deepEqual(await f.store.get('p','generationCostReservation',job.id),reservation);
   assert.equal((await f.store.get<import('../core/index.js').GenerationGrant>('p','generationGrant','image')).usedJobs,1);
   assert.equal((await f.store.list('p','campaign')).length,0);
+ }finally{await f.store.close();}
+});
+
+
+test('Studio checks daily-budget currency through the current material contract without granting eligibility',async()=>{
+ const f=await fixture();try{
+  const g:import('../core/index.js').Grant={id:'daily-account',projectId:'p',revision:1,provider:'meta',accountId:'123',pageId:'42',label:'Fixture planning account',currency:'USD',timezone:'UTC',permissions:[],expiresAt:'2099-01-01T00:00:00Z',revokedAt:null,secretRef:'unused'};
+  await f.store.put('p','grant',g.id,g);
+  let d=f.d;
+  for(const [currency,timezone,blocked] of [['USD','UTC',false],['EUR','UTC',true],['USD','America/Chicago',true]] as const){
+   d=await f.studio.saveStudioMaterial(f.p,'p',{draftId:d.id,expectedRevision:d.revision,requestKey:`daily-${currency}-${timezone}`,step:'checks',material:{...d.material,
+    destinationDigest:'a'.repeat(64),headline:'Review shipment decisions',body:'Bring your quality-release workflow into one place.',purpose:'acquisition',assetIds:[],
+    audience:{provider:'meta',locations:['US'],ageMin:18,ageMax:65,expansion:false},budget:null,advertisingBudget:{daily:{currency,minor:500}},
+    startAt:'2026-11-01T00:00:00Z',endAt:null,timezone,
+    settings:{version:CAPABILITY_VERSION,provider:'meta',apiVersion:'v26.0',accountId:'123',nondiscriminationAccepted:null,format:'single_image',objective:'OUTCOME_TRAFFIC',optimization:'LINK_CLICKS',delivery:'ordinary',placements:['facebook_feed'],identity:{pageId:'42'},targeting:{languages:[],interestGroups:[],excludedCustomAudiences:[]}}
+   }});
+   const report=await f.studio.checkStudio(f.p,'p',{draftId:d.id,expectedRevision:d.revision,grantId:g.id});
+   assert.equal(report.checks.some(c=>c.code==='account_budget_schedule'&&c.state==='blocked'),blocked);
+   assert.ok(report.checks.some(c=>c.code==='nondiscrimination_notice_required'&&c.state==='blocked'));
+   assert.equal(report.providerApproval,'not_requested');
+  }
+  assert.equal((await f.store.list('p','operation')).length,0);
+  assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
  }finally{await f.store.close();}
 });

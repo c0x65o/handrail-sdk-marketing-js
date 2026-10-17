@@ -9,17 +9,25 @@ const strings = { type: "array", items: string, maxItems: 30 };
 const money = schemaObject({ currency: { enum: ["USD", "EUR", "GBP", "CAD", "AUD"] }, minor: { type: "integer", minimum: 1, maximum: 1e9 } });
 const option = schemaObject({ id: string, label: string });
 const options = { type: "array", items: option, maxItems: 30 };
-const facets = schemaObject(Object.fromEntries(["titles", "jobFunctions", "seniorities", "employers", "industries", "staffCountRanges"].map(k => [k, options])), []);
-const settingsBase = { version: { const: CAPABILITY_VERSION }, accountId: string, nondiscriminationAccepted: { const: true } };
+const facets = schemaObject(Object.fromEntries(["titles", "jobFunctions", "seniorities", "employers", "industries", "staffCountRanges", "interfaceLocales"].map(k => [k, options])), []);
+const settingsBase = { version: { const: CAPABILITY_VERSION }, accountId: string, nondiscriminationAccepted: { type: "boolean" } };
 const providerSettings = { oneOf: [
-  Object.assign(schemaObject({ ...settingsBase, provider: { const: "meta" }, apiVersion: { const: "v26.0" }, format: { const: "single_image" },
+  Object.assign(schemaObject({ ...settingsBase, nondiscriminationAccepted: { type: ["boolean", "null"] }, provider: { const: "meta" }, apiVersion: { const: "v26.0" }, format: { const: "single_image" },
     objective: { enum: ["OUTCOME_TRAFFIC", "OUTCOME_AWARENESS", "OUTCOME_LEADS"] }, optimization: { enum: ["LINK_CLICKS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS"] },
-    delivery: { enum: ["ordinary", "strict", "employment"] }, placementMode: { const: "provider_defaults" }, placements: { type: "array", minItems: 0, maxItems: META_PLACEMENTS.length, uniqueItems: true, items: { enum: META_PLACEMENTS.map(p => p.id) } },
+    delivery: { enum: ["ordinary", "strict", "expanded", "employment", "advantage_plus_interests", "advantage_plus_broad"] }, placementMode: { const: "provider_defaults" }, placements: { type: "array", minItems: 0, maxItems: META_PLACEMENTS.length, uniqueItems: true, items: { enum: META_PLACEMENTS.map(p => p.id) } },
     identity: schemaObject({ pageId: string, instagramUserId: string }, ["pageId"]), targeting: schemaObject({ languages: options,
-      interestGroups: { type: "array", maxItems: 5, items: options }, excludedCustomAudiences: options, userAgeUnknown: {type:"boolean"} }, ["languages","interestGroups","excludedCustomAudiences"]),
+      interestGroups: { type: "array", maxItems: 5, items: options }, excludedCustomAudiences: options, userAgeUnknown: {type:"boolean"},
+      locationTypes: {type:"array",minItems:1,maxItems:4,uniqueItems:true,items:{enum:["home","recent","travel_in","frequently_in"]}},
+      optimization: {const:"none"}, expansion: schemaObject({detailedTargeting:{enum:[0,1]},lookalike:{enum:[0,1]}}) }, ["languages","interestGroups","excludedCustomAudiences"]),
     pagePromotion: schemaObject({smartPseEnabled:{type:"boolean"}}),
     specialAdCategory: { const: "EMPLOYMENT" }, specialAdCategoryCountry: { const: "US" },
-    conversion: schemaObject({ pixelId: string, customConversionId: string, event: { const: "ApplicantRequestMOU" } }),
+    conversion: {oneOf:[
+      schemaObject({pixelId:string,customConversionId:string,event:{const:"ApplicantRequestMOU"},smartPseEnabled:{type:"boolean"}},["pixelId","customConversionId","event"]),
+      schemaObject({pixelId:string,event:{const:"Lead"},smartPseEnabled:{type:"boolean"}},["pixelId","event"]),
+    ]},
+    attribution: {type:"array",maxItems:2,items:schemaObject({eventType:{enum:["CLICK_THROUGH","VIEW_THROUGH"]},windowDays:{enum:[1,7,28]}})},
+    creative: schemaObject({description:{type:"string",maxLength:3000},urlTags:{type:"string",maxLength:8000},
+      features:{type:"object",maxProperties:200,propertyNames:{pattern:"^[a-z][a-z0-9_]{0,99}$"},additionalProperties:{enum:["OPT_IN","OPT_OUT"]}}},[]),
   }, [...Object.keys(settingsBase), "provider", "apiVersion", "format", "objective", "optimization", "delivery", "placements", "identity", "targeting"]), {allOf:[{
     if:{required:["placementMode"]}, then:{properties:{placements:{maxItems:0}}},
     else:{properties:{placements:{minItems:1}}},
@@ -39,7 +47,7 @@ export const material = schemaObject(
     settings: providerSettings,
     purpose: { enum: ["acquisition", "recruitment"] },
     applicantGoal: schemaObject({ event: { const: "ApplicantRequestMOU" }, meaning: { const: "completed_mou_request" } }),
-    advertisingBudget: schemaObject({ lifetime: money, daily: money, campaignDailyCeiling: money, campaignLifetimeCeiling: money }, ["lifetime"]),
+    advertisingBudget: { ...schemaObject({ lifetime: money, daily: money, campaignDailyCeiling: money, campaignLifetimeCeiling: money }, []), anyOf: [{required:["lifetime"]},{required:["daily"]}] },
     headline: string,
     body: { type: "string", minLength: 1, maxLength: 3000 },
     destination: { type: "string", format: "uri", maxLength: 2000 },
@@ -57,12 +65,9 @@ export const material = schemaObject(
       },
       ["provider", "locations", "expansion"],
     ),
-    budget: schemaObject({
-      currency: { enum: ["USD", "EUR", "GBP", "CAD", "AUD"] },
-      minor: { type: "integer", minimum: 1, maximum: 1000000000 },
-    }),
+    budget: {anyOf:[money,{type:"null"}]},
     startAt: string,
-    endAt: string,
+    endAt: {anyOf:[string,{type:"null"}]},
     timezone: string,
     searchHeadlines: strings,
     searchDescriptions: strings,
