@@ -753,6 +753,23 @@ missing mapped objects/statuses remain unknown. The visibility scope is explicit
 this does not settle historical requests, prove actual impressions, authorize
 spending, or claim that an unmapped historical campaign never created an object.
 
+`inspectLinkedInDeliveryInventory` provides the same account-scoped read contract
+for LinkedIn groups, campaigns and creatives. It follows every cursor page through
+the SDK client and refuses malformed, repeated or failed pagination. Original
+campaign/group/creative mappings bind the requested hierarchies; account/currency,
+credential expiry and current authority are rechecked during collection. Shared
+groups may remain ACTIVE while their mapped campaigns and creatives are PAUSED.
+Their observed status never authorizes a group change. Unmapped campaigns and
+orphan creatives remain ownership-unverified. Missing objects/statuses and
+contradictory serving evidence cannot produce paused proof. The result contains
+only identity and status evidence, not creative copy or credentials.
+
+Provider contracts: [campaign search](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-campaigns?view=li-lms-2026-09)
+and [creative search](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/ads/account-structure/create-and-manage-creatives?view=li-lms-2026-09).
+The reader uses 100-row pages, including the creatives API's 100-row maximum,
+and the required creative FINDER header. These are request page sizes, not total
+inventory limits.
+
 Meta material now represents `advantage_plus_broad` separately from
 `advantage_plus_interests`. Broad acquisition preserves the provider's absence
 of interest groups, explicit Advantage+ automation/expansion, Lead conversion,

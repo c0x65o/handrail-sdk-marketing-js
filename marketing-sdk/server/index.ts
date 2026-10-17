@@ -52,6 +52,7 @@ export {HistoricalEffectResolutions,readHistoricalEffectResolution,type Historic
 
 export * from "./meta-image.js";
 export {inspectMetaDeliveryInventory,type MetaDeliveryTarget,type MetaDeliveryObject,type MetaUnmappedDeliveryCampaign} from './delivery-inventory.js';
+export {inspectLinkedInDeliveryInventory,type LinkedInDeliveryTarget,type LinkedInDeliveryObject} from './linkedin-delivery-inventory.js';
 
 export * from "./campaign-execution-connection.js";
 

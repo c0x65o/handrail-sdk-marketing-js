@@ -416,6 +416,7 @@ export class LinkedInMarketingClient {
     return this.request(`adAccounts/${accountId(adAccountId)}/adCampaignGroups/${urnId(campaignGroupId, "sponsoredCampaignGroup").id}`);
   }
 
+  /** @param {string} adAccountId @param {{pageSize?:number,pageToken?:string|null}} options */
   listCampaignGroups(adAccountId, { pageSize = 100, pageToken = null } = {}) {
     return this.request(`adAccounts/${accountId(adAccountId)}/adCampaignGroups`, { query: { q: "search", pageSize: Math.min(1000, Math.max(1, Number(pageSize) || 100)), pageToken } });
   }
@@ -480,6 +481,7 @@ export class LinkedInMarketingClient {
     return this.request(`adAccounts/${accountId(adAccountId)}/adCampaigns/${urnId(campaignId, "sponsoredCampaign").id}`);
   }
 
+  /** @param {string} adAccountId @param {{pageSize?:number,pageToken?:string|null}} options */
   listCampaigns(adAccountId, { pageSize = 100, pageToken = null } = {}) {
     return this.request(`adAccounts/${accountId(adAccountId)}/adCampaigns`, { query: { q: "search", pageSize: Math.min(1000, Math.max(1, Number(pageSize) || 100)), pageToken } });
   }
@@ -675,8 +677,9 @@ export class LinkedInMarketingClient {
     return { ...creative, inlineContent: { ...creative.inlineContent, post } };
   }
 
+  /** @param {string} adAccountId @param {{campaignUrn?:string|null,pageSize?:number,pageToken?:string|null}} options */
   listCreatives(adAccountId, { campaignUrn = null, pageSize = 100, pageToken = null } = {}) {
-    return this.request(`adAccounts/${accountId(adAccountId)}/creatives`, { query: { q: "criteria", campaigns: campaignUrn ? `List(${campaignUrn})` : null, sortOrder: "ASCENDING", pageSize, pageToken } });
+    return this.request(`adAccounts/${accountId(adAccountId)}/creatives`, { headers: { "x-restli-method": "FINDER" }, query: { q: "criteria", campaigns: campaignUrn ? `List(${campaignUrn})` : null, sortOrder: "ASCENDING", pageSize, pageToken } });
   }
 
   async findCreativeByCampaignAndName(adAccountId, campaignId, name) {
