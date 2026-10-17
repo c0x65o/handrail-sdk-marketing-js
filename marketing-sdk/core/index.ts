@@ -128,6 +128,17 @@ export interface Receipt {
   providerRequestId: string | null;
   observedAt: string;
   evidence: "fixture" | "provider";
+  /** Fresh unauthenticated URL proof; original material/readback bytes stay intact. */
+  commentaryUrlEvidence?: {
+    expectedDigest: string;
+    observedDigest: string;
+    observedAt: string;
+    urls: Array<{
+      expected_url: string; provider_url: string; final_url: string;
+      status: "resolved"; equivalent: true; observed_at: string;
+      hops: Array<{url:string;status:number;navigation?:string}>;
+    }>;
+  };
 }
 export interface Grant {
   /** Optional host-bound campaign scope; never reusable for another campaign or draft. */

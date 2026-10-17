@@ -1251,3 +1251,17 @@ Removing an existing end date remains `existing_campaign_schedule_clear_unqualif
 provider-specific clearing contracts still need qualification. Creative replacement
 also remains unqualified. Successful transport tests establish request/readback and
 recovery behavior, not real delivery or an authorized live pilot.
+
+LinkedIn commentary URL verification is shared by execution and reporting through
+`compareLinkedInCommentaryUrls` and `resolveLinkedInCommentaryUrl` from the server
+entrypoint. It permits only LinkedIn shortlink substitution with freshly observed
+public-HTTPS final-destination equality. All surrounding prose, punctuation and
+query encoding remain exact. Socket DNS answers are checked and pinned; provider
+authentication is never forwarded. Original readback commentary/digests are not
+rewritten. Successful execution receipts retain `commentaryUrlEvidence` with
+expected/observed text digests and dated URL hops. The provider snapshot must
+remain unchanged while links resolve. Preparation, adoption, updates, activation
+and uncertain-operation recovery use current proof; a saved successful proof is
+never reused as authority. Pause does not require a reachable commentary link.
+The optional comparison guard is trusted host custody and is checked around each
+public read; it cannot confer spending or provider-write authority.

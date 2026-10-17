@@ -12,6 +12,8 @@ import { MarketingServer } from "../server/service.js";
 import { metaExpansionOff, exactLinkedInTargeting } from "../server/capabilities.js";
 import { testStore } from "./datastore.js";
 import { byteDigest, digest, DomainError } from "../server/store.js";
+import {mockCommentaryUrls,shortUrl} from './fixtures/linkedin-commentary-urls.js';
+import {salespersonCopy} from './fixtures/linkedin-commentary.js';
 
 // Independent expected provider placement documents, not derived from the SDK catalogue.
 const metaPlacementCases: {ids: MetaSettings["placements"]; targeting: Record<string,string[]>}[] = [
@@ -864,6 +866,63 @@ test('LinkedIn adoption material diagnostics identify mismatched fields without 
     t.state.drift=null;
     assert.equal((await t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{})).candidateReceipt.intent,'paused');
     assert.equal(t.state.writes,writes);
+  }finally{await t.close();}
+});
+
+test('SDK prepare/adoption and recovery verify shortened commentary freshly; drift/revocation block and pause remains available',async context=>{
+  const t=await native('linkedin');try{
+    const http=mockCommentaryUrls(context),careers='https://handrail-daas.com/careers';
+    t.c.material.body=salespersonCopy;eligible(t.c,t.g);
+    t.state.drift=(o,k)=>{if(k==='creatives')o.inlineContent.post.commentary=o.inlineContent.post.commentary.replace(careers,shortUrl);};
+    const prepared=await t.port.prepare(t.c,t.g,[t.a],'shortened-copy',()=>{},()=>{});
+    assert.equal(prepared.commentaryUrlEvidence?.urls[0]?.final_url,careers);
+    assert.equal(prepared.commentaryUrlEvidence?.expectedDigest,digest(salespersonCopy));
+    const ids=Object.fromEntries(['group','campaign','creative','image'].map(k=>[k,prepared.ids[k]!]));
+    t.state.drift=null;
+    const post=t.state.objects.get(`urn:li:sponsoredCreative:${ids.creative}`)!.inlineContent.post;
+    post.commentary=salespersonCopy.replace(careers,shortUrl);
+    const rawCommentary=post.commentary;
+    t.c.material.budget=null;t.c.material.advertisingBudget={daily:{currency:'USD',minor:3000}};
+    const originalWrites=t.state.writes;
+    const adopted=await t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{});
+    assert.equal(adopted.candidateReceipt.commentaryUrlEvidence?.observedDigest,digest(rawCommentary));
+    assert.equal(post.commentary,rawCommentary);assert.equal(t.state.writes,originalWrites);
+    const paused={...t.c,state:'paused' as const,receipt:adopted.candidateReceipt};eligible(paused,t.g);
+    http.set({destination:careers+'?different=1'});
+    await assert.rejects(t.port.activate(paused,t.g,()=>{}),/provider_effective_material_mismatch/);
+    assert.equal(t.state.writes,originalWrites);
+    assert.equal(await t.port.reconcile(paused,t.g,{kind:'prepare',payloadDigest:paused.receipt.payloadDigest,receipt:paused.receipt}),null);
+    http.set({destination:careers});
+    const recovered=await t.port.reconcile(paused,t.g,{kind:'prepare',payloadDigest:paused.receipt.payloadDigest,receipt:paused.receipt});
+    assert.equal(recovered?.commentaryUrlEvidence?.urls[0]?.final_url,careers);
+    assert.equal(recovered?.ids.readbackDigest,paused.receipt.ids.readbackDigest);assert.equal(t.state.writes,originalWrites);
+    const lostReceipt={...paused.receipt,ids:{...paused.receipt.ids}};delete lostReceipt.ids.readbackDigest;
+    const reconciled=await t.port.reconcile(paused,t.g,{kind:'prepare',payloadDigest:paused.receipt.payloadDigest,receipt:lostReceipt});
+    assert.equal(reconciled?.commentaryUrlEvidence?.urls[0]?.final_url,careers);
+    assert.equal(reconciled?.ids.readbackDigest,paused.receipt.ids.readbackDigest);assert.equal(t.state.writes,originalWrites);
+    post.commentary=rawCommentary.replace('Earn 20%','Earn 30%');
+    await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_effective_material_mismatch/);
+    post.commentary=rawCommentary;
+    http.set({onRead:()=>{post.commentary=rawCommentary+' changed';}});
+    await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{}),/provider_readback_changed_during_link_verification/);
+    post.commentary=rawCommentary;let revoked=false;
+    http.set({onRead:()=>{revoked=true;}});
+    await assert.rejects(t.port.inspectExistingCampaign(t.c,t.g,[t.a],ids,async()=>{if(revoked)throw new DomainError('revoked',403);}),/revoked/);
+    assert.equal(t.state.writes,originalWrites);
+    http.set({onRead:null});
+    const activated=await t.port.activate(paused,t.g,()=>{});
+    assert.equal(activated.intent,'enabled');assert.equal(activated.commentaryUrlEvidence?.urls[0]?.final_url,careers);
+    assert.equal(post.commentary,rawCommentary);
+    const afterActivation=t.state.writes;
+    http.set({destination:careers+'?changed=1'});
+    const enabled={...paused,state:'enabled' as const,receipt:activated};
+    assert.equal(await t.port.reconcile(enabled,t.g,{kind:'activate',payloadDigest:activated.payloadDigest,receipt:activated}),null);
+    http.set({destination:careers});
+    assert.equal((await t.port.reconcile(enabled,t.g,{kind:'activate',payloadDigest:activated.payloadDigest,receipt:activated}))?.commentaryUrlEvidence?.urls[0]?.final_url,careers);
+    assert.equal(t.state.writes,afterActivation);
+    http.set({error:'ENOTFOUND'});
+    const stopped=await t.port.pause({...paused,state:'enabled',receipt:activated},t.g,()=>{});
+    assert.equal(stopped.intent,'paused');assert.equal(t.state.writes,afterActivation+2);
   }finally{await t.close();}
 });
 

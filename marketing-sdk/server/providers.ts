@@ -1,3 +1,4 @@
+import {compareLinkedInCommentaryUrls} from "../support/owner-marketing/linkedin-commentary-links.js";
 import { assertCurrentGrant } from "./grant-authority.js";
 import { materialCurrency, materialEndTime } from "../core/index.js";
 import { countryPage, countryCode } from "./countries.js";
@@ -559,7 +560,7 @@ export class NativeProvider implements ProviderPort {
         originalUploadBytesVerified:false as const,providerImageReadbackVerified:true as const,executionTransferred:false as const,spendingAuthorityGranted:false as const};
     }).catch(async error=>{await current();if(error instanceof DomainError)throw error;throw existingReadFailure("existing_media_read_unavailable",error);});
   }
-  private async use<T>(g: Grant, fn: (client: any) => Promise<T>) {
+  private async use<T>(g: Grant, fn: (client: any, guard:()=>Promise<void>) => Promise<T>) {
     requireThat(g.provider === this.name, "provider_mismatch");
     try {
       // A newer check cannot authorize a client that captured older credentials.
@@ -603,6 +604,7 @@ export class NativeProvider implements ProviderPort {
                   credentials.loginCustomerId,
                   fetcher,
                 ),
+          assertCustody,
         );
         await assertCustody();
         return result;
@@ -1017,7 +1019,8 @@ export class NativeProvider implements ProviderPort {
       ids.groupSchedule = JSON.stringify({ startAt: oldPlan.group.startAt,
         ...(oldPlan.group.endAt === undefined ? {} : { endAt: oldPlan.group.endAt }) });
     }
-    return this.use(g, async client => {
+    return this.use(g, async (client,custodyGuard) => {
+      const proofGuard=async()=>{await custodyGuard();await readGuard();};
       if (this.name === "linkedin") client.beforeWrite = async () => {
         requireThat((await this.linkedInPermissions(client, g, undefined, readGuard, "prepare")).includes("prepare"), "provider_capability_missing");
         await guard();
@@ -1026,6 +1029,7 @@ export class NativeProvider implements ProviderPort {
       const before = await this.snapshot(client, g, ids);
       requireThat(before.paused, "existing_campaign_not_paused");
       requireThat(digest(before.material) === previousDigest, "external_material_changed");
+      await this.verifySnapshot(client,g,ids,before,oldPlan,proofGuard);
       if (this.name === "linkedin" && plan.campaign.endAt !== oldPlan.campaign.endAt) {
         const schedule = before.material.group.runSchedule;
         requireThat(Number.isFinite(schedule?.start) && plan.campaign.startAt >= schedule.start &&
@@ -1062,11 +1066,11 @@ export class NativeProvider implements ProviderPort {
       }
       const after = await this.snapshot(client, g, ids);
       requireThat(after.paused, "existing_campaign_not_paused");
-      this.validateSnapshot(after.material, plan, ids);
+      const commentaryUrlEvidence=await this.verifySnapshot(client,g,ids,after,plan,proofGuard);
       await guard();
       const observed = { ...ids, readbackDigest: digest(after.material) };
       await retain(observed);
-      return { ...this.receipt(observed, digest(plan), "paused"), providerRequestId: client.lastRequestId || null };
+      return { ...this.receipt(observed, digest(plan), "paused"), ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}), providerRequestId: client.lastRequestId || null };
     });
   }
   private async bytes(project: string, a: Asset) {
@@ -1129,7 +1133,8 @@ export class NativeProvider implements ProviderPort {
         throw error;
       }
     };
-    return await this.use(g, async (client) => {
+    return await this.use(g, async (client,custodyGuard) => {
+      const proofGuard=async()=>{await custodyGuard();await readGuard();};
       if (this.name === "linkedin") {
         client.beforeWrite = async () => {
           requireThat((await this.linkedInPermissions(client, g, undefined, readGuard, "prepare")).includes("prepare"), "provider_capability_missing");
@@ -1267,11 +1272,12 @@ export class NativeProvider implements ProviderPort {
       }
       const snapshot = await this.snapshot(client, g, ids);
       requireThat(snapshot.paused, "provider_not_paused");
-      this.validateSnapshot(snapshot.material, plan, ids);
+      const commentaryUrlEvidence=await this.verifySnapshot(client,g,ids,snapshot,plan,proofGuard);
       ids.readbackDigest = digest(snapshot.material);
       await retain(ids);
       return {
         ...this.receipt(ids, digest(plan), "paused"),
+        ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}),
         providerRequestId: client.lastRequestId || null,
       };
     });
@@ -1325,12 +1331,13 @@ export class NativeProvider implements ProviderPort {
         : new LinkedInMarketingClient({...credentials,apiVersion:"202609",fetchImpl:fetcher});
       const snapshot = await this.snapshot(client,g,ids);
       requireThat(snapshot.paused, "existing_campaign_not_paused");
-      this.validateSnapshot(snapshot.material,plan,ids);
+      const commentaryUrlEvidence=await this.verifySnapshot(client,g,ids,snapshot,plan,current);
       const metaInventory=this.name==="meta" ? await existingMetaAdoptionChildren(client as MetaMarketingClient,g.accountId,
         {campaign:ids.campaign!,adset:ids.adset!,ad:ids.ad!,creative:ids.creative!}) : null;
       const inventory=metaInventory ?? await existingLinkedInChildren(client,g.accountId,ids.campaign!,ids.creative!);
       await current();
       return {candidateReceipt:{...this.receipt({...ids,readbackDigest:digest(snapshot.material),...(inventory?{inventoryDigest:digest(inventory)}:{})},digest(plan),"paused"),
+        ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{}),
         providerRequestId:"lastRequestId" in client && typeof client.lastRequestId === "string" ? client.lastRequestId : null},
         ...(metaInventory ? {providerState: {
           provider:"meta" as const, source:"provider_api" as const, observedAt:new Date().toISOString(),
@@ -1507,7 +1514,30 @@ export class NativeProvider implements ProviderPort {
       enabled: statuses.every((x) => x === "ENABLED"),
     };
   }
-  private validateSnapshot(s: any, plan: any, ids: Record<string, string>) {
+  private async verifySnapshot(client:any,g:Grant,ids:Record<string,string>,snapshot:any,plan:any,
+    guard:()=>void|Promise<void>=()=>{}):Promise<Receipt['commentaryUrlEvidence']>{
+    let proof:Receipt['commentaryUrlEvidence'];
+    const actual=snapshot.material.post?.commentary;
+    if(this.name==='linkedin'&&typeof actual==='string'){
+      const plain=linkedInCommentaryPlainText(actual),expected=plan.creative.commentary;
+      if(plain!==expected){
+        await guard();
+        const compared=await compareLinkedInCommentaryUrls(expected,plain,{guard});
+        await guard();
+        if(compared.equivalent){
+          // A link proof cannot authorize a changed post, hierarchy or status.
+          // Retain the raw snapshot digest, not the URL-expanded comparison text.
+          const after=await this.snapshot(client,g,ids);await guard();
+          requireThat(digest(after)===digest(snapshot),'provider_readback_changed_during_link_verification');
+          proof={expectedDigest:digest(expected),observedDigest:digest(plain),observedAt:new Date().toISOString(),
+            urls:compared.evidence as NonNullable<Receipt['commentaryUrlEvidence']>['urls']};
+        }
+      }
+    }
+    this.validateSnapshot(snapshot.material,plan,ids,!!proof);
+    return proof;
+  }
+  private validateSnapshot(s: any, plan: any, ids: Record<string, string>, commentaryVerified=false) {
     if (this.name === "meta") {
       if (["4", "5"].includes(plan.readbackVersion)) requireThat(ids.readbackVersion === plan.readbackVersion &&
         plan.campaign.is_adset_budget_sharing_enabled === false && s.campaign.is_adset_budget_sharing_enabled === false,
@@ -1678,7 +1708,7 @@ export class NativeProvider implements ProviderPort {
         'campaign.campaignGroup': s.campaign.campaignGroup === `urn:li:sponsoredCampaignGroup:${ids.group}`,
         'creative.campaign': s.creative.campaign === `urn:li:sponsoredCampaign:${ids.campaign}`,
         'post.author': subset(s.post, {author: `urn:li:organization:${plan.creative.organizationId}`}),
-        'post.commentary': subset({...s.post, commentary: typeof s.post.commentary === 'string'
+        'post.commentary': commentaryVerified || subset({...s.post, commentary: typeof s.post.commentary === 'string'
           ? linkedInCommentaryPlainText(s.post.commentary) : s.post.commentary}, {commentary: plan.creative.commentary}),
         'post.contentLandingPage': subset(s.post, {contentLandingPage: plan.creative.landingPageUrl}),
         'post.content.media.id': subset(s.post, {content: {media: {id: ids.image}}}),
@@ -1728,7 +1758,9 @@ export class NativeProvider implements ProviderPort {
       requireThat(digest({ c, g }) === scopeDigest, "provider_scope_changed");
     };
     if (activate) await this.prerequisite(c, g, "activate");
-    return await this.use(g, async (client) => {
+    return await this.use(g, async (client,custodyGuard) => {
+      const proofGuard=async()=>{await custodyGuard();await readGuard();};
+      let activationPlan:any,commentaryUrlEvidence:Receipt["commentaryUrlEvidence"];
       if (this.name === "linkedin") client.beforeWrite = async () => {
         // Discovery reads retain current actor/grant/material/lease authority.
         // They do not repeatedly consume the launch approval/budget proof;
@@ -1742,6 +1774,11 @@ export class NativeProvider implements ProviderPort {
         await beforeWrite();
         if (activate) {
           await this.activationChildren(client,g,ids,readGuard);
+          if(activationPlan){
+            const current=await this.snapshot(client,g,ids);
+            requireThat(digest(current.material)===ids.readbackDigest,'external_material_changed');
+            commentaryUrlEvidence=await this.verifySnapshot(client,g,ids,current,activationPlan,proofGuard);
+          }
           await beforeWrite(); // Inventory latency cannot outlive launch authority.
         }
       };
@@ -1755,6 +1792,12 @@ export class NativeProvider implements ProviderPort {
           (!activate || before.paused),
         "external_material_changed",
       );
+      if(activate&&this.name==='linkedin'&&typeof before.material.post?.commentary==='string'&&
+        linkedInCommentaryPlainText(before.material.post.commentary)!==c.material.body){
+        const assets=await Promise.all(c.material.assetIds.map(id=>this.store.get<Asset>(c.projectId,'asset',id)));
+        activationPlan=this.plan(c,g,assets);
+        requireThat(digest(activationPlan)===c.receipt!.payloadDigest,'prepared_material_mismatch');
+      }
       if (activate) await this.activationChildren(client,g,ids,readGuard,true);
       if (this.name === "meta") {
         // Parent last on activation; parent first on pause.
@@ -1820,11 +1863,8 @@ export class NativeProvider implements ProviderPort {
         "provider_outcome_unknown",
       );
       const inventory = activate ? await this.activationChildren(client,g,ids,readGuard) : null;
-      return this.receipt(
-        inventory ? {...ids,inventoryDigest:digest(inventory)} : ids,
-        c.receipt!.payloadDigest,
-        activate ? "enabled" : "paused",
-      );
+      return {...this.receipt(inventory?{...ids,inventoryDigest:digest(inventory)}:ids,
+        c.receipt!.payloadDigest,activate?"enabled":"paused"),...(commentaryUrlEvidence?{commentaryUrlEvidence}:{})};
     });
   }
   async activate(
@@ -1851,7 +1891,7 @@ export class NativeProvider implements ProviderPort {
   ) {
     const receipt = o.receipt || c.receipt;
     if (!receipt?.ids.campaign) return null; // incomplete writes need specific native repair, never replay.
-    return await this.use(g, async (client) => {
+    return await this.use(g, async (client,custodyGuard) => {
       let s, inventory;
       try {
         s = await this.snapshot(client, g, receipt.ids);
@@ -1872,27 +1912,28 @@ export class NativeProvider implements ProviderPort {
         );
         const plan = this.plan(c, g, assets);
         if (digest(plan) !== o.payloadDigest) return null;
+        let commentaryUrlEvidence:Receipt["commentaryUrlEvidence"];
         try {
-          this.validateSnapshot(s.material, plan, receipt.ids);
+          commentaryUrlEvidence=await this.verifySnapshot(client,g,receipt.ids,s,plan,custodyGuard);
         } catch {
           return null;
         }
-        return this.receipt(
-          {
-            ...receipt.ids,
-            readbackDigest: digest(s.material),
-          },
-          o.payloadDigest,
-          "paused",
-        );
+        return {...this.receipt({...receipt.ids,readbackDigest:digest(s.material)},o.payloadDigest,"paused"),
+          ...(commentaryUrlEvidence?{commentaryUrlEvidence}:{})};
       }
       if (!receipt.ids.readbackDigest || receipt.payloadDigest !== o.payloadDigest) return null;
       if (digest(s.material) !== receipt.ids.readbackDigest) return null;
-      return this.receipt(
-        inventory ? {...receipt.ids,inventoryDigest:digest(inventory)} : receipt.ids,
-        o.payloadDigest,
-        o.kind === "activate" ? "enabled" : "paused",
-      );
+      let commentaryUrlEvidence:Receipt['commentaryUrlEvidence'];
+      if(o.kind!=='pause'&&this.name==='linkedin'&&typeof s.material.post?.commentary==='string'&&
+        linkedInCommentaryPlainText(s.material.post.commentary)!==c.material.body){
+        try{
+          const assets=await Promise.all(c.material.assetIds.map(id=>this.store.get<Asset>(c.projectId,'asset',id)));
+          const plan=this.plan(c,g,assets);if(digest(plan)!==o.payloadDigest)return null;
+          commentaryUrlEvidence=await this.verifySnapshot(client,g,receipt.ids,s,plan,custodyGuard);
+        }catch{return null;}
+      }
+      return {...this.receipt(inventory?{...receipt.ids,inventoryDigest:digest(inventory)}:receipt.ids,
+        o.payloadDigest,o.kind==='activate'?'enabled':'paused'),...(commentaryUrlEvidence?{commentaryUrlEvidence}:{})};
     });
   }
   async metrics(

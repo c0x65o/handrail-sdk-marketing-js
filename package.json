@@ -1,6 +1,6 @@
 {
   "name": "@handrail/marketing",
-  "version": "0.1.132",
+  "version": "0.1.133",
   "private": true,
   "type": "module",
   "engines": {
@@ -67,6 +67,7 @@
   },
   "dependencies": {
     "@types/pg": "8.23.1",
+    "htmlparser2": "8.0.2",
     "mysql2": "3.24.5",
     "openai": "6.34.0",
     "pg": "8.23.1",

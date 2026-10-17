@@ -76,3 +76,5 @@ export {createCampaignImageGenerator,CampaignImageError} from '../support/owner-
 export type {CampaignImagePorts,CampaignImageInput,CampaignImage,CampaignImageSpec,CampaignImageContract} from './campaign-images-types.js';
 
 export * from "./studio-media-authority.js";
+
+export {compareLinkedInCommentaryUrls,resolveLinkedInCommentaryUrl,createLinkedInCommentaryLookup} from '../support/owner-marketing/linkedin-commentary-links.js';
