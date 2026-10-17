@@ -29,6 +29,15 @@ export function MarketingRoot({ className = "", ...props }: React.ComponentProps
   return <div {...props} className={`marketing-root ${className}`.trim()} />;
 }
 
+/** Controlled fields for host-owned editing and receipt recovery. Uses the same
+ * provider controls and audience context as the standalone campaign editor.
+ * Rendering fields grants no execution, generation or spending authority. */
+export function CampaignMaterialFields({client,value,grant,onChange}: {
+  client: MarketingClient; value: Material; grant: PublicGrant; onChange: (value: Material) => void;
+}) {
+  return <AudienceClientContext.Provider value={client}><GuidedFields value={value} grant={grant} onChange={onChange}/></AudienceClientContext.Provider>;
+}
+
 export function MaterialReview({
   material,
   assets,

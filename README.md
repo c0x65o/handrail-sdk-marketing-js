@@ -46,7 +46,7 @@ publishing job or registry package is required. Keep the matching npm lockfile.
 | --- | --- |
 | `@handrail/marketing` or `/core` | Browser-safe types and `createMarketingClient` |
 | `@handrail/marketing/server` | MarketingServer, createConnections, Store, provider/billing/generation ports, HostAgent and credential cipher |
-| `@handrail/marketing/react` | Optional MarketingRoot, MarketingWorkspace, MarketingConnections, ApprovalPanel, MaterialReview |
+| `@handrail/marketing/react` | Optional MarketingRoot, MarketingWorkspace, MarketingConnections, ApprovalPanel, MaterialReview, CampaignMaterialFields |
 | `@handrail/marketing/react/style.css` | Optional UI styles |
 | `@handrail/marketing/agent` | Restricted tool dispatcher; no human approval tool or browser runtime |
 | `@handrail/marketing/reference` | runtime, createHost, bootstrapFixture, openDatastore, provision |
