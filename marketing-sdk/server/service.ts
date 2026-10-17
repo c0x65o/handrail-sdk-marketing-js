@@ -1,3 +1,4 @@
+import {CampaignStudioMedia,type CampaignStudioMediaInput} from './studio-campaign-media.js';
 import {ActivationStops,type ActivationStopIntent,type ActivationStopReceipt} from './activation-stops.js';
 import {cancelUnclaimedActivation,type ActivationCancellationReceipt} from './activation-cancellation.js';
 import {assertHostActivationApproval} from './activation-approval.js';
@@ -655,6 +656,14 @@ export class MarketingServer {
   async reviseCampaignMaterial(p: Principal, project: string, input: Commands["saveCampaign"]["input"]) {
     requireThat(input.id && this.options.executionAuthority, "material_revision_authority_required", 403);
     return this.saveCampaignRevision(p, project, input, true);
+  }
+  /** Retain exact Studio media for a campaign under existing material authority.
+   * Selection uses reviseCampaignMaterial afterwards; no execution authority is created. */
+  async retainCampaignStudioMedia(p:Principal,project:string,input:CampaignStudioMediaInput){
+    return new CampaignStudioMedia(this.store,this.studio.sessions,this.options.executionAuthority,this.mode,this.now).retain(p,project,input);
+  }
+  async readCampaignStudioMediaRequest(p:Principal,project:string,input:CampaignStudioMediaInput){
+    return new CampaignStudioMedia(this.store,this.studio.sessions,this.options.executionAuthority,this.mode,this.now).readRequest(p,project,input);
   }
   private async saveCampaignRevision(p: Principal, project: string, input: Commands["saveCampaign"]["input"], revisionOnly: boolean) {
     return this.withCampaignSave(p, project, input, prepared => this.saveCampaignLocal(p, project, input, prepared, revisionOnly), async () => {

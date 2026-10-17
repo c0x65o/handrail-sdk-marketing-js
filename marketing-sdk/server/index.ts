@@ -23,6 +23,7 @@ export * from "./meta-token-inspection.js";
 export * from "./creative-connections.js";
 
 export * from "./studio.js";
+export type {CampaignStudioMediaInput,CampaignStudioMediaReceipt} from './studio-campaign-media.js';
 export * from "./planning.js";
 
 export * from "./studio-http.js";

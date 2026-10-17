@@ -1314,3 +1314,22 @@ campaign asset ID; it performs no save, generation or provider operation. Hosts
 pass current edit eligibility and provider update availability. Material reviews
 render only `material.assetIds`, and identify a missing selected asset explicitly;
 older retained artwork is never substituted into the approval preview.
+
+Existing-campaign Studio media retention is host-only through
+`MarketingServer.retainCampaignStudioMedia(principal, project, input)`. Input
+binds `campaignId`, `expectedRevision`, `draftId`, `expectedDraftRevision`, exact
+selected Studio `assetIds`, and `requestKey`. Current editor/session and host
+`revise_material` authority are required. Only draft/paused campaigns without
+unsettled operations admit retention; grant scope/revocation remains enforced.
+The existing grant is not renewed. Source revisions, binary integrity, rights
+declarations and generated-media job provenance are retained in one immutable
+receipt and rechecked at commit. Concurrent/retried identical requests return
+the original receipt; `readCampaignStudioMediaRequest` reads it without replay
+under current project editor access. A missing receipt remains unknown.
+
+Retention creates campaign-owned asset records, but does not change selected
+material, tracking, provider identities, approval or spending. Select returned
+asset IDs through the existing `reviseCampaignMaterial` workflow. Both Studio
+promotion and retention share the same media conversion. Hosts must apply their
+own native action, exclusion and policy guards and preserve the exact request
+across an uncertain response. Browser/agent JSON cannot supply authority ports.

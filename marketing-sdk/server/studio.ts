@@ -1,3 +1,4 @@
+import {campaignAssetFromStudio} from './studio-campaign-media.js';
 import {readDraftMediaAuthority,draftMediaMaterialDigest,type DraftMediaDispatchAuthority} from './studio-media-authority.js';
 import { STUDIO_WRITE_COMMANDS, type StudioWriteCommand, type StudioWriteReceipt, materialCurrency } from "../core/index.js";
 import { assertTextPlanningCapability, type NativeTextPlanning } from './text-planning.js';
@@ -346,7 +347,7 @@ export class CampaignStudio {
         draftOrigin:{draftId:d.id,revision:d.revision,actorId:p.userId,materialDigest:digest(d.material),accountId:g.accountId}};
       const assets:import('../core/index.js').Asset[]=[];
       for(const assetId of d.studio.assetIds){const a=await this.store.get<StudioAsset>(project,'studioAsset',assetId);requireThat(digest(a)===digest(media.find(v=>v.id===assetId)),'asset_bytes_missing_or_changed');requireThat(a.kind==='image'&&(this.mode==='fixture'||a.source!=='fixture'),'launch_media_unavailable');
-        assets.push({id:id(),projectId:project,campaignId:c.id,version:1,kind:a.kind,digest:a.digest,mime:a.mime,width:a.width,height:a.height,seconds:a.seconds,jobId:a.jobId,source:a.source==='imported'?'uploaded':a.source,rightsReceipt:a.rights.declaration,parentAssetIds:[a.id]});}
+        assets.push(campaignAssetFromStudio(project,c.id,a,this.mode));}
       c.material.assetIds=assets.map(a=>a.id);providerPlan(c,g,assets);
       for(const a of assets)await this.store.put(project,'asset',a.id,a);
       await this.store.put(project,'campaign',c.id,c);await this.store.put(project,'campaignVersion',`${c.id}:1`,c);

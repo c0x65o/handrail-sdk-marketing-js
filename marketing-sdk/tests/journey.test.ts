@@ -208,3 +208,82 @@ for (const lifetime of ['expired', 'invocation'] as const) test(`host local mate
     await assert.rejects(server.reviseCampaignMaterial(f.principal,'p',{...input,expectedRevision:saved.revision,requestKey:'revoked-grant'}), /material_revision_grant_scope/);
   } finally { await f.close(); }
 });
+
+test('existing campaign retains Studio media with exact provenance and recovers the original receipt without selection or execution',async()=>{
+ const f=await fixture();try{
+  const c=await f.call('promoteStudio',f.input),grant=await f.store.get<Grant>('p','grant',c.grantId);
+  await f.store.put('p','grant',grant.id,{...grant,expiresAt:'2020-01-01T00:00:00Z'});
+  const authority:import('../server/index.js').ExecutionAuthority={
+   async assertCurrent(_p,campaign,action){assert.equal(action,'revise_material');assert.equal(campaign.id,c.id);},
+   async withCurrent(p,campaign,action,local){await this.assertCurrent(p,campaign,action);return local();},
+  };
+  const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,{executionAuthority:authority});
+  const input={campaignId:c.id,expectedRevision:c.revision,draftId:f.d.id,expectedDraftRevision:f.d.revision,assetIds:[f.asset.id],requestKey:'retain-media'};
+  await assert.rejects(f.server.retainCampaignStudioMedia(f.principal,'p',input),/material_revision_authority_required/);
+  assert.equal(await server.readCampaignStudioMediaRequest(f.principal,'p',input),null);
+  const [first,second]=await Promise.all([server.retainCampaignStudioMedia(f.principal,'p',input),server.retainCampaignStudioMedia(f.principal,'p',input)]);
+  assert.deepEqual(first,second);assert.equal(first.assets.length,1);
+  assert.deepEqual(first.sources,[f.asset]);assert.deepEqual(first.draft,f.d);
+  assert.equal(first.assets[0]!.campaignId,c.id);assert.deepEqual(first.assets[0]!.parentAssetIds,[f.asset.id]);
+  assert.equal(first.assets[0]!.rightsReceipt,f.asset.rights.declaration);assert.equal(first.sources[0]!.rights.verified,false);
+  assert.deepEqual(await f.store.get('p','campaign',c.id),c);
+  assert.equal((await f.store.list('p','campaign')).length,1);assert.equal((await f.store.list('p','campaignStudioMedia')).length,1);
+  assert.equal((await f.store.list('p','operation')).length,0);assert.equal((await f.store.list('p','advertisingBudgetReservation')).length,0);
+  const changed=await server.reviseCampaignMaterial(f.principal,'p',{id:c.id,expectedRevision:c.revision,grantId:c.grantId,material:{...c.material,assetIds:first.assets.map(a=>a.id)},requestKey:'select-retained-media'});
+  assert.equal(changed.id,c.id);assert.equal(changed.revision,c.revision+1);assert.deepEqual(changed.material.assetIds,first.assets.map(a=>a.id));
+  await f.call('saveBrief',{id:f.d.id,expectedRevision:f.d.revision,requestKey:'later-source',brief:{...f.d.studio.brief,offer:'Later offer'}});
+  const restarted=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,{executionAuthority:authority});
+  assert.deepEqual(await restarted.readCampaignStudioMediaRequest(f.principal,'p',input),first);
+  assert.deepEqual(await restarted.retainCampaignStudioMedia(f.principal,'p',input),first);
+  await assert.rejects(restarted.readCampaignStudioMediaRequest(f.principal,'p',{...input,expectedRevision:changed.revision}),/request_key_payload_conflict/);
+  assert.equal((await f.store.get<Grant>('p','grant',grant.id)).expiresAt,'2020-01-01T00:00:00Z');
+ }finally{await f.close();}
+});
+
+for(const mutation of ['campaign','draft','asset','bytes','grant','active','unknown','authority'] as const)test(`Studio media retention rejects ${mutation} changes before commit without partial assets`,async()=>{
+ const f=await fixture();try{
+  const c=await f.call('promoteStudio',f.input),before=await f.store.list('p','asset');
+  const authority:import('../server/index.js').ExecutionAuthority={
+   async assertCurrent(){},async withCurrent(_p,_c,_action,local){
+    if(mutation==='campaign')await f.store.put('p','campaign',c.id,{...c,revision:c.revision+1});
+    if(mutation==='draft')await f.store.put('p','campaignDraft',f.d.id,{...f.d,revision:f.d.revision+1});
+    if(mutation==='asset')await f.store.put('p','studioAsset',f.asset.id,{...f.asset,rights:{...f.asset.rights,declaration:'Changed'}});
+    if(mutation==='bytes')await f.store.db.prepare('UPDATE blobs SET bytes=? WHERE project_id=? AND digest=?').run(Buffer.from('changed'),'p',f.asset.digest);
+    if(mutation==='grant'){const g=await f.store.get<Grant>('p','grant',c.grantId);await f.store.put('p','grant',g.id,{...g,revokedAt:new Date().toISOString()});}
+    if(mutation==='active')await f.store.put('p','campaign',c.id,{...c,state:'enabled'});
+    if(mutation==='unknown')await f.store.put('p','operation','unknown-op',{id:'unknown-op',campaignId:c.id,state:'unknown'});
+    if(mutation==='authority')this.assertCurrent=async()=>{throw new Error('authority_revoked');};
+    return local();
+   },
+  };
+  const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,{executionAuthority:authority});
+  const input={campaignId:c.id,expectedRevision:c.revision,draftId:f.d.id,expectedDraftRevision:f.d.revision,assetIds:[f.asset.id],requestKey:'retain-media'};
+  await assert.rejects(server.retainCampaignStudioMedia(f.principal,'p',input),/revision_conflict|asset_bytes_missing_or_changed|material_revision_grant_scope|reconcile_before_edit|authority_revoked/);
+  assert.deepEqual(await f.store.list('p','asset'),before);assert.equal((await f.store.list('p','campaignStudioMedia')).length,0);
+ }finally{await f.close();}
+});
+
+test('Studio media retention enforces exact source selection, project scope, rights, live evidence and final authority rollback',async()=>{
+ const f=await fixture();try{
+  const c=await f.call('promoteStudio',f.input),before=await f.store.list('p','asset');
+  let assertions=0,failAt=Infinity;
+  const authority:import('../server/index.js').ExecutionAuthority={
+   async assertCurrent(){if(++assertions===failAt)throw new Error('authority_revoked');},async withCurrent(_p,_c,_a,local){return local();},
+  };
+  const server=new MarketingServer(f.store,f.server.providers,f.server.generation,f.server.agent,'fixture',undefined,undefined,{executionAuthority:authority});
+  const input={campaignId:c.id,expectedRevision:c.revision,draftId:f.d.id,expectedDraftRevision:f.d.revision,assetIds:[f.asset.id],requestKey:'retain-media'};
+  await assert.rejects(server.retainCampaignStudioMedia(f.principal,'p',{...input,assetIds:['unselected']}),/studio_media_selection_changed/);
+  for(const replacement of [{...f.asset,projectId:'other'},{...f.asset,rights:{...f.asset.rights,declaration:''}}]){
+   await f.store.put('p','studioAsset',f.asset.id,replacement);
+   await assert.rejects(server.retainCampaignStudioMedia(f.principal,'p',input),/media_rights_required/);
+  }
+  await f.store.put('p','studioAsset',f.asset.id,{...f.asset,source:'fixture'});
+  await assert.rejects(MarketingServer.unconnected(f.store,{executionAuthority:authority}).retainCampaignStudioMedia(f.principal,'p',input),/launch_media_unavailable/);
+  await f.store.put('p','studioAsset',f.asset.id,f.asset);
+  assertions=0;failAt=3; // Last authority check after the new rows: transaction must roll back.
+  await assert.rejects(server.retainCampaignStudioMedia(f.principal,'p',input),/authority_revoked/);
+  assert.deepEqual(await f.store.list('p','asset'),before);assert.equal((await f.store.list('p','campaignStudioMedia')).length,0);
+  await f.store.db.prepare('UPDATE memberships SET role=? WHERE user_id=? AND project_id=?').run('analyst',f.principal.userId,'p');
+  await assert.rejects(server.readCampaignStudioMediaRequest(f.principal,'p',input),/forbidden/);
+ }finally{await f.close();}
+});
