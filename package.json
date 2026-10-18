@@ -1,6 +1,6 @@
 {
   "name": "@handrail/marketing",
-  "version": "0.1.140",
+  "version": "0.1.141",
   "private": true,
   "type": "module",
   "engines": {
@@ -61,6 +61,7 @@
     "test:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs",
     "test:postgres": "node marketing-sdk/tests/postgres-runner.mjs",
     "test:consumer": "node marketing-sdk/tests/consumer.mjs",
+    "test:browser:studio-library": "node marketing-sdk/tests/studio-library-browser.mjs",
     "test:browser:mariadb": "node marketing-sdk/tests/mariadb-runner.mjs --browser",
     "start": "node .marketing-build/reference/host.js",
     "typecheck:consumer": "tsc --noEmit --strict --module NodeNext --moduleResolution NodeNext --target ES2022 --types node measurement-consumer-check.mts"

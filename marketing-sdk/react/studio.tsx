@@ -13,6 +13,10 @@ function FormatGuide({provider}:{provider:CampaignOption['provider']}) {
 }
 const uuid=()=>crypto.randomUUID();
 const option=():CampaignOption=>({title:'New approach',audienceHypothesis:'',offer:'',rationale:'',unknowns:[],provider:'meta',format:'single_image',destination:null,variants:[{headline:'',body:'',cta:''}]});
+type LibraryScope = { query:string; filter:'active'|'archived'|'trash'; client:MarketingClient };
+type LibraryState = { scope:LibraryScope|null; status:'idle'|'loading'|'success'|'error'; items:LibraryItem[]; cursor:string|null; error:string; next?:string };
+const emptyLibrary=():LibraryState=>({scope:null,status:'idle',items:[],cursor:null,error:''});
+const sameLibraryScope=(a:LibraryScope|null,b:LibraryScope)=>a?.query===b.query&&a.filter===b.filter&&a.client===b.client;
 type Pending = { [K in 'saveBrief'|'saveCampaignOption'|'selectCampaignOption'|'saveStudioMaterial'|'selectStudioMedia'|'copyToDraft'|'setCampaignLifecycle'|'requestPlan'|'applyPlanningOption'|'promoteStudio'|'generateDraftMedia'|'reviewTextPlan'|'approveTextPlan']: {command:K;input:Commands[K]['input']} }['saveBrief'|'saveCampaignOption'|'selectCampaignOption'|'saveStudioMaterial'|'selectStudioMedia'|'copyToDraft'|'setCampaignLifecycle'|'requestPlan'|'applyPlanningOption'|'promoteStudio'|'generateDraftMedia'|'reviewTextPlan'|'approveTextPlan'];
 interface LocalState { id:string; brief:BusinessBrief; option:CampaignOption; optionId?:string; material:DraftMaterial; step:StudioStep; revision:number; dirty:boolean; dirtyParts?:('brief'|'option'|'material')[]; pending:Pending|null; pendingImport?:{draftId:string;expectedRevision:number;requestKey:string;rights:string}; grantId:string }
 const fresh=():LocalState=>({id:'',brief:emptyBrief(),option:option(),material:{name:'Untitled campaign'},step:'brief',revision:0,dirty:false,pending:null,grantId:'',pendingImport:undefined});
@@ -24,24 +28,45 @@ export function CampaignStudio({client,workspace,onChanged,onConnections,onLaunc
 }
 function StudioContent({client,workspace,onChanged,onConnections,onLaunch,onTracking,openDraftId,visible,storage}: {client:MarketingClient;workspace:Workspace;onChanged?:(draft?:StudioDraft)=>Promise<void>;onConnections?:()=>void;onLaunch?:(id:string)=>void;onTracking?:(id:string)=>void;openDraftId?:string;visible:boolean;storage:string}) {
   const [local,setLocal]=useState<LocalState>(()=>{try{const saved=sessionStorage.getItem(storage);if(saved){const v=JSON.parse(saved);if(v&&typeof v.id==='string'&&STUDIO_STEPS.includes(v.step))return v;}}catch{/* blocked storage remains manual */}return fresh();});
-  const [view,setView]=useState<StudioView|null>(null),[items,setItems]=useState<LibraryItem[]>([]),[query,setQuery]=useState(''),[filter,setFilter]=useState<'active'|'archived'|'trash'>('active'),[cursor,setCursor]=useState<string|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[rights,setRights]=useState(''),[authority,setAuthority]=useState(''),[generationGrant,setGenerationGrant]=useState(''),[prompt,setPrompt]=useState(''),[report,setReport]=useState<StudioReport|null>(null),[conflict,setConflict]=useState<StudioDraft|null>(null),[deletion,setDeletion]=useState<Commands['reviewStudioDeletion']['output']|null>(null),[libraryLoading,setLibraryLoading]=useState(true);
+  const [view,setView]=useState<StudioView|null>(null),[query,setQuery]=useState(''),[filter,setFilter]=useState<'active'|'archived'|'trash'>('active'),[error,setError]=useState(''),[busy,setBusy]=useState(false),[rights,setRights]=useState(''),[authority,setAuthority]=useState(''),[generationGrant,setGenerationGrant]=useState(''),[prompt,setPrompt]=useState(''),[report,setReport]=useState<StudioReport|null>(null),[conflict,setConflict]=useState<StudioDraft|null>(null),[deletion,setDeletion]=useState<Commands['reviewStudioDeletion']['output']|null>(null);
   const [materialEpoch,setMaterialEpoch]=useState(0);
-  const libraryReads=useRef(0),libraryScope=useRef({query,filter});libraryScope.current={query,filter};
+  const [libraryState,setLibraryState]=useState<LibraryState>(emptyLibrary);
+  const libraryReads=useRef(0),libraryAbort=useRef<AbortController|null>(null),libraryScope=useRef<LibraryScope>({query,filter,client});libraryScope.current={query,filter,client};
+  // Never label rows or emptiness from another query, view or client as current.
+  const currentLibrary=sameLibraryScope(libraryState.scope,libraryScope.current)?libraryState:emptyLibrary();
+  const {items,cursor}=currentLibrary,libraryLoading=currentLibrary.status==='loading';
+  function cancelLibrary(){libraryReads.current++;libraryAbort.current?.abort();}
+  function clearLibrary(){cancelLibrary();setLibraryState(emptyLibrary());}
   const readable=useRef(visible);readable.current=visible;
   const active=useRef(true),lock=useRef(false),heading=useRef<HTMLHeadingElement>(null),current=useRef(local);current.current=local;
   const canEdit=['admin','editor'].includes(workspace.role);
   function update(patch:Partial<LocalState>){if(patch.dirty||patch.grantId!==undefined)setReport(null);const touched=(['brief','option','material'] as const).filter(k=>patch[k]!==undefined);const dirtyParts=patch.dirty===false?[]:patch.dirty?[...new Set([...(current.current.dirtyParts??[]),...touched])]:current.current.dirtyParts;const next={...current.current,...patch,dirtyParts:patch.dirtyParts??dirtyParts};current.current=next;setLocal(next);try{sessionStorage.setItem(storage,JSON.stringify(next));}catch{setError('Browser recovery storage unavailable. Save before leaving this page.');}}
   useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
-  async function library(next?:string){const request=++libraryReads.current,scope=libraryScope.current;const r=await client.call('listCampaigns',{query:scope.query,lifecycle:scope.filter,...(next?{cursor:next}:{})});if(active.current&&request===libraryReads.current&&scope.filter===libraryScope.current.filter&&scope.query===libraryScope.current.query){setItems(prev=>next?[...prev,...r.items]:r.items);setCursor(r.nextCursor);setLibraryLoading(false);}}
-  useEffect(()=>{if(!visible)return;setLibraryLoading(true);const request=++libraryReads.current,abort=new AbortController();client.call('listCampaigns',{query,lifecycle:filter},{signal:abort.signal}).then(r=>{if(!abort.signal.aborted&&request===libraryReads.current){setItems(r.items);setCursor(r.nextCursor);setLibraryLoading(false);}}).catch(e=>{if(!abort.signal.aborted){setError(e.message);setLibraryLoading(false);}});return()=>abort.abort();},[client,filter,visible]);
+  async function library(next?:string){
+    cancelLibrary();
+    const request=libraryReads.current,scope=libraryScope.current,abort=new AbortController();libraryAbort.current=abort;
+    setLibraryState(prev=>({...(sameLibraryScope(prev.scope,scope)?prev:emptyLibrary()),scope,status:'loading',next}));
+    const isCurrent=()=>active.current&&readable.current&&!abort.signal.aborted&&request===libraryReads.current&&sameLibraryScope(scope,libraryScope.current);
+    try{
+      const r=await scope.client.call('listCampaigns',{query:scope.query,lifecycle:scope.filter,...(next?{cursor:next}:{})},{signal:abort.signal});
+      if(isCurrent())setLibraryState(prev=>({scope,status:'success',items:next&&sameLibraryScope(prev.scope,scope)?[...prev.items,...r.items]:r.items,cursor:r.nextCursor,error:''}));
+    }catch(e){
+      if(isCurrent()){
+        const message=(e as Error).message;
+        const denied=/authentication_required|session_authority|forbidden/.test(message);
+        setLibraryState(prev=>({...prev,...(denied?{items:[],cursor:null,next:undefined}:{}),status:'error',error:message}));
+      }
+    }
+  }
+  useEffect(()=>{if(visible)void library();return cancelLibrary;},[client,filter,visible]);
   const pendingWork=visible?[...(view?.plans??[]).filter(r=>['queued','running'].includes(r.state)).map(r=>r.id),...(view?.jobs??[]).filter(j=>['queued','running','processing'].includes(j.state)).map(j=>j.id)].sort().join(':'):'';
-  const refreshStudio=useVisibleRefresh(async signal=>{const draftId=current.current.id;if(!readable.current||!draftId)return;try{const v=await client.call('studio',{draftId},{signal});if(!signal.aborted&&active.current&&readable.current&&current.current.id===draftId){setView(v);if(!current.current.dirty&&!current.current.pending){const step=current.current.step;adopt(v.draft);update({step});}else if(v.draft.revision!==current.current.revision)setConflict(v.draft);}}catch(e){if(!signal.aborted&&active.current){setError((e as Error).message);if(/authentication_required|session_authority|forbidden/.test((e as Error).message)){setView(null);setItems([]);update(fresh());}}}},pendingWork);
+  const refreshStudio=useVisibleRefresh(async signal=>{const draftId=current.current.id;if(!readable.current||!draftId)return;try{const v=await client.call('studio',{draftId},{signal});if(!signal.aborted&&active.current&&readable.current&&current.current.id===draftId){setView(v);if(!current.current.dirty&&!current.current.pending){const step=current.current.step;adopt(v.draft);update({step});}else if(v.draft.revision!==current.current.revision)setConflict(v.draft);}}catch(e){if(!signal.aborted&&active.current){setError((e as Error).message);if(/authentication_required|session_authority|forbidden/.test((e as Error).message)){setView(null);clearLibrary();update(fresh());}}}},pendingWork);
   const wasVisible=useRef(false);
   useEffect(()=>{const returning=visible&&!wasVisible.current;wasVisible.current=visible;if(visible&&!lock.current&&(returning||view?.draft.id!==local.id))void refreshStudio();},[client,local.id,visible]);
   useEffect(()=>{if(visible)heading.current?.focus();},[local.step,visible]);
   useEffect(()=>{if(view&&!current.current.dirty)setReport(view.reports.filter(r=>r.draftId===view.draft.id&&r.revision===view.draft.revision).at(-1)??null);},[view]);
   function adopt(d:StudioDraft){const changedDraft=current.current.id!==d.id;if(changedDraft){setReport(null);setDeletion(null);setRights('');setPrompt('');setAuthority('');setGenerationGrant('');}update({...(changedDraft?{grantId:''}:{}),option:option(),optionId:undefined,id:d.id,brief:d.studio.brief,material:d.material,revision:d.revision,step:d.studio.step,dirty:false,pending:null});setConflict(null);}
-  async function run(action:()=>Promise<void>){if(lock.current)return;lock.current=true;setBusy(true);setError('');try{await action();}catch(e){if(active.current){const message=(e as Error).message;setError(message.replaceAll('_',' '));if(/authentication_required|session_authority|forbidden/.test(message)){setView(null);setItems([]);update(fresh());}}}finally{lock.current=false;if(active.current)setBusy(false);}}
+  async function run(action:()=>Promise<void>){if(lock.current)return;lock.current=true;setBusy(true);setError('');try{await action();}catch(e){if(active.current){const message=(e as Error).message;setError(message.replaceAll('_',' '));if(/authentication_required|session_authority|forbidden/.test(message)){setView(null);clearLibrary();update(fresh());}}}finally{lock.current=false;if(active.current)setBusy(false);}}
   async function submit(intent:Pending){
     if(intent.command==='saveBrief'&&!intent.input.brief.name.trim()){heading.current?.parentElement?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Campaign name"]')?.focus();throw new Error('Enter a campaign name before saving your brief.');}
     if(current.current.dirty&&!['saveBrief','saveCampaignOption','saveStudioMaterial'].includes(intent.command))throw new Error('Save or explicitly discard your edits before applying another selection or action.');
@@ -59,7 +84,7 @@ function StudioContent({client,workspace,onChanged,onConnections,onLaunch,onTrac
       if(returnedDraft&&view?.draft.id===returnedDraft.id&&items.some(item=>item.id===returnedDraft.id)&&!libraryScope.current.query&&libraryScope.current.filter===returnedDraft.studio.lifecycle){
         // The acknowledged draft contains every displayed row field. Preserve
         // pagination and ask the server again for searches or membership changes.
-        setItems(rows=>rows.map(item=>item.id===returnedDraft.id?{...item,name:returnedDraft.material.name,revision:returnedDraft.revision,updatedAt:returnedDraft.studio.updatedAt,nextStep:returnedDraft.studio.step}:item).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)||b.id.localeCompare(a.id)));
+        setLibraryState(prev=>({...prev,items:prev.items.map(item=>item.id===returnedDraft.id?{...item,name:returnedDraft.material.name,revision:returnedDraft.revision,updatedAt:returnedDraft.studio.updatedAt,nextStep:returnedDraft.studio.step}:item).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)||b.id.localeCompare(a.id))}));
       }else if(returnedDraft||intent.command==='setCampaignLifecycle')await library();
       if(returnedDraft)await onChanged?.(returnedDraft);
       else if(intent.command==='promoteStudio'||intent.command==='setCampaignLifecycle')await onChanged?.();
@@ -87,8 +112,9 @@ function StudioContent({client,workspace,onChanged,onConnections,onLaunch,onTrac
     <div className="studio-library card"><div className="eyebrow">Campaign library</div><h2>Ideas to accountable campaigns</h2>
       <p>Save a brief without an account or AI. Every draft keeps its revisions and retained artwork.</p>
       <div className="studio-actions"><button onClick={()=>{if(local.dirty||local.pending||local.pendingImport){setError('Save or discard the current edits first.');return;}setView(null);setReport(null);update(fresh());}}>Start a brief</button><button className="secondary" onClick={onConnections}>Connections</button></div>
-      <form onSubmit={e=>{e.preventDefault();void run(()=>library());}} className="studio-actions"><label>Search campaigns<input value={query} onChange={e=>setQuery(e.target.value)} /></label><button>Search</button><label>Library view<select value={filter} onChange={e=>setFilter(e.target.value as typeof filter)}><option value="active">Active</option><option value="archived">Archived</option><option value="trash">Trash</option></select></label></form>
-      {libraryLoading&&<p role="status">Loading campaign library…</p>}{!libraryLoading&&!items.length&&<p>No records in this view. Start a brief or change the filter.</p>}
+      <form onSubmit={e=>{e.preventDefault();void library();}} className="studio-actions"><label>Search campaigns<input value={query} onChange={e=>{clearLibrary();setQuery(e.target.value);}} /></label><button>Search</button><label>Library view<select value={filter} onChange={e=>setFilter(e.target.value as typeof filter)}><option value="active">Active</option><option value="archived">Archived</option><option value="trash">Trash</option></select></label></form>
+      {libraryLoading&&<p role="status">Loading campaign library…</p>}{currentLibrary.status==='idle'&&<p role="status">Search to load campaign library results.</p>}{currentLibrary.status==='success'&&!items.length&&<p>No records in this view. Start a brief or change the filter.</p>}
+      {currentLibrary.error&&<div role="alert" className="error">{currentLibrary.error.replaceAll('_',' ')}{items.length>0&&<p>Showing previously loaded records for this search and view.</p>} <button className="secondary" disabled={libraryLoading} onClick={()=>void library(currentLibrary.next)}>Retry library read</button></div>}
       <div className="studio-records">{items.map(item=><article key={item.id}><h3>{item.name}</h3><p>Revision {item.revision} · {item.kind} · {item.updatedAt||'Legacy record'}{item.providerState&&` · provider state ${item.providerState}`}</p><p>Next: {item.nextStep}</p>
         <div className="studio-actions"><button disabled={busy} onClick={()=>void run(()=>open(item))}>Open {item.name}</button>
         <button disabled={busy||!canEdit||!!local.pending||local.dirty} onClick={()=>void run(()=>submit({command:'copyToDraft',input:{id:item.id,kind:item.kind,expectedRevision:item.revision,requestKey:uuid()}}))}>Copy</button>
@@ -96,7 +122,7 @@ function StudioContent({client,workspace,onChanged,onConnections,onLaunch,onTrac
         {item.kind==='draft'&&item.lifecycle==='trash'&&<button onClick={()=>void run(async()=>setDeletion(await client.call('reviewStudioDeletion',{draftId:item.id,expectedRevision:item.revision})))}>Review deletion policy</button>}
         {item.kind==='draft'&&item.lifecycle!=='trash'&&<button className="secondary" disabled={busy||!canEdit||!!local.pending||!!local.pendingImport||local.dirty} onClick={()=>void run(()=>submit({command:'setCampaignLifecycle',input:{id:item.id,kind:item.kind,expectedRevision:item.revision,requestKey:uuid(),lifecycle:'trash'}}))}>Move to trash</button>}</div></article>)}</div>
       {deletion&&<aside aria-label="Permanent deletion policy"><h3>Permanent deletion unavailable</h3><p>{deletion.reason}</p><p>Retained: {deletion.retained.assets} selected asset references, {deletion.retained.revisions} revisions, {deletion.retained.planningRequests} planning requests and {deletion.retained.mediaJobs} media jobs.</p><p>{deletion.confirmationPolicy}</p></aside>}
-      {cursor&&<button onClick={()=>void run(()=>library(cursor))}>More records</button>}
+      {cursor&&<button disabled={libraryLoading} onClick={()=>void library(cursor)}>More records</button>}
       {filter!=='active'&&<p>Archive and trash only change local visibility. Provider delivery, unknown operations, reservations, assets and history remain retained. Permanent deletion is unavailable: no exact host retention, hold, backup and impact policy is configured. Restore to continue; there is no automatic purge schedule.</p>}
     </div>
     {error&&<div role="alert" className="error">{error} <button disabled={busy} onClick={()=>void run(async()=>{await refreshStudio();await library();})}>Reload saved Studio</button></div>}
