@@ -309,6 +309,18 @@ export interface MeasurementWindowRead {
   sourceEvidenceIds: string[];
   evidence: MeasurementEvidence | null;
 }
+/** Only saved record reads are available; no transaction or execution authority. */
+export type MeasurementWindowReader = Pick<Store, "list">;
+/** Reporting facts, not a receipt. IDs/digests belong to stored source evidence. */
+export type MeasurementWindowProjection = Omit<MeasurementEvidence, "id" | "digest" | "previousEvidenceId">;
+export type MeasurementWindowProjectionRead = {
+  /** Immutable stored parent revisions, including for an ephemeral subset. */
+  sourceEvidenceIds: string[];
+} & (
+  | { status: "available"; reason: null; projectionKind: "stored"; storedEvidenceId: string; projection: MeasurementWindowProjection }
+  | { status: "available"; reason: null; projectionKind: "subset"; storedEvidenceId: null; projection: MeasurementWindowProjection }
+  | { status: "missing" | "refresh_required"; reason: string; projectionKind: null; storedEvidenceId: null; projection: null }
+);
 const WINDOW_PROJECTION_COLLECTOR = "sdk_saved_window_projection_v1";
 /** Read immutable revisions without treating a saved API observation as a fresh provider read. */
 export async function readCampaignMeasurementRevisions(store: Pick<Store, "list">, scope: MeasurementWindowScope, asOf = new Date().toISOString()): Promise<MeasurementEvidence[]> {
@@ -322,7 +334,7 @@ export async function readCampaignMeasurementRevisions(store: Pick<Store, "list"
   }
   return selected.sort((a, b) => Date.parse(b.source.collectedAt) - Date.parse(a.source.collectedAt) || b.id.localeCompare(a.id));
 }
-/** Persist a bounded view of the latest overlapping collection. Never combine stale
+/** Select a bounded view of the latest overlapping collection. Never combine stale
  * daily fragments to conceal a newer incomplete report. A narrower latest read
  * requires a fresh whole-window collection; it does not resurrect older totals.
  * The projection retains original collection time and source snapshots. */
@@ -350,6 +362,24 @@ async function selectMeasurementWindow(store: Pick<Store, "list">, scope: Measur
     maturity:{state:"unknown",reason:"subset_attribution_not_independently_qualified",evidenceRefs:sourceEvidenceIds,
       reportingLagEndsAt:null,attributionEndsAt:null,rereadAt:null,coverageVerified:false},
   }};
+}
+
+/** Read full reporting facts without retaining derived evidence or acquiring the
+ * transaction guard. "available" means saved facts exist, not complete coverage.
+ * Subsets retain original collection provenance and lose whole-window attribution
+ * qualification. Host authorization must precede this server-only record read. */
+export async function readMeasurementWindow(reader: MeasurementWindowReader, scope: MeasurementWindowScope,
+  window: MeasurementWindow, asOf = new Date().toISOString()): Promise<MeasurementWindowProjectionRead> {
+  const selected = await selectMeasurementWindow(reader, scope, window, asOf);
+  if (!selected.evidence && !selected.input) return {
+    status: selected.status as "missing" | "refresh_required", reason: selected.reason!,
+    sourceEvidenceIds: selected.sourceEvidenceIds, projectionKind: null, storedEvidenceId: null, projection: null,
+  };
+  const evidence = selected.evidence ?? buildMeasurementEvidence(selected.input!);
+  const { id, digest: _digest, previousEvidenceId: _previous, ...projection } = structuredClone(evidence);
+  return selected.evidence
+    ? { status: "available", reason: null, sourceEvidenceIds: selected.sourceEvidenceIds, projectionKind: "stored", storedEvidenceId: id, projection }
+    : { status: "available", reason: null, sourceEvidenceIds: selected.sourceEvidenceIds, projectionKind: "subset", storedEvidenceId: null, projection };
 }
 
 export async function materializeMeasurementWindow(store: Store, scope: MeasurementWindowScope, window: MeasurementWindow, asOf = new Date().toISOString()): Promise<MeasurementWindowRead> {

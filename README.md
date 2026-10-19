@@ -649,8 +649,31 @@ mature outcomes. Qualification costs additionally require compatible windows,
 currency, QA exclusions and verified attribution coverage. Consumer applications
 must preserve these distinctions and the cited evidence ID when making decisions.
 
-Saved reporting can use `readCampaignMeasurementRevisions` and
-`materializeMeasurementWindow`. A materialized subset is immutable evidence
+Saved reporting should use `readMeasurementWindow(reader, scope, window, asOf?)`
+from `@handrail/marketing/server`. Its `MeasurementWindowReader` accepts only the
+Store's `list` method; it does not start a transaction, acquire the transaction
+guard, call a provider or write evidence/outbox records. Authorize the host request
+before calling this server-only API. Each call lists saved project evidence once.
+
+`MeasurementWindowProjectionRead` distinguishes `missing`, `refresh_required` and
+`available`. Available results contain `projection` with the full reporting facts
+(identity, window, source, rows, placements, coverage, metrics, delivery, outcomes,
+maturity, reconciliation, confidence and verification), without evidence `id`,
+`digest` or `previousEvidenceId`. `sourceEvidenceIds` always references immutable
+stored parent revisions. `projectionKind: "stored"` also supplies the exact
+`storedEvidenceId`; `projectionKind: "subset"` has `storedEvidenceId: null` and is
+an ephemeral calculation, never a persisted receipt. Missing/refresh results have
+null projection/kind/stored ID and retain any selected source references.
+`available` does not imply complete coverage: inspect coverage and metric reasons;
+unknown values remain null and observed zeros remain zero. The default `asOf` is
+the current time; later collections are excluded. Subsets preserve source receipts,
+snapshots and collection time, filter total/placement rows, clear whole-window
+outcomes and leave attribution maturity unknown.
+
+`readCampaignMeasurementRevisions` remains available for saved history.
+Explicit authorized retention can use `materializeMeasurementWindow`, which shares
+the same selector and builder but writes a derived receipt under a transaction.
+A materialized subset is immutable evidence
 whose receipts include its original provider evidence ID and whose collection
 time remains unchanged. It is not another provider read or an independent
 verification. The newest overlapping provider collection must cover the entire

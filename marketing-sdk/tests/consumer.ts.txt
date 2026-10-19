@@ -1,4 +1,20 @@
 import { Store, MarketingServer, type Principal, AdvertisingBudgets, providerDayWindow, type PostgresStoreOptions, POSTGRES_SCHEMA_VERSION } from '@handrail/marketing/server';
+import { readMeasurementWindow, type MeasurementWindowReader, type MeasurementWindowProjectionRead, type MeasurementWindowScope } from '@handrail/marketing/server';
+import type { MeasurementWindow } from '@handrail/marketing/core';
+export async function savedWindow(reader: MeasurementWindowReader, scope: MeasurementWindowScope, window: MeasurementWindow) {
+  const result: MeasurementWindowProjectionRead = await readMeasurementWindow(reader, scope, window, '2026-10-15T00:00:00Z');
+  if (result.status === 'available') {
+    // @ts-expect-error Calculated reporting facts are not a persisted receipt.
+    result.projection.id;
+    if (result.projectionKind === 'subset') {
+      const receipt: null = result.storedEvidenceId;
+      return { receipt, sources: result.sourceEvidenceIds, metrics: result.projection.metrics };
+    }
+    const receipt: string = result.storedEvidenceId;
+    return { receipt, sources: result.sourceEvidenceIds, metrics: result.projection.metrics };
+  }
+  return result.reason;
+}
 import { openDatastore, createHost, provision } from '@handrail/marketing/reference';
 import { runtime } from '@handrail/marketing/reference/host';
 import { seedQa } from '@handrail/marketing/reference/seed';
